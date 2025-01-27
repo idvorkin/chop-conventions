@@ -1,13 +1,12 @@
-
-When creating a justfile ensure the first command is called default and lists everything
+In justfiles, when called with no params, the first command listed is called.
+Make sure the first commmand in the file lists the callable commands e.g.
 
 ```
-defaut:
+default:
     @just --list
 ```
 
-When creating tool install scripts, set it up as follows
-
+When creating python tool install scripts, set it up as follows
 
 ```
 install:
