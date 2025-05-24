@@ -6,7 +6,17 @@ default:
     @just --list
 ```
 
-When creating python tool install scripts, set it up as follows
+Ensure we always have a test command, and fast-test command (it's called by pre-commit).
+It can just print 0/0 tests passed until we have more tests
+
+```
+fast-test:
+    @echo "0/0 tests passed - Add tests"
+test:
+    @echo "All tests - Add comprehensive tests"
+```
+
+When creating python tool install scripts, **only add these if the project has Python packages to install**:
 
 ```
 install:

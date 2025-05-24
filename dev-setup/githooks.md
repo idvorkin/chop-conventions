@@ -1,3 +1,37 @@
+### Intro/Why?
+
+Having pre-checkin tests are a great way to setup a pit of success.
+
+We use precommit to enforce this.
+
+### Environment Setup
+
+#### Important Considerations
+
+⚠️ **Before modifying existing configurations:**
+
+- Always check with the user before changing a pre-existing `.pre-commit-config.yaml`
+- Review current hooks and versions to understand what's already in place
+- Ask about project-specific requirements or customizations
+
+⚠️ **File type coverage warnings:**
+
+- The current configuration may not cover all file types in your project
+- **Biome** supports: JS, TS, JSX, TSX, JSON, JSONC, CSS, GraphQL
+- **Prettier** (in this config) is limited to: Markdown, HTML
+- **Ruff** supports: Python, .pyi, Jupyter notebooks
+- **Dasel** validates: YAML, JSON, YML files
+
+**Check your project for other file types that might need formatting/linting:**
+
+- TOML, XML, SQL, Dockerfile, Shell scripts, etc.
+- Consider adding appropriate hooks if needed
+
+#### Defaults
+
+.pre-commit-config.yaml
+
+```yaml
 repos:
   # 🐍 Python: Linting and formatting
   - repo: https://github.com/astral-sh/ruff-pre-commit
@@ -45,3 +79,8 @@ repos:
         language: system
         pass_filenames: false
         always_run: true
+```
+
+#### Ensure latest configs
+
+run `pre-commit autoupdate`
