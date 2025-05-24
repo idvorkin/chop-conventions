@@ -71,4 +71,4 @@ The goal is to create a feedback loop where:
 
 ---
 
-_Part of the [idvork.in](https://idvork.in) ecosystem for thoughtful technology practices._
+_Part of [idvork.in](https://idvork.in)'s ecosystem for thoughtful technology practices._
