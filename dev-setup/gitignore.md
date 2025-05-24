@@ -561,6 +561,14 @@ After creating the base `.gitignore`, consider:
 4. **Use global gitignore** for personal preferences: `git config --global core.excludesfile ~/.gitignore_global`
 5. **Be careful with wildcards**: Test patterns thoroughly to avoid over-ignoring
 
+#### Chat transcripts
+
+Ignore .specstory, however, DO NOT ignore zz-chop-logs as those are what I want to checkin
+
+```
+.specstory/**
+```
+
 #### Validate Your Setup
 
 ```bash
