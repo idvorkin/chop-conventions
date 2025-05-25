@@ -23,3 +23,5 @@ git commit -m "Add feature X"
 ```
 
 **Never commit without reviewing** what's staged and providing a summary of changes. Avoid blind commits like `git add -A && git commit -m "Some changes"`.
+
+Try to avoid grouping independent changes in 1 checkin. If it makes sense, offer the user to split them into logical commits
