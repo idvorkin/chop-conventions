@@ -10,7 +10,7 @@ Add dependency block immediately after shebang:
 
 ```python
 # /// script
-# requires-python = ">=3.8"
+# requires-python = ">=3.13"
 # dependencies = [
 #     "typer",
 #     "icecream",
