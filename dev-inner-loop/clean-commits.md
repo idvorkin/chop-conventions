@@ -25,6 +25,8 @@ git commit -m "chore: pre-commiting  file_to_change
 Since you are calling the terminal commands, write the commit message to a temp file called COMMIT_MSG.
 Include Sections Summary, The Issue or Feature, The Fix, Testing Results, Backwards Compat Risks
 
+Then check with user if they like the commit message, or want to change things
+
 Then commit with that COMMIT_MSG
 
 An example of a good commit message
