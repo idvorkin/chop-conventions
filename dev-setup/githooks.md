@@ -83,3 +83,11 @@ repos:
 #### Ensure latest configs
 
 run `pre-commit autoupdate`
+
+#### Checkpoint with a commit
+
+stage all new/changed files explicitly.
+run precommit on them
+ask user to commit manually
+
+#### Pre-commit all files in repo so future changes don't have linting in them.
