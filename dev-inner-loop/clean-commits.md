@@ -20,6 +20,10 @@ git commit -m "chore: pre-commiting  file_to_change
 
 ```
 
+### Seeing full diffs
+
+If you are getting partial diff output it's because I'm using a funny terminal, pipe through /bin/cat instead.
+
 ### Writing nice commmit messages
 
 Since you are calling the terminal commands, write the commit message to a temp file called COMMIT_MSG.
