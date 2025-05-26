@@ -1,5 +1,25 @@
 Always run `git status` before committing to review staged files. Remove untracked files that shouldn't be committed and use `git reset` to unstage unwanted files.
 
+### Keeping distinct commits distinct
+
+When making commits propose to the user to split them to be logical users.
+
+### Avoid mixing linting/formatting with edits.
+
+Before editig a file, try to run the pre-commit hooks on it.
+If something is changed, propose committing it by itself.
+
+E.g.
+
+```
+git stash # store other changes
+git add file_to_change
+pre-commit
+git add file_to_change  # if it was changed
+git commit -m "chore: pre-commiting  file_to_change
+
+```
+
 ### Standard commit workflow:
 
 ```bash
