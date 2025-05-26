@@ -18,7 +18,7 @@ We use precommit to enforce this.
 
 - The current configuration may not cover all file types in your project
 - **Biome** supports: JS, TS, JSX, TSX, JSON, JSONC, CSS, GraphQL
-- **Prettier** (in this config) is limited to: Markdown, HTML
+- **Prettier** (in this config) is limited to: Markdown, HTML - do this via prettierignore file
 - **Ruff** supports: Python, .pyi, Jupyter notebooks
 - **Dasel** validates: YAML, JSON, YML files
 
@@ -60,7 +60,6 @@ repos:
     hooks:
       - id: prettier
         name: Prettier (Markdown & HTML only)
-        files: \.(md|html)$
 
   # 🧾 Dasel: YAML and JSON schema/structure validator
   - repo: https://github.com/TomWright/dasel
