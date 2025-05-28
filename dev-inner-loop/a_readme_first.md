@@ -8,6 +8,6 @@ Read and follow clean-commits.md
 ### CLI usage and errors
 
     If get errors with head or cat (they are in the pager command), start by unsetting PAGER `unset PAGER`
-    If diff is trunctated, use git diff --no-pager
+    If git output is trunctated, use git --no-pager  e.g. (git --no-pager diff)
     Use uv instead of python
     Most required commands are just file. Use them there if they exist.
