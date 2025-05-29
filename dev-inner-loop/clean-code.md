@@ -1,5 +1,6 @@
 Unless the user asks for this explcility, do the following only for new code, DO NOT change places you are not working on.
 
+Before making a change, see if a refactor would make the code better. If so, ask user if they want to refactor the code first, then commit it, to keep the commits clean
 Keep code DRY (Don't repeat yourself)
 When you find bugs, add unit tests that are red, then turn them grean.
 Avoid nesting scopes, try to minimize telescoping
