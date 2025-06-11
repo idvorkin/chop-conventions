@@ -26,7 +26,9 @@ If you are getting partial diff output it's because I'm using a funny terminal, 
 
 ### Writing nice commmit messages
 
-Since you are calling the terminal commands, write the commit message to a temp file called COMMIT_MSG.
+Since you are calling the terminal commands, write the commit message to a temp file called COMMIT_MSG,
+Make sure you overwrite COMMIT_MSG, confirm it's correct
+
 Include Sections Summary, The Issue or Feature, The Fix, Testing Results, Backwards Compat Risks
 
 Then check with user if they like the commit message, or want to change things
