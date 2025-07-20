@@ -4,6 +4,7 @@ Do not talk about how you'll use the rules, just use them
 
 Read and follow clean-code.md
 Read and follow clean-commits.md
+Read and follow pr-workflow.md
 
 ### CLI usage and errors
 
