@@ -8,4 +8,4 @@ Leave functions as soon as you can. (Don't apply a comment for that)
 Use const whenever you can
 Use types whenever you can
 Use data objects when you can POJO/POCO, or pydantic objects
-Use humble objects (called a manager) when interacting with external systems
+Use humble objects (called a manager) when interacting with external systems, if there isn't one, ask user if they want one - This makes testing easier - This makes it easy to test business logic

@@ -66,6 +66,9 @@ git checkout -b feature/issue-NUMBER-brief-description
 # Or if you prefer separate commands
 git branch feature/issue-NUMBER-brief-description
 git checkout feature/issue-NUMBER-brief-description
+
+# Add a comment on the issue that you're working on it
+gh issue comment NUMBER --body "Working on this via PR #PR_NUMBER"
 ```
 
 ### 3. Development Process
