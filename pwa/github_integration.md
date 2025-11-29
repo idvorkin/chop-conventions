@@ -17,9 +17,8 @@ This spec covers:
 
 - Auto-detecting the GitHub repository from project config
 - Displaying a "View Source" link
-- GitHub OAuth authentication for bug reporting
 - Shake-to-report, keyboard shortcuts, and button triggers
-- Screenshot capture and issue creation
+- Screenshot capture and issue creation via GitHub's web UI
 
 ---
 
@@ -43,16 +42,14 @@ The app should automatically detect the GitHub repository URL using this priorit
 
 ### Customization Points
 
-Each project adopting this spec must configure:
+Each project adopting this spec can configure:
 
-| Setting                     | Required | Description                                                   |
-| --------------------------- | -------- | ------------------------------------------------------------- |
-| `GITHUB_REPO_URL`           | No       | Override auto-detected repo URL                               |
-| `GITHUB_CLIENT_ID`          | Yes\*    | OAuth App client ID (\*for bug reporting)                     |
-| `GITHUB_OAUTH_REDIRECT_URI` | Yes\*    | OAuth callback URL                                            |
-| `BUG_REPORT_LABELS`         | No       | Default labels for issues (e.g., `["bug", "from-app"]`)       |
-| `SHAKE_THRESHOLD`           | No       | Acceleration threshold for shake detection (default: 15 m/s²) |
-| `SHAKE_COOLDOWN_MS`         | No       | Cooldown between shake detections (default: 5000ms)           |
+| Setting             | Required | Description                                                   |
+| ------------------- | -------- | ------------------------------------------------------------- |
+| `GITHUB_REPO_URL`   | No       | Override auto-detected repo URL                               |
+| `BUG_REPORT_LABELS` | No       | Default labels for issues (e.g., `["bug", "from-app"]`)       |
+| `SHAKE_THRESHOLD`   | No       | Acceleration threshold for shake detection (default: 15 m/s²) |
+| `SHAKE_COOLDOWN_MS` | No       | Cooldown between shake detections (default: 3000ms)           |
 
 ---
 
@@ -160,63 +157,23 @@ function getGitHubLinks(repoUrl: string) {
 
 ## Feature 2: Bug Reporting
 
-### Authentication: GitHub OAuth
+### Approach: GitHub Web UI (No OAuth Required)
 
-Issues are created **as the authenticated user**, not a bot. This builds trust and allows users to track their own issues.
+The simplest approach is to prepare the bug report in-app, then open GitHub's "New Issue" page with pre-filled content. The user logs into GitHub via their browser and submits directly.
 
-#### Why OAuth?
+**Why this approach?**
 
-- Issues show the user's GitHub username
-- Users can follow up on their own issues
-- No server-side token storage required
-- Users can revoke access anytime
+- No OAuth setup required (no client ID, secrets, or backend proxy)
+- No token storage or security concerns
+- User authenticates via GitHub's own UI
+- Works immediately with any public repo
 
-#### OAuth Flow
+**Flow:**
 
-1. User clicks "Report Bug" (or triggers via shake/keyboard)
-2. If not authenticated, show "Sign in with GitHub" button
-3. Redirect to GitHub OAuth authorization:
-   ```
-   https://github.com/login/oauth/authorize
-     ?client_id={CLIENT_ID}
-     &redirect_uri={REDIRECT_URI}
-     &scope=public_repo
-     &state={random_state}
-   ```
-4. User authorizes the app
-5. GitHub redirects back with `?code=xxx&state=xxx`
-6. Exchange code for access token (via backend proxy to protect client secret)
-7. Store token securely, proceed to bug report form
-
-#### Token Storage
-
-```ts
-// Store encrypted in localStorage or sessionStorage
-interface GitHubAuth {
-  accessToken: string;
-  username: string;
-  avatarUrl: string;
-  expiresAt?: number;
-}
-```
-
-**Security considerations:**
-
-- Use `sessionStorage` for stricter security (cleared on tab close)
-- Or `localStorage` with encryption for persistence
-- Always validate state parameter to prevent CSRF
-- Provide clear "Sign out" option
-
-#### Sign Out
-
-Clear stored tokens and show unauthenticated state:
-
-```ts
-function signOutGitHub() {
-  localStorage.removeItem("github_auth");
-  // Optionally revoke token via GitHub API
-}
-```
+1. User triggers bug report (shake, keyboard, or button)
+2. App shows modal to compose bug details
+3. User clicks "Submit" → app copies text to clipboard + opens GitHub new issue URL
+4. User pastes/reviews in GitHub and submits
 
 ---
 
@@ -245,39 +202,23 @@ function signOutGitHub() {
 
 ### UX Flow
 
-#### Step 1: Trigger Detected
+#### Step 1: First-Time Shake Prompt (Mobile Only)
 
-Show non-blocking prompt:
-
-```
-┌─────────────────────────────────────────┐
-│ Shake detected! Want to report a bug?   │
-│                                         │
-│ [Report Bug]  [Dismiss]                 │
-│ ☐ Don't ask again                       │
-└─────────────────────────────────────────┘
-```
-
-- **Report Bug** → Open bug report modal
-- **Dismiss** → Close, do nothing
-- **Don't ask again** → Disable shake detection, persist preference
-
-#### Step 2: Authentication Check
-
-If user is not signed in to GitHub:
+When user opens bug report modal for the first time on a device with motion sensors, offer to enable shake detection:
 
 ```
 ┌─────────────────────────────────────────┐
-│ Sign in to report bugs                  │
+│ Enable Shake to Report?                 │
 │                                         │
-│ Issues will be created with your        │
-│ GitHub username so you can track them.  │
+│ Shake your device anytime to quickly    │
+│ report a bug. This uses your device's   │
+│ motion sensors to detect shaking.       │
 │                                         │
-│ [Sign in with GitHub]  [Cancel]         │
+│ [Enable]  [Not Now]                     │
 └─────────────────────────────────────────┘
 ```
 
-#### Step 3: Bug Report Form
+#### Step 2: Bug Report Form
 
 ```
 ┌─────────────────────────────────────────┐
@@ -285,11 +226,14 @@ If user is not signed in to GitHub:
 ├─────────────────────────────────────────┤
 │ Title *                                 │
 │ ┌─────────────────────────────────────┐ │
-│ │ Bug: /dashboard – Nov 29, 2025      │ │
+│ │ Bug                                 │ │
 │ └─────────────────────────────────────┘ │
 │                                         │
 │ Description *                           │
 │ ┌─────────────────────────────────────┐ │
+│ │ **Date:** Nov 29, 2025              │ │
+│ │ **Latest version:** [abc1234](url)  │ │
+│ │                                     │ │
 │ │ **What were you trying to do?**     │ │
 │ │                                     │ │
 │ │ **What happened instead?**          │ │
@@ -298,69 +242,80 @@ If user is not signed in to GitHub:
 │ │ 1.                                  │ │
 │ └─────────────────────────────────────┘ │
 │                                         │
-│ ☑ Attach screenshot of current screen  │
-│ ☑ Include technical details            │
-│   (route, app version, browser)        │
+│ Screenshot                  [Capture]   │
+│ (Browser will ask which tab to share)   │
 │                                         │
-│ Signed in as @username  [Sign out]     │
+│ ☑ Include technical details             │
+│   (route, app version, browser)         │
 │                                         │
-│ [Cancel]              [Submit Bug]      │
+│ [Cancel]        [Copy & Open GitHub]    │
 └─────────────────────────────────────────┘
 ```
 
 **Pre-filled values:**
 
-- Title: `Bug: {current route} – {date}`
-- Description: Template with prompts
+- Title: `Bug` (simple, user can edit)
+- Description template includes:
+  - Current date
+  - Latest commit SHA + message (fetched from GitHub API)
+  - Prompts for what happened
 
-#### Step 4: Screenshot Capture
+#### Step 3: Screenshot Capture
 
-If "Attach screenshot" is checked:
+**Important:** Close the bug report modal before capturing so it doesn't appear in the screenshot.
 
-1. Show overlay explaining what will happen:
+1. User clicks "Capture" button
+2. Modal closes temporarily
+3. Browser prompts for screen/tab selection via `getDisplayMedia`
+4. Capture single frame to canvas
+5. Stop video track immediately
+6. Reopen modal with form state preserved, show screenshot preview
 
+```ts
+// Close modal first to avoid capturing it
+onClose();
+await new Promise((resolve) => setTimeout(resolve, 150));
+
+const stream = await navigator.mediaDevices.getDisplayMedia({
+  video: { displaySurface: "browser" },
+});
+
+// Capture frame
+const video = document.createElement("video");
+video.srcObject = stream;
+await video.play();
+
+const canvas = document.createElement("canvas");
+canvas.width = video.videoWidth;
+canvas.height = video.videoHeight;
+canvas.getContext("2d").drawImage(video, 0, 0);
+
+stream.getTracks().forEach((track) => track.stop());
+
+// Reopen modal with screenshot
+onOpen();
+```
+
+If user cancels or permission denied, proceed without screenshot.
+
+#### Step 4: Submission
+
+**On submit:**
+
+1. Build issue body with description + metadata
+2. Copy full text to clipboard (backup)
+3. Open GitHub new issue URL with pre-filled params:
    ```
-   Capturing screenshot...
-   Your browser will ask which screen to share.
-   Select this tab, then we'll grab a single image.
+   https://github.com/owner/repo/issues/new?title=Bug&body=...&labels=bug,from-app
    ```
+4. Show success message
 
-2. Call `getDisplayMedia`:
-
-   ```ts
-   const stream = await navigator.mediaDevices.getDisplayMedia({
-     video: { displaySurface: "browser" },
-   });
-   ```
-
-3. Capture single frame to canvas, convert to PNG blob
-
-4. Immediately stop the video track
-
-5. If user cancels or permission denied:
-   - Proceed without screenshot
-   - Add note to description: `_Screenshot requested but not captured._`
-
-#### Step 5: Submission Feedback
-
-**During submission:**
+**Success state:**
 
 ```
-Creating GitHub issue...
-```
-
-**On success:**
-
-```
-✓ Bug created: #123
-[Open in GitHub]
-```
-
-**On failure:**
-
-```
-✗ Failed to create issue
-[Copy bug text] [Try again]
+✓ Bug report copied & GitHub opened!
+Paste the bug details if they weren't pre-filled.
+[Close]
 ```
 
 ---
@@ -370,90 +325,161 @@ Creating GitHub issue...
 #### Data Contract
 
 ```ts
-interface BugReportPayload {
+interface BugReportData {
   title: string;
   description: string;
-  metadata: {
-    route: string;
-    appVersion: string;
-    userAgent: string;
-    timestamp: string; // ISO 8601
-    userId?: string;
-  };
-  screenshot?: Blob;
-  labels?: string[];
+  includeMetadata: boolean;
+  screenshot?: string; // base64 data URL (for preview only)
 }
 
-interface BugReportResponse {
-  issueUrl: string;
-  issueNumber: number;
+interface BugReportMetadata {
+  route: string;
+  userAgent: string;
+  timestamp: string; // ISO 8601
+  appVersion: string;
+}
+
+interface LatestCommit {
+  sha: string;
+  message: string;
+  url: string;
 }
 ```
 
-#### GitHub API Call
+#### Fetching Latest Commit
+
+Fetch the latest commit on mount to include in bug reports:
 
 ```ts
-// POST https://api.github.com/repos/{owner}/{repo}/issues
-// Authorization: Bearer {user_access_token}
+async function fetchLatestCommit(
+  repoUrl: string,
+): Promise<LatestCommit | null> {
+  const match = repoUrl.match(/github\.com\/([^/]+)\/([^/]+)/);
+  if (!match) return null;
+  const [, owner, repo] = match;
 
-const response = await fetch(
-  `https://api.github.com/repos/${owner}/${repo}/issues`,
-  {
-    method: "POST",
-    headers: {
-      Authorization: `Bearer ${accessToken}`,
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify({
-      title: payload.title,
-      body: buildIssueBody(payload),
-      labels: payload.labels || ["bug", "from-app"],
-    }),
-  },
-);
+  const response = await fetch(
+    `https://api.github.com/repos/${owner}/${repo}/commits?per_page=1`,
+    { headers: { Accept: "application/vnd.github.v3+json" } },
+  );
+  if (!response.ok) return null;
+
+  const commits = await response.json();
+  if (!commits.length) return null;
+
+  return {
+    sha: commits[0].sha.substring(0, 7),
+    message: commits[0].commit.message.split("\n")[0],
+    url: commits[0].html_url,
+  };
+}
+```
+
+#### Opening GitHub New Issue URL
+
+```ts
+async function submitBugReport(
+  data: BugReportData,
+  metadata: BugReportMetadata,
+) {
+  const body = buildIssueBody(data, metadata);
+
+  // Build URL with pre-filled params
+  const issueUrl = new URL(`${GITHUB_REPO_URL}/issues/new`);
+  issueUrl.searchParams.set("title", data.title);
+  issueUrl.searchParams.set("body", body);
+  issueUrl.searchParams.set("labels", "bug,from-app");
+
+  // Copy to clipboard as backup
+  await navigator.clipboard.writeText(`Title: ${data.title}\n\n${body}`);
+
+  // Open in new tab
+  window.open(issueUrl.toString(), "_blank", "noopener,noreferrer");
+}
 ```
 
 #### Issue Body Template
 
 ```md
-{description}
+**Date:** Nov 29, 2025
+
+**Latest version:** [abc1234](https://github.com/.../commit/abc1234) - Commit message
+
+**What were you trying to do?**
+
+{user input}
+
+**What happened instead?**
+
+{user input}
+
+**Steps to reproduce:**
+
+1. {user input}
 
 ---
 
 **App Metadata**
 | Field | Value |
-|-------|-------|
-| Route | `{route}` |
-| App Version | `{appVersion}` |
-| Browser | `{userAgent}` |
-| Timestamp | `{timestamp}` |
+| ----------- | ---------------------- |
+| Route | `/current-path` |
+| App Version | `1.0.0` |
+| Browser | `Mozilla/5.0...` |
+| Timestamp | `2025-11-29T18:00:00Z` |
 
-{if screenshot}
 **Screenshot**
-![Screenshot]({screenshotUrl})
-{/if}
+_(Screenshot captured - please upload manually to GitHub)_
 ```
 
 #### Screenshot Handling
 
-Since GitHub Issues API doesn't support direct image upload, options:
+Screenshots are captured for preview in the modal. On submit:
 
-1. **Upload to GitHub via Contents API** — Store in `.github/bug-screenshots/`
-2. **Upload to external storage** — S3, Cloudflare R2, etc.
-3. **Encode as data URL** — Only for small images, not recommended
+1. If screenshot exists, copy the **image** to clipboard (not text)
+2. Open GitHub with pre-filled title/body
+3. Show success message prompting user to paste: "Screenshot is on your clipboard! Paste with Ctrl+V / Cmd+V"
+
+```ts
+async function copyImageToClipboard(dataUrl: string): Promise<boolean> {
+  try {
+    const response = await fetch(dataUrl);
+    const blob = await response.blob();
+    await navigator.clipboard.write([new ClipboardItem({ [blob.type]: blob })]);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+// On submit:
+if (data.screenshot) {
+  hasScreenshotOnClipboard = await copyImageToClipboard(data.screenshot);
+}
+if (!hasScreenshotOnClipboard) {
+  // Fallback: copy text if no screenshot or image copy failed
+  await navigator.clipboard.writeText(issueText);
+}
+```
+
+The issue body should include a reminder:
+
+```md
+**Screenshot**
+_(Screenshot is on your clipboard - paste it here with Ctrl+V / Cmd+V)_
+```
 
 ---
 
 ### Edge Cases
 
-| Scenario                        | Handling                                          |
-| ------------------------------- | ------------------------------------------------- |
-| **Offline**                     | Queue bug locally, prompt "Will sync when online" |
-| **Multiple shakes**             | Debounce; ignore while modal is open              |
-| **getDisplayMedia unavailable** | Proceed without screenshot, log telemetry         |
-| **OAuth token expired**         | Prompt to re-authenticate                         |
-| **Rate limited**                | Show error, suggest trying later                  |
-| **No GitHub account**           | Offer to copy bug text for manual submission      |
+| Scenario                        | Handling                                                       |
+| ------------------------------- | -------------------------------------------------------------- |
+| **Offline**                     | Still works - user can copy text, open GitHub when back online |
+| **Multiple shakes**             | Debounce via cooldown; ignore while modal is open              |
+| **getDisplayMedia unavailable** | Hide capture button or proceed without screenshot              |
+| **GitHub API rate limited**     | Fall back to repo URL without commit info                      |
+| **URL too long**                | Clipboard always has full text as backup                       |
+| **iOS DeviceMotion permission** | Request permission explicitly before enabling shake            |
 
 ---
 
@@ -461,56 +487,43 @@ Since GitHub Issues API doesn't support direct image upload, options:
 
 ### Hooks
 
-#### useGitHubAuth
-
-```tsx
-function useGitHubAuth() {
-  const [auth, setAuth] = useState<GitHubAuth | null>(null);
-  const [isLoading, setIsLoading] = useState(true);
-
-  useEffect(() => {
-    // Check for stored auth on mount
-    const stored = localStorage.getItem("github_auth");
-    if (stored) setAuth(JSON.parse(stored));
-    setIsLoading(false);
-  }, []);
-
-  const signIn = () => {
-    /* redirect to OAuth */
-  };
-  const signOut = () => {
-    /* clear storage */
-  };
-
-  return { auth, isLoading, isAuthenticated: !!auth, signIn, signOut };
-}
-```
-
 #### useShakeDetector
 
 ```tsx
 function useShakeDetector(options: {
   enabled: boolean;
   threshold?: number;
-  cooldown?: number;
+  cooldownMs?: number;
   onShake: () => void;
 }) {
+  const lastShakeRef = useRef<number>(0);
+
+  const handleMotion = useCallback(
+    (event: DeviceMotionEvent) => {
+      const { x, y, z } = event.accelerationIncludingGravity || {};
+      if (x == null || y == null || z == null) return;
+
+      const magnitude = Math.sqrt(x * x + y * y + z * z);
+      const shakeAcceleration = Math.abs(magnitude - 9.8); // Subtract gravity
+
+      if (shakeAcceleration > (options.threshold || 15)) {
+        const now = Date.now();
+        if (now - lastShakeRef.current > (options.cooldownMs || 3000)) {
+          lastShakeRef.current = now;
+          options.onShake();
+        }
+      }
+    },
+    [options.threshold, options.cooldownMs, options.onShake],
+  );
+
   useEffect(() => {
     if (!options.enabled) return;
+    window.addEventListener("devicemotion", handleMotion);
+    return () => window.removeEventListener("devicemotion", handleMotion);
+  }, [options.enabled, handleMotion]);
 
-    const handler = (event: DeviceMotionEvent) => {
-      const { x, y, z } = event.accelerationIncludingGravity || {};
-      const magnitude = Math.sqrt(
-        (x || 0) ** 2 + (y || 0) ** 2 + (z || 0) ** 2,
-      );
-      if (magnitude > (options.threshold || 15)) {
-        options.onShake();
-      }
-    };
-
-    window.addEventListener("devicemotion", handler);
-    return () => window.removeEventListener("devicemotion", handler);
-  }, [options.enabled]);
+  return { isSupported: "DeviceMotionEvent" in window };
 }
 ```
 
@@ -518,50 +531,96 @@ function useShakeDetector(options: {
 
 ```tsx
 function useBugReporter() {
-  const { auth } = useGitHubAuth();
   const [isOpen, setIsOpen] = useState(false);
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const [latestCommit, setLatestCommit] = useState<LatestCommit | null>(null);
+  const [shakeEnabled, setShakeEnabled] = useState(
+    () => localStorage.getItem("shake-enabled") === "true",
+  );
 
-  const open = () => setIsOpen(true);
-  const close = () => setIsOpen(false);
+  // Fetch latest commit on mount
+  useEffect(() => {
+    fetchLatestCommit(GITHUB_REPO_URL).then(setLatestCommit);
+  }, []);
 
-  const submit = async (payload: BugReportPayload) => {
+  const open = useCallback(() => setIsOpen(true), []);
+  const close = useCallback(() => setIsOpen(false), []);
+
+  const getDefaultData = useCallback(
+    () => ({
+      title: "Bug",
+      description: buildDefaultDescription(latestCommit),
+      includeMetadata: true,
+    }),
+    [latestCommit],
+  );
+
+  const submit = useCallback(async (data: BugReportData) => {
     setIsSubmitting(true);
     try {
-      const result = await createGitHubIssue(auth.accessToken, payload);
-      return result;
+      await submitBugReport(data, getMetadata());
+      return { success: true };
     } finally {
       setIsSubmitting(false);
     }
-  };
+  }, []);
 
-  return { isOpen, open, close, submit, isSubmitting, isAuthenticated: !!auth };
+  return {
+    isOpen,
+    open,
+    close,
+    submit,
+    isSubmitting,
+    getDefaultData,
+    shakeEnabled,
+    setShakeEnabled,
+    githubRepoUrl: GITHUB_REPO_URL,
+  };
 }
 ```
 
 ### Components
 
 ```tsx
-// GitHubLink - Display repo link
-<GitHubLink showStars={true} />
-
-// GitHubAuthButton - Sign in/out
-<GitHubAuthButton />
+// GitHubLink - Display repo link in settings
+<a href={githubRepoUrl} target="_blank" rel="noopener noreferrer">
+  <GithubIcon /> View on GitHub
+</a>
 
 // BugReportModal - Full bug reporting flow
 <BugReportModal
-  isOpen={isOpen}
-  onClose={close}
-  onSubmit={handleSubmit}
+  isOpen={bugReporter.isOpen}
+  onClose={bugReporter.close}
+  onOpen={bugReporter.open}  // For reopening after screenshot
+  onSubmit={bugReporter.submit}
+  defaultData={bugReporter.getDefaultData()}
+  shakeEnabled={bugReporter.shakeEnabled}
+  onShakeEnabledChange={bugReporter.setShakeEnabled}
 />
+```
 
-// BugReportTrigger - Wrapper that handles all triggers
-<BugReportTrigger
-  enableShake={true}
-  enableKeyboard={true}
->
-  {children}
-</BugReportTrigger>
+### Keyboard Shortcut
+
+```tsx
+// Detect platform for shortcut display
+const isMac = navigator.platform.toUpperCase().indexOf("MAC") >= 0;
+const bugReportShortcut = isMac ? "⌘I" : "Ctrl+I";
+
+// In main component
+useEffect(() => {
+  const handleKeyDown = (e: KeyboardEvent) => {
+    if ((e.ctrlKey || e.metaKey) && e.key === "i") {
+      e.preventDefault();
+      bugReporter.open();
+    }
+  };
+  window.addEventListener("keydown", handleKeyDown);
+  return () => window.removeEventListener("keydown", handleKeyDown);
+}, [bugReporter]);
+
+// Pass shortcut to components for display
+<BugReportModal shortcut={bugReportShortcut} ... />
+<SettingsModal bugReportShortcut={bugReportShortcut} ... />
 ```
 
 ---
@@ -583,39 +642,71 @@ fireEvent(
 expect(onShake).toHaveBeenCalled();
 ```
 
-**OAuth flow:**
+**Latest commit fetch:**
 
 ```ts
-// Mock window.location for redirect
-// Mock fetch for token exchange
+// Mock fetch for GitHub API
+global.fetch = vi.fn().mockResolvedValue({
+  ok: true,
+  json: () =>
+    Promise.resolve([
+      {
+        sha: "abc1234567890",
+        commit: { message: "Fix bug\n\nDetails" },
+        html_url: "https://github.com/owner/repo/commit/abc1234",
+      },
+    ]),
+});
+
+const commit = await fetchLatestCommit("https://github.com/owner/repo");
+expect(commit).toEqual({
+  sha: "abc1234",
+  message: "Fix bug",
+  url: "https://github.com/owner/repo/commit/abc1234",
+});
 ```
 
 ### Integration Tests
 
-**GitHub API:**
+**Clipboard and window.open:**
 
 ```ts
-// Use MSW to mock GitHub API responses
-server.use(
-  rest.post(
-    "https://api.github.com/repos/:owner/:repo/issues",
-    (req, res, ctx) => {
-      return res(ctx.json({ number: 123, html_url: "..." }));
-    },
-  ),
+// Mock clipboard and window.open
+const writeText = vi.fn();
+Object.assign(navigator, { clipboard: { writeText } });
+const windowOpen = vi.spyOn(window, "open").mockImplementation(() => null);
+
+await bugReporter.submit({
+  title: "Bug",
+  description: "Test",
+  includeMetadata: true,
+});
+
+expect(writeText).toHaveBeenCalledWith(expect.stringContaining("Bug"));
+expect(windowOpen).toHaveBeenCalledWith(
+  expect.stringContaining("github.com"),
+  "_blank",
+  expect.any(String),
 );
 ```
 
-### E2E Tests (Playwright/Cypress)
+### E2E Tests (Playwright)
 
 ```ts
-// Test full flow
-test("user can report a bug", async ({ page }) => {
+test("user can open bug report modal with keyboard shortcut", async ({
+  page,
+}) => {
   await page.goto("/");
   await page.keyboard.press("Control+i");
-  await page.fill('[name="title"]', "Test bug");
-  await page.fill('[name="description"]', "Description");
-  await page.click("text=Submit Bug");
-  await expect(page.locator("text=Bug created")).toBeVisible();
+  await expect(page.locator("text=Report a Bug")).toBeVisible();
+});
+
+test("bug report form has pre-filled content", async ({ page }) => {
+  await page.goto("/");
+  await page.keyboard.press("Control+i");
+  await expect(page.locator('input[id="bug-title"]')).toHaveValue("Bug");
+  await expect(page.locator("textarea")).toContainText(
+    "What were you trying to do",
+  );
 });
 ```
