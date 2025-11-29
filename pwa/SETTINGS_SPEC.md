@@ -20,7 +20,7 @@ Every app settings screen should include:
 
 ### Dialog Behavior
 
-- **Pop dialog to keep small as required** - use modal/dialog for settings, not full page
+- **Use modal dialog, keep compact** - settings in dialog, not full page navigation
 - Keep the dialog compact; expand only when user needs more options
 - Avoid overwhelming users with all options at once
 
