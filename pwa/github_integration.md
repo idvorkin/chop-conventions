@@ -4,6 +4,20 @@ A reusable specification for integrating GitHub features into PWAs: displaying t
 
 ---
 
+## Reference Implementation
+
+This spec is implemented in [magic-monitor](https://github.com/idvorkin/magic-monitor):
+
+| Component        | Latest                                                                                          | Permalink                                                                                           |
+| ---------------- | ----------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------- |
+| useShakeDetector | [latest](https://github.com/idvorkin/magic-monitor/blob/main/src/hooks/useShakeDetector.ts)     | [f238554](https://github.com/idvorkin/magic-monitor/blob/f238554/src/hooks/useShakeDetector.ts)     |
+| useBugReporter   | [latest](https://github.com/idvorkin/magic-monitor/blob/main/src/hooks/useBugReporter.ts)       | [f238554](https://github.com/idvorkin/magic-monitor/blob/f238554/src/hooks/useBugReporter.ts)       |
+| BugReportModal   | [latest](https://github.com/idvorkin/magic-monitor/blob/main/src/components/BugReportModal.tsx) | [f238554](https://github.com/idvorkin/magic-monitor/blob/f238554/src/components/BugReportModal.tsx) |
+| SettingsModal    | [latest](https://github.com/idvorkin/magic-monitor/blob/main/src/components/SettingsModal.tsx)  | [f238554](https://github.com/idvorkin/magic-monitor/blob/f238554/src/components/SettingsModal.tsx)  |
+| DeviceService    | [latest](https://github.com/idvorkin/magic-monitor/blob/main/src/services/DeviceService.ts)     | [f238554](https://github.com/idvorkin/magic-monitor/blob/f238554/src/services/DeviceService.ts)     |
+
+---
+
 ## Overview
 
 ### Purpose
