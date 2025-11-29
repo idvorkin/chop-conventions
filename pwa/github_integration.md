@@ -8,13 +8,18 @@ A reusable specification for integrating GitHub features into PWAs: displaying t
 
 This spec is implemented in [magic-monitor](https://github.com/idvorkin/magic-monitor):
 
-| Component        | Latest                                                                                          | Permalink                                                                                           |
-| ---------------- | ----------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------- |
-| useShakeDetector | [latest](https://github.com/idvorkin/magic-monitor/blob/main/src/hooks/useShakeDetector.ts)     | [f238554](https://github.com/idvorkin/magic-monitor/blob/f238554/src/hooks/useShakeDetector.ts)     |
-| useBugReporter   | [latest](https://github.com/idvorkin/magic-monitor/blob/main/src/hooks/useBugReporter.ts)       | [f238554](https://github.com/idvorkin/magic-monitor/blob/f238554/src/hooks/useBugReporter.ts)       |
-| BugReportModal   | [latest](https://github.com/idvorkin/magic-monitor/blob/main/src/components/BugReportModal.tsx) | [f238554](https://github.com/idvorkin/magic-monitor/blob/f238554/src/components/BugReportModal.tsx) |
-| SettingsModal    | [latest](https://github.com/idvorkin/magic-monitor/blob/main/src/components/SettingsModal.tsx)  | [f238554](https://github.com/idvorkin/magic-monitor/blob/f238554/src/components/SettingsModal.tsx)  |
-| DeviceService    | [latest](https://github.com/idvorkin/magic-monitor/blob/main/src/services/DeviceService.ts)     | [f238554](https://github.com/idvorkin/magic-monitor/blob/f238554/src/services/DeviceService.ts)     |
+| Component            | Latest                                                                                              | Permalink                                                                                               |
+| -------------------- | --------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------- |
+| useShakeDetector     | [latest](https://github.com/idvorkin/magic-monitor/blob/main/src/hooks/useShakeDetector.ts)         | [e4dcb70](https://github.com/idvorkin/magic-monitor/blob/e4dcb70/src/hooks/useShakeDetector.ts)         |
+| useBugReporter       | [latest](https://github.com/idvorkin/magic-monitor/blob/main/src/hooks/useBugReporter.ts)           | [e4dcb70](https://github.com/idvorkin/magic-monitor/blob/e4dcb70/src/hooks/useBugReporter.ts)           |
+| BugReportModal       | [latest](https://github.com/idvorkin/magic-monitor/blob/main/src/components/BugReportModal.tsx)     | [e4dcb70](https://github.com/idvorkin/magic-monitor/blob/e4dcb70/src/components/BugReportModal.tsx)     |
+| SettingsModal        | [latest](https://github.com/idvorkin/magic-monitor/blob/main/src/components/SettingsModal.tsx)      | [e4dcb70](https://github.com/idvorkin/magic-monitor/blob/e4dcb70/src/components/SettingsModal.tsx)      |
+| DeviceService        | [latest](https://github.com/idvorkin/magic-monitor/blob/main/src/services/DeviceService.ts)         | [e4dcb70](https://github.com/idvorkin/magic-monitor/blob/e4dcb70/src/services/DeviceService.ts)         |
+| shakeDetection       | [latest](https://github.com/idvorkin/magic-monitor/blob/main/src/utils/shakeDetection.ts)           | [e4dcb70](https://github.com/idvorkin/magic-monitor/blob/e4dcb70/src/utils/shakeDetection.ts)           |
+| bugReportFormatters  | [latest](https://github.com/idvorkin/magic-monitor/blob/main/src/utils/bugReportFormatters.ts)      | [e4dcb70](https://github.com/idvorkin/magic-monitor/blob/e4dcb70/src/utils/bugReportFormatters.ts)      |
+| bugReport types      | [latest](https://github.com/idvorkin/magic-monitor/blob/main/src/types/bugReport.ts)                | [e4dcb70](https://github.com/idvorkin/magic-monitor/blob/e4dcb70/src/types/bugReport.ts)                |
+| shakeDetection tests | [latest](https://github.com/idvorkin/magic-monitor/blob/main/src/utils/shakeDetection.test.ts)      | [e4dcb70](https://github.com/idvorkin/magic-monitor/blob/e4dcb70/src/utils/shakeDetection.test.ts)      |
+| bugFormatters tests  | [latest](https://github.com/idvorkin/magic-monitor/blob/main/src/utils/bugReportFormatters.test.ts) | [e4dcb70](https://github.com/idvorkin/magic-monitor/blob/e4dcb70/src/utils/bugReportFormatters.test.ts) |
 
 ---
 
@@ -673,11 +678,178 @@ useEffect(() => {
 
 ---
 
+## Architecture Notes
+
+### Pure Function Extraction
+
+For testability, extract pure logic from React hooks into separate utility files:
+
+**src/utils/shakeDetection.ts** - Pure shake detection functions:
+
+```ts
+export interface Acceleration {
+  x: number;
+  y: number;
+  z: number;
+}
+
+export function calculateMagnitude(accel: Acceleration): number {
+  return Math.sqrt(accel.x ** 2 + accel.y ** 2 + accel.z ** 2);
+}
+
+export function isShakeDetected(
+  magnitude: number,
+  threshold: number,
+  currentTime: number,
+  lastShakeTime: number,
+  cooldownMs: number,
+): boolean {
+  if (magnitude <= threshold) return false;
+  return currentTime - lastShakeTime > cooldownMs;
+}
+
+export function extractAcceleration(
+  event: DeviceMotionEvent,
+): Acceleration | null {
+  const accel = event.acceleration ?? event.accelerationIncludingGravity;
+  const { x, y, z } = accel || {};
+  if (x == null || y == null || z == null) return null;
+  return { x, y, z };
+}
+```
+
+**src/utils/bugReportFormatters.ts** - Pure formatting functions:
+
+```ts
+export function formatDate(date: Date = new Date()): string {
+  return date.toLocaleDateString("en-US", {
+    year: "numeric",
+    month: "short",
+    day: "numeric",
+  });
+}
+
+export function buildDefaultTitle(): string {
+  return "Bug";
+}
+
+export function buildDefaultDescription(
+  latestCommit: LatestCommit | null,
+  githubRepoUrl: string,
+  currentDate: Date = new Date(),
+): string {
+  const dateStr = formatDate(currentDate);
+  const versionLine = latestCommit
+    ? `[${latestCommit.sha}](${latestCommit.url}) - ${latestCommit.message}`
+    : `[${githubRepoUrl}](${githubRepoUrl})`;
+
+  return `**Date:** ${dateStr}
+**Latest version:** ${versionLine}
+
+**What were you trying to do?**
+
+**What happened instead?**
+
+**Steps to reproduce:**
+1. `;
+}
+
+export function buildIssueBody(
+  data: BugReportData,
+  metadata: BugReportMetadata,
+  options: { isMobile: boolean; hasScreenshot: boolean },
+): string {
+  // ... builds full issue body with metadata table
+}
+
+export function buildGitHubIssueUrl(
+  repoUrl: string,
+  title: string,
+  body: string,
+  labels: string[] = ["bug", "from-app"],
+): string {
+  const url = new URL(`${repoUrl}/issues/new`);
+  url.searchParams.set("title", title);
+  url.searchParams.set("body", body);
+  url.searchParams.set("labels", labels.join(","));
+  return url.toString();
+}
+
+export function getMetadata(
+  getCurrentRoute: () => string,
+  getUserAgent: () => string,
+  currentDate: Date = new Date(),
+): BugReportMetadata {
+  return {
+    route: getCurrentRoute(),
+    userAgent: getUserAgent(),
+    timestamp: currentDate.toISOString(),
+    appVersion: APP_VERSION,
+  };
+}
+```
+
+**Benefits:**
+
+- Pure functions are easy to test without React testing utilities
+- No mocking of browser APIs required for core logic
+- Hooks become thin wrappers that compose pure functions with browser APIs
+- Clear separation between "what to compute" and "how to interact with the browser"
+
+---
+
 ## Testing Guidance
 
 ### Unit Tests
 
-**Shake detection:**
+**Shake detection (pure functions):**
+
+```ts
+describe("calculateMagnitude", () => {
+  it("calculates 3D magnitude using Pythagorean theorem", () => {
+    expect(calculateMagnitude({ x: 3, y: 4, z: 0 })).toBe(5);
+    expect(calculateMagnitude({ x: 1, y: 2, z: 2 })).toBe(3);
+  });
+});
+
+describe("isShakeDetected", () => {
+  it("returns true when magnitude exceeds threshold and cooldown passed", () => {
+    expect(isShakeDetected(30, 25, 3000, 0, 2000)).toBe(true);
+  });
+
+  it("returns false when still in cooldown period", () => {
+    expect(isShakeDetected(30, 25, 2500, 1000, 2000)).toBe(false);
+  });
+});
+```
+
+**Bug report formatters (pure functions):**
+
+```ts
+describe("buildDefaultDescription", () => {
+  it("includes commit info when provided", () => {
+    const commit = {
+      sha: "abc1234",
+      message: "Fix a bug",
+      url: "https://github.com/test/repo/commit/abc1234",
+    };
+    const result = buildDefaultDescription(commit, repoUrl, testDate);
+    expect(result).toContain(
+      "[abc1234](https://github.com/test/repo/commit/abc1234)",
+    );
+  });
+});
+
+describe("buildGitHubIssueUrl", () => {
+  it("builds valid URL with title and body", () => {
+    const url = buildGitHubIssueUrl(repoUrl, "Bug Title", "Bug body");
+    expect(url).toContain("title=Bug+Title");
+    expect(url).toContain("labels=bug%2Cfrom-app");
+  });
+});
+```
+
+**Shake detection (with mocks):**
 
 ```ts
 // Mock DeviceMotionEvent
