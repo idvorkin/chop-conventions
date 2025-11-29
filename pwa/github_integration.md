@@ -72,6 +72,98 @@ Each project adopting this spec can configure:
 
 ---
 
+## Build-Time Version Generation
+
+### Purpose
+
+Generate Git metadata at build time for displaying in the About dialog and including in bug reports. This provides the **exact deployed version**, not the latest commit from the API.
+
+### Generated Version File
+
+Add this to your build/deploy script (before bundling):
+
+```bash
+# Git metadata
+SHA=$(git rev-parse HEAD)
+BRANCH=$(git rev-parse --abbrev-ref HEAD)
+
+# Derive repo URL from git remote
+REPO_URL=$(git remote get-url origin | sed 's/\.git$//' | sed 's|git@github.com:|https://github.com/|')
+COMMIT_URL="$REPO_URL/commit/$SHA"
+CURRENT_URL="$REPO_URL/tree/$BRANCH"
+
+# Timestamp
+BUILD_TIME=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+
+# Output file (must be in .gitignore)
+cat > src/generated_version.ts <<EOF
+export const GIT_SHA = "$SHA";
+export const GIT_COMMIT_URL = "$COMMIT_URL";
+export const GIT_CURRENT_URL = "$CURRENT_URL";
+export const GIT_BRANCH = "$BRANCH";
+export const BUILD_TIMESTAMP = "$BUILD_TIME";
+EOF
+```
+
+**Important:** Add `src/generated_version.ts` to `.gitignore`. It must not be committed but must be bundled into the build output.
+
+### About Dialog
+
+Display build info in an About dialog or settings page:
+
+```tsx
+import {
+  GIT_SHA,
+  GIT_COMMIT_URL,
+  GIT_CURRENT_URL,
+  GIT_BRANCH,
+  BUILD_TIMESTAMP,
+} from "@/generated_version";
+
+export function AboutInfo() {
+  return (
+    <div>
+      <p>
+        Build:{" "}
+        <a href={GIT_COMMIT_URL} target="_blank" rel="noopener noreferrer">
+          {GIT_SHA.slice(0, 7)}
+        </a>{" "}
+        on{" "}
+        <a href={GIT_CURRENT_URL} target="_blank" rel="noopener noreferrer">
+          {GIT_BRANCH}
+        </a>
+      </p>
+      <p>Built: {BUILD_TIMESTAMP}</p>
+    </div>
+  );
+}
+```
+
+### Bug Reporter Integration
+
+Use the generated version instead of fetching from GitHub API:
+
+```ts
+import { GIT_SHA, GIT_COMMIT_URL, GIT_BRANCH } from "@/generated_version";
+
+export function buildDefaultDescription(): string {
+  const dateStr = formatDate(new Date());
+  return `**Date:** ${dateStr}
+**Build:** [${GIT_SHA.slice(0, 7)}](${GIT_COMMIT_URL}) on ${GIT_BRANCH}
+
+**What were you trying to do?**
+
+**What happened instead?**
+
+**Steps to reproduce:**
+1. `;
+}
+```
+
+**Benefits:** Works offline, no API rate limits, shows exact deployed version.
+
+---
+
 ## Feature 1: GitHub Repo Link
 
 ### Purpose
