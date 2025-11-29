@@ -44,12 +44,12 @@ The app should automatically detect the GitHub repository URL using this priorit
 
 Each project adopting this spec can configure:
 
-| Setting             | Required | Description                                                   |
-| ------------------- | -------- | ------------------------------------------------------------- |
-| `GITHUB_REPO_URL`   | No       | Override auto-detected repo URL                               |
-| `BUG_REPORT_LABELS` | No       | Default labels for issues (e.g., `["bug", "from-app"]`)       |
-| `SHAKE_THRESHOLD`   | No       | Acceleration threshold for shake detection (default: 15 m/s²) |
-| `SHAKE_COOLDOWN_MS` | No       | Cooldown between shake detections (default: 3000ms)           |
+| Setting             | Required | Description                                             |
+| ------------------- | -------- | ------------------------------------------------------- |
+| `GITHUB_REPO_URL`   | No       | Override auto-detected repo URL                         |
+| `BUG_REPORT_LABELS` | No       | Default labels for issues (e.g., `["bug", "from-app"]`) |
+| `SHAKE_THRESHOLD`   | No       | Acceleration magnitude threshold (default: 25)          |
+| `SHAKE_COOLDOWN_MS` | No       | Cooldown between shake detections (default: 2000ms)     |
 
 ---
 
@@ -192,8 +192,9 @@ The simplest approach is to prepare the bug report in-app, then open GitHub's "N
 **Behavior:**
 
 - Listen to `DeviceMotion` events
-- Trigger when acceleration magnitude exceeds threshold (~15 m/s²)
-- Apply cooldown (5 seconds) to prevent multiple triggers
+- Prefer `event.acceleration` (without gravity) over `accelerationIncludingGravity` for cleaner detection
+- Trigger when acceleration magnitude exceeds threshold (~25 m/s²)
+- Apply cooldown (2 seconds) to prevent multiple triggers
 - Only active when user has enabled "Shake to report bug" in settings
 
 **Precondition:** User must opt-in via Settings
@@ -262,10 +263,12 @@ When user opens bug report modal for the first time on a device with motion sens
 
 #### Step 3: Screenshot Capture
 
-**Important:** Close the bug report modal before capturing so it doesn't appear in the screenshot.
+**Platform-specific behavior:**
+
+**Desktop:**
 
 1. User clicks "Capture" button
-2. Modal closes temporarily
+2. Modal closes temporarily (so it doesn't appear in screenshot)
 3. Browser prompts for screen/tab selection via `getDisplayMedia`
 4. Capture single frame to canvas
 5. Stop video track immediately
@@ -290,13 +293,25 @@ canvas.width = video.videoWidth;
 canvas.height = video.videoHeight;
 canvas.getContext("2d").drawImage(video, 0, 0);
 
-stream.getTracks().forEach((track) => track.stop());
+for (const track of stream.getTracks()) {
+  track.stop();
+}
 
 // Reopen modal with screenshot
 onOpen();
 ```
 
 If user cancels or permission denied, proceed without screenshot.
+
+**Mobile:**
+
+There's no web API to save images directly to the photo album from a PWA. The `getDisplayMedia` API has limited support on mobile, and clipboard image copy often fails.
+
+**Recommended approach for mobile:** Don't offer in-app screenshot capture. Instead, show a message:
+
+> "Take a screenshot on your device, then attach it to the GitHub issue after submitting."
+
+This is simpler and more reliable than attempting download workarounds that may not save to Photos.
 
 #### Step 4: Submission
 
@@ -433,7 +448,7 @@ _(Screenshot captured - please upload manually to GitHub)_
 
 #### Screenshot Handling
 
-Screenshots are captured for preview in the modal. On submit:
+**Desktop only** - screenshots are captured for preview in the modal. On submit:
 
 1. If screenshot exists, copy the **image** to clipboard (not text)
 2. Open GitHub with pre-filled title/body
@@ -451,22 +466,24 @@ async function copyImageToClipboard(dataUrl: string): Promise<boolean> {
   }
 }
 
-// On submit:
-if (data.screenshot) {
+// On submit (desktop only):
+if (data.screenshot && !isMobileDevice()) {
   hasScreenshotOnClipboard = await copyImageToClipboard(data.screenshot);
 }
 if (!hasScreenshotOnClipboard) {
-  // Fallback: copy text if no screenshot or image copy failed
+  // Fallback: copy text if no screenshot or on mobile
   await navigator.clipboard.writeText(issueText);
 }
 ```
 
-The issue body should include a reminder:
+The issue body should include a reminder (desktop only):
 
 ```md
 **Screenshot**
 _(Screenshot is on your clipboard - paste it here with Ctrl+V / Cmd+V)_
 ```
+
+**Mobile:** Don't include screenshot section in issue body since user will attach manually.
 
 ---
 
@@ -492,23 +509,26 @@ _(Screenshot is on your clipboard - paste it here with Ctrl+V / Cmd+V)_
 ```tsx
 function useShakeDetector(options: {
   enabled: boolean;
-  threshold?: number;
-  cooldownMs?: number;
+  threshold?: number; // Default: 25
+  cooldownMs?: number; // Default: 2000
   onShake: () => void;
 }) {
   const lastShakeRef = useRef<number>(0);
 
   const handleMotion = useCallback(
     (event: DeviceMotionEvent) => {
-      const { x, y, z } = event.accelerationIncludingGravity || {};
+      // Prefer acceleration (without gravity) for cleaner shake detection
+      const accel = event.acceleration ?? event.accelerationIncludingGravity;
+      const { x, y, z } = accel || {};
       if (x == null || y == null || z == null) return;
 
       const magnitude = Math.sqrt(x * x + y * y + z * z);
-      const shakeAcceleration = Math.abs(magnitude - 9.8); // Subtract gravity
 
-      if (shakeAcceleration > (options.threshold || 15)) {
+      // When using acceleration (preferred), magnitude at rest is ~0
+      // A good shake produces magnitudes of 20-40+ m/s²
+      if (magnitude > (options.threshold || 25)) {
         const now = Date.now();
-        if (now - lastShakeRef.current > (options.cooldownMs || 3000)) {
+        if (now - lastShakeRef.current > (options.cooldownMs || 2000)) {
           lastShakeRef.current = now;
           options.onShake();
         }
@@ -597,6 +617,20 @@ function useBugReporter() {
   shakeEnabled={bugReporter.shakeEnabled}
   onShakeEnabledChange={bugReporter.setShakeEnabled}
 />
+
+// Mobile detection for conditional screenshot UI
+function isMobileDevice(): boolean {
+  return /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(
+    navigator.userAgent
+  );
+}
+
+// In BugReportModal, show different screenshot section:
+{isMobileDevice() ? (
+  <p>Take a screenshot on your device, then attach it to the GitHub issue after submitting.</p>
+) : (
+  <button onClick={handleCaptureScreenshot}>Capture Screenshot</button>
+)}
 ```
 
 ### Keyboard Shortcut
