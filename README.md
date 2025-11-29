@@ -4,9 +4,11 @@
 
 ## Intro
 
-This repository contains codified development practices, conventions, and setup guidelines designed to maximize productivity when working with AI coding assistants. The magic of "vibe coding" lies in AI's ability to infer intent from minimal input, but that magic becomes fragile without proper specifications and verification processes.
+This repository contains codified development practices, conventions, and setup guidelines designed to maximize productivity when working with AI coding assistants. **These conventions are designed to be pulled into many projects**—copy, symlink, or reference them as needed.
 
-This collection of conventions serves as the **specifications layer** that makes AI-assisted development consistent, reliable, and scalable across projects.
+The magic of "vibe coding" lies in AI's ability to infer intent from minimal input, but that magic becomes fragile without proper specifications and verification processes.
+
+This collection of conventions serves as the **specifications layer** that makes AI-assisted development consistent, reliable, and scalable across projects. Use this repo as a central source of truth, pulling in the conventions you need for each project.
 
 ## Why These Conventions Matter
 
