@@ -20,6 +20,7 @@ This spec is implemented in [magic-monitor](https://github.com/idvorkin/magic-mo
 | bugReport types      | [latest](https://github.com/idvorkin/magic-monitor/blob/main/src/types/bugReport.ts)                | [e4dcb70](https://github.com/idvorkin/magic-monitor/blob/e4dcb70/src/types/bugReport.ts)                |
 | shakeDetection tests | [latest](https://github.com/idvorkin/magic-monitor/blob/main/src/utils/shakeDetection.test.ts)      | [e4dcb70](https://github.com/idvorkin/magic-monitor/blob/e4dcb70/src/utils/shakeDetection.test.ts)      |
 | bugFormatters tests  | [latest](https://github.com/idvorkin/magic-monitor/blob/main/src/utils/bugReportFormatters.test.ts) | [e4dcb70](https://github.com/idvorkin/magic-monitor/blob/e4dcb70/src/utils/bugReportFormatters.test.ts) |
+| CrashFallback        | [latest](https://github.com/idvorkin/magic-monitor/blob/main/src/components/CrashFallback.tsx)       | [PR #17](https://github.com/idvorkin/magic-monitor/pull/17)                                             |
 
 ---
 
@@ -770,6 +771,140 @@ useEffect(() => {
 
 ---
 
+## Feature 3: Error Boundary with Crash Reporting
+
+### Purpose
+
+When runtime errors occur, users see a recovery interface instead of a blank error screen. This:
+
+- Prevents the app from appearing broken/frozen
+- Gives users a way to recover (reload)
+- Enables automatic crash reporting to GitHub with error details
+
+### Implementation
+
+**Dependencies:**
+
+```bash
+npm install react-error-boundary
+```
+
+**Wrap your app:**
+
+```tsx
+import { ErrorBoundary } from "react-error-boundary";
+import { CrashFallback } from "./components/CrashFallback";
+
+function App() {
+  return (
+    <ErrorBoundary FallbackComponent={CrashFallback}>
+      {/* Your app content */}
+    </ErrorBoundary>
+  );
+}
+```
+
+### CrashFallback Component
+
+```tsx
+import {
+  buildCrashReportBody,
+  buildGitHubIssueUrl,
+  formatBuildLink,
+  getMetadata,
+} from "../utils/bugReportFormatters";
+import { GIT_COMMIT_URL, GIT_SHA_SHORT } from "../generated_version";
+
+export function CrashFallback({ error }: { error: Error }) {
+  const metadata = getMetadata(
+    () => window.location.pathname,
+    () => navigator.userAgent,
+  );
+  const reportUrl = buildGitHubIssueUrl(
+    GITHUB_REPO_URL,
+    `Crash: ${error.message.slice(0, 50)}`,
+    buildCrashReportBody(error, metadata),
+    ["bug", "crash"],
+  );
+
+  return (
+    <div className="error-container">
+      <h1>Something went wrong</h1>
+      <p>{error.message}</p>
+      {error.stack && (
+        <pre className="stack-trace">{error.stack}</pre>
+      )}
+      <div className="actions">
+        <button onClick={() => window.location.reload()}>
+          Reload Page
+        </button>
+        <a href={reportUrl} target="_blank" rel="noopener noreferrer">
+          Report on GitHub
+        </a>
+      </div>
+      <p className="build-info">
+        Build: <a href={GIT_COMMIT_URL}>{GIT_SHA_SHORT}</a>
+      </p>
+    </div>
+  );
+}
+```
+
+### Crash Report Body Builder
+
+Add this to `bugReportFormatters.ts`:
+
+```ts
+export function buildCrashReportBody(
+  error: Error,
+  metadata: BugReportMetadata,
+): string {
+  return `**Error:** ${error.message}
+
+**Build:** ${formatBuildLink()}
+
+**Stack Trace:**
+\`\`\`
+${error.stack || "No stack trace available"}
+\`\`\`
+
+---
+
+**App Metadata**
+| Field | Value |
+|-------|-------|
+| Route | \`${metadata.route}\` |
+| App Version | ${formatBuildLink()} |
+| Browser | \`${metadata.userAgent}\` |
+| Timestamp | \`${metadata.timestamp}\` |
+`;
+}
+```
+
+### UX Mockup
+
+```
+┌─────────────────────────────────────────┐
+│                                         │
+│         Something went wrong            │
+│                                         │
+│  Cannot read property 'foo' of null     │
+│                                         │
+│  ┌─────────────────────────────────────┐│
+│  │ TypeError: Cannot read property...  ││
+│  │     at Component (App.tsx:42)       ││
+│  │     at renderWithHooks (react...)   ││
+│  └─────────────────────────────────────┘│
+│                                         │
+│     [Reload Page]  [Report on GitHub]   │
+│                                         │
+│         Build: abc1234                  │
+│                                         │
+└─────────────────────────────────────────┘
+```
+
+---
+
 ## Architecture Notes
 
 ### Pure Function Extraction
@@ -813,6 +948,11 @@ export function extractAcceleration(
 **src/utils/bugReportFormatters.ts** - Pure formatting functions:
 
 ```ts
+// DRY: Centralize build link formatting - used by bug reports, crash reports, about dialogs
+export function formatBuildLink(): string {
+  return `[${GIT_SHA_SHORT}](${GIT_COMMIT_URL})`;
+}
+
 export function formatDate(date: Date = new Date()): string {
   return date.toLocaleDateString("en-US", {
     year: "numeric",
@@ -826,17 +966,13 @@ export function buildDefaultTitle(): string {
 }
 
 export function buildDefaultDescription(
-  latestCommit: LatestCommit | null,
-  githubRepoUrl: string,
   currentDate: Date = new Date(),
 ): string {
   const dateStr = formatDate(currentDate);
-  const versionLine = latestCommit
-    ? `[${latestCommit.sha}](${latestCommit.url}) - ${latestCommit.message}`
-    : `[${githubRepoUrl}](${githubRepoUrl})`;
 
+  // DRY: Use formatBuildLink() for consistent build version display
   return `**Date:** ${dateStr}
-**Latest version:** ${versionLine}
+**Build:** ${formatBuildLink()}
 
 **What were you trying to do?**
 
