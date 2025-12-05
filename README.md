@@ -47,6 +47,7 @@ Read the directions in https://github.com/idvorkin/chop-conventions/tree/main/de
 - CI/CD pipeline templates
 - Pre-commit hooks and automated checks
 - Development workflow optimization
+- **[Beads](./dev-setup/beads.md)** - Git-backed issue tracking for AI agents
 
 ## Philosophy
 
