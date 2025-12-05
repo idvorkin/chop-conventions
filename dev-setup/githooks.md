@@ -91,3 +91,32 @@ run precommit on them
 ask user to commit manually
 
 #### Pre-commit all files in repo so future changes don't have linting in them.
+
+### Beads Integration
+
+If using [beads](./beads.md) for issue tracking, add these git hooks for zero-lag sync:
+
+**.githooks/pre-commit** (sync before commit):
+
+```bash
+#!/bin/bash
+if command -v bd &> /dev/null && [ -d ".beads" ]; then
+    bd sync --quiet 2>/dev/null || true
+fi
+```
+
+**.githooks/post-merge** (sync after pull/merge):
+
+```bash
+#!/bin/bash
+if command -v bd &> /dev/null && [ -d ".beads" ]; then
+    bd sync --quiet 2>/dev/null || true
+fi
+```
+
+Enable with:
+
+```bash
+git config core.hooksPath .githooks
+chmod +x .githooks/pre-commit .githooks/post-merge
+```
