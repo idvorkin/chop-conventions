@@ -24,10 +24,12 @@ Copy or symlink the relevant conventions into your project. The conventions are 
 
 ## Convention Updates
 
-**Last reviewed:** _YYYY-MM-DD_
+**Last reviewed:** _YYYY-MM-DD (chop-conventions @ COMMIT_ID)_
 
 Projects using chop-conventions should periodically:
 
 1. **Pull updates** - Check https://github.com/idvorkin/chop-conventions for new conventions or improvements
 2. **Push improvements** - If you've developed useful patterns locally, submit a PR to chop-conventions
-3. **Update this date** - After reviewing, update the "Last reviewed" date above
+3. **Update this date** - After reviewing, update the "Last reviewed" date and commit ID above
+
+Example: `**Last reviewed:** 2025-12-05 (chop-conventions @ eb34d6e)`
