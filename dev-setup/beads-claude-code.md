@@ -1,6 +1,6 @@
 # Beads + Claude Code Integration
 
-Best practices for using [beads](https://github.com/beads-project/beads) issue tracking with Claude Code.
+Best practices for using [beads](https://github.com/steveyegge/beads) issue tracking with Claude Code.
 
 ## Status Line Configuration
 
