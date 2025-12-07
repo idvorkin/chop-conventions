@@ -1,8 +1,11 @@
 # Pull Request Workflow
 
+> **Note:** This workflow applies to **Human-Supervised Mode** (primary repos like `idvorkin/*`).
+> For AI-tools repos (`idvorkin-ai-tools/*`), see [repo-modes.md](./repo-modes.md) for different guardrails.
+
 ## Core Principles
 
-- **Never make changes directly on the main branch**
+- **Never make changes directly on the main branch** (in human-supervised repos)
 - Always create an issue first and iterate with the user until requirements are clear
 - Use the `gh` CLI for all GitHub operations
 - Include test plans in every issue and PR
@@ -14,7 +17,6 @@
 Before starting any work:
 
 1. **Draft the issue with the user**
-
    - Discuss the problem/feature with the user
    - Create a draft issue description
    - Iterate on the issue until you're confident you understand:
@@ -121,7 +123,6 @@ During code review:
    ```
 
 2. **After fixing review comments**
-
    - Ask the user: "Should I update the review comment to show it's been addressed?"
    - If yes, respond to the comment explaining what was changed
 
