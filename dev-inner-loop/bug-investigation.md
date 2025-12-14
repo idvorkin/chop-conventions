@@ -37,7 +37,7 @@ Before fixing ANY bug, stop and answer these questions. This prevents patching s
 
 ## The Protocol
 
-```
+```text
 1. STOP - Don't immediately fix
 2. SPEC - Is this actually a bug? Ask if unclear
 3. TEST - Why no test? Add one first

@@ -10,7 +10,7 @@ Run retrospectives periodically (weekly recommended) to review human-AI collabor
 
 ## Storage
 
-```
+```text
 retros/
   _retro_state.json    # Tracks last run date, covers all project instances
   YYYY-MM-DD.md        # Individual retro reports
@@ -41,17 +41,28 @@ git log --since="1 week ago" --oneline | wc -l
 
 **For log analysis, use a subagent:**
 
-```
+The goal is to understand what went wrong and find **improvements**, not just count issues. Use subagents to read the raw logs and examine actual user-agent interactions.
+
+```text
 Use the Task tool with subagent_type="general-purpose" to analyze ~/.claude/history.jsonl:
-- Filter for messages since [date]
-- Extract friction patterns (user corrections starting with "no", "wrong", etc.)
-- Count messages by project
-- Return a summary, not the raw data
+- Read raw conversation logs to understand what actually happened
+- Find friction moments: where did the user correct the agent? What did Claude do wrong?
+- Look at Claude's actual responses before corrections to understand root causes
+- Identify patterns that suggest workflow or instruction improvements
+- Return findings organized by improvement opportunity, not just counts
 ```
+
+**Subagent output should include:**
+
+- Start date and end date of analysis period
+- Directories/projects analyzed
+- Friction patterns found with specific examples
+- What Claude did wrong in each case
+- Recommended improvements to CLAUDE.md or workflows
 
 Example subagent prompt:
 
-> "Analyze ~/.claude/history.jsonl for the past week. Find friction patterns where user corrected the agent (messages starting with 'no', 'wrong', 'try again', 'not what'). Count messages per project. Return a summary table of findings, not raw data."
+> "Analyze ~/.claude/history.jsonl for the past week starting from [DATE]. For each project directory, find friction patterns where the user corrected the agent. Read the actual conversation: what did the user ask? What did Claude do? Why was it wrong? Group findings by improvement opportunity (e.g., 'Claude keeps doing X when user wants Y'). Include the start date, directories analyzed, and specific recommendations for CLAUDE.md updates."
 
 ## Retro Template
 
@@ -74,9 +85,9 @@ Example subagent prompt:
 
 ## Friction Analysis
 
-| Pattern   | Count | Example          | Root Cause        |
-| --------- | ----- | ---------------- | ----------------- |
-| [Pattern] | X     | "No, I meant..." | [Why it happened] |
+| Pattern   | Example                    | What Claude Did Wrong | Improvement                 |
+| --------- | -------------------------- | --------------------- | --------------------------- |
+| [Pattern] | "No, I meant..." (context) | [Claude's mistake]    | [CLAUDE.md or workflow fix] |
 
 ## Workflow Recommendations
 
@@ -120,13 +131,17 @@ If multiple agent instances work on the same codebase (e.g., swing-1 through swi
 
 ## Privacy Check
 
-Before committing retros, scan for sensitive data:
+Before committing retros, read the complete retro file and scan for sensitive data:
+
+1. **Read the whole retro** - Don't just grep; read the file in Claude to catch context-dependent leaks
+2. **Look for**: API keys, tokens, passwords, auth keys, Tailscale keys, credentials, internal URLs
+3. **Common false positives**: "keypoint", "key files", "key insight"
+
+Quick grep check:
 
 ```bash
-grep -iE "token|tskey|secret|password|api.key|credential|auth-key" .claude/retros/*.md
+grep -iE "token|tskey|secret|password|api.key|credential|auth-key" retros/*.md
 ```
-
-Common false positives: "keypoint", "key files", "key insight"
 
 ## Applying Learnings
 
