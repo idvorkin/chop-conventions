@@ -20,7 +20,7 @@ This spec is implemented in [magic-monitor](https://github.com/idvorkin/magic-mo
 | bugReport types      | [latest](https://github.com/idvorkin/magic-monitor/blob/main/src/types/bugReport.ts)                | [e4dcb70](https://github.com/idvorkin/magic-monitor/blob/e4dcb70/src/types/bugReport.ts)                |
 | shakeDetection tests | [latest](https://github.com/idvorkin/magic-monitor/blob/main/src/utils/shakeDetection.test.ts)      | [e4dcb70](https://github.com/idvorkin/magic-monitor/blob/e4dcb70/src/utils/shakeDetection.test.ts)      |
 | bugFormatters tests  | [latest](https://github.com/idvorkin/magic-monitor/blob/main/src/utils/bugReportFormatters.test.ts) | [e4dcb70](https://github.com/idvorkin/magic-monitor/blob/e4dcb70/src/utils/bugReportFormatters.test.ts) |
-| CrashFallback        | [latest](https://github.com/idvorkin/magic-monitor/blob/main/src/components/CrashFallback.tsx)       | [PR #17](https://github.com/idvorkin/magic-monitor/pull/17)                                             |
+| CrashFallback        | [latest](https://github.com/idvorkin/magic-monitor/blob/main/src/components/CrashFallback.tsx)      | [PR #17](https://github.com/idvorkin/magic-monitor/pull/17)                                             |
 
 ---
 
@@ -831,13 +831,9 @@ export function CrashFallback({ error }: { error: Error }) {
     <div className="error-container">
       <h1>Something went wrong</h1>
       <p>{error.message}</p>
-      {error.stack && (
-        <pre className="stack-trace">{error.stack}</pre>
-      )}
+      {error.stack && <pre className="stack-trace">{error.stack}</pre>}
       <div className="actions">
-        <button onClick={() => window.location.reload()}>
-          Reload Page
-        </button>
+        <button onClick={() => window.location.reload()}>Reload Page</button>
         <a href={reportUrl} target="_blank" rel="noopener noreferrer">
           Report on GitHub
         </a>
@@ -902,6 +898,19 @@ ${error.stack || "No stack trace available"}
 │                                         │
 └─────────────────────────────────────────┘
 ```
+
+---
+
+## Feature 4: Session Debug Log (Flight Recorder)
+
+See **[session_recorder.md](./session_recorder.md)** for the full specification.
+
+Captures user actions, console output, errors, and environment info in IndexedDB for debugging. Key features:
+
+- Multi-session persistence for crash recovery
+- Auto-save every 5 seconds
+- Rich environment capture (WebGL, codecs, hardware)
+- Console debug interface (`appDebug.getCrashLogs()`, etc.)
 
 ---
 
