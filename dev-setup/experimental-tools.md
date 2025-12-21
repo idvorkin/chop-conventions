@@ -2,44 +2,11 @@
 
 Tools we're evaluating for potential integration into our workflow. Status and notes tracked here.
 
-## TheAuditor
+## ~~TheAuditor~~ (Not Recommended)
 
 **Repository:** https://github.com/TheAuditorTool/Auditor
 
-Database-first static analysis and code context intelligence platform. Indexes entire codebases into SQLite databases for sub-second queries after initial indexing.
-
-### Key Features
-
-- 200+ detection functions across 25 rule categories
-- Taint analysis, vulnerability detection, dead code identification
-- "Four-Vector Convergence Engine" - finds high-risk code by overlapping static analysis, structural complexity, git churn, and data flow signals
-- Supports Python, JavaScript/TypeScript, Go, Rust, Bash, Terraform
-
-### Installation
-
-```bash
-pip install theauditor
-# or from source
-git clone https://github.com/TheAuditorTool/Auditor.git
-cd Auditor && pip install -e .
-```
-
-**Requires Python 3.14+** (PEP 649 annotation handling)
-
-### Basic Usage
-
-```bash
-aud full                    # Index entire codebase
-aud blueprint --structure   # View architecture
-aud taint --severity high   # Find security issues
-aud query --symbol X        # Query specific symbols
-aud impact --symbol Y       # Calculate change blast radius
-```
-
-### Status
-
-- [ ] Evaluate on a test project
-- [ ] Test integration with Claude Code workflow
+Evaluated and found not useful. Skip.
 
 ---
 
