@@ -111,5 +111,4 @@ Returns relevant rules, anti-patterns, and historical context as structured JSON
 
 ## Related Tools (Not Yet Evaluated)
 
-- [Ultimate MCP Server](https://github.com/Dicklesworthstone/ultimate_mcp_server) - Comprehensive MCP-native system with cognitive memory, browser automation, database interactions, etc.
 - [MCP Agent Mail](https://github.com/Dicklesworthstone/mcp_agent_mail) - Inter-agent communication ("gmail for coding agents")
