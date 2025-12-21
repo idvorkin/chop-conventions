@@ -250,6 +250,21 @@ bd sync --status            # Check sync status
 
 ## Troubleshooting
 
+**Worktree error: "branch is already checked out"**
+
+```
+Error pulling from sync branch: failed to create worktree: exit status 128
+fatal: 'main' is already checked out at '/path/to/repo'
+```
+
+Beads uses git worktrees for sync. If `sync.branch` equals your current branch, this fails. Fix:
+
+```bash
+git branch beads-sync main
+git push -u origin beads-sync
+bd config set sync.branch beads-sync
+```
+
 **"Blocked operation not yet supported via daemon"**
 
 - Some operations require direct database access

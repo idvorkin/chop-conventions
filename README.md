@@ -72,6 +72,14 @@ The goal is to create a feedback loop where:
 - 🛠 **[Dev Setup Guide](./dev-setup/)** - Practical implementation instructions
 - 💡 **[Contributing](./CONTRIBUTING.md)** - How to improve these conventions _(coming soon)_
 
+## Referenced Repositories
+
+External repos we pull conventions from. Periodically check for updates.
+
+| Repository                                                                                                    | What We Use              | Last Reviewed          |
+| ------------------------------------------------------------------------------------------------------------- | ------------------------ | ---------------------- |
+| [misc_coding_agent_tips_and_scripts](https://github.com/Dicklesworthstone/misc_coding_agent_tips_and_scripts) | Safety hooks, beads tips | 2025-12-21 @ `02e68d8` |
+
 ---
 
 _Part of [idvork.in](https://idvork.in)'s ecosystem for thoughtful technology practices._

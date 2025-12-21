@@ -2,6 +2,8 @@
 
 Actions the agent can NEVER take without explicit user approval. Approval means the user must type "YES" to confirm.
 
+> **Enforcement**: These rules can be mechanically enforced via [Claude Code safety hooks](../dev-setup/claude-safety-hooks.md). Instructions alone don't prevent accidents—hooks do.
+
 ## Requires "YES" Approval
 
 - **Removing broken tests** - Fix the test or fix the code, but never delete a failing test without explicit approval
