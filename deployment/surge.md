@@ -2,6 +2,17 @@
 
 Deploy static sites to [Surge.sh](https://surge.sh) with GitHub Actions. Supports PR previews and automatic teardown.
 
+## Features
+
+- **Production deploys** on push to main
+- **PR preview deploys** with auto-comment showing preview URL
+- **Auto-teardown** of PR previews when PR closes
+- **Secure** two-stage workflow pattern (fork PRs can't access secrets)
+- **Debuggable** with 3 distinct jobs in GitHub Actions logs:
+  - `Deploy Main to Production`
+  - `Deploy PR Preview`
+  - `Teardown PR Preview`
+
 ## Quick Start
 
 1. Copy the workflow files to your repo
