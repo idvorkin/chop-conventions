@@ -78,51 +78,20 @@ permissions:
   actions: read
 
 jobs:
-  deploy:
+  deploy-main:
     if: |
       github.event_name == 'workflow_run' &&
-      github.event.workflow_run.conclusion == 'success'
+      github.event.workflow_run.conclusion == 'success' &&
+      github.event.workflow_run.event == 'push'
     runs-on: ubuntu-latest
-    name: Deploy to Surge
+    name: Deploy Main to Production
     environment: surge-deploy
 
     steps:
-      - name: Get deployment info
-        id: info
-        uses: actions/github-script@f28e40c7f34bde8b3046d885e986cb6290c5673b # v7
-        with:
-          script: |
-            const isMain = context.payload.workflow_run.event === 'push';
-
-            if (isMain) {
-              core.setOutput('artifact_name', 'dist-main');
-              core.setOutput('domain', '${{ secrets.SURGE_DOMAIN }}');
-              core.setOutput('is_pr', 'false');
-              return;
-            }
-
-            const headSha = context.payload.workflow_run.head_sha;
-            const { data: prs } = await github.rest.pulls.list({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              state: 'open',
-              head: `${context.payload.workflow_run.head_repository.owner.login}:${context.payload.workflow_run.head_branch}`
-            });
-
-            const pr = prs.find(p => p.head.sha === headSha);
-            if (pr) {
-              core.setOutput('artifact_name', `dist-pr-${pr.number}`);
-              core.setOutput('domain', `pr-${pr.number}-${process.env.SURGE_DOMAIN || 'your-app'}.surge.sh`);
-              core.setOutput('pr_number', pr.number);
-              core.setOutput('is_pr', 'true');
-            } else {
-              core.setFailed(`Could not find PR for SHA ${headSha}`);
-            }
-
       - name: Download build artifact
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
-          name: ${{ steps.info.outputs.artifact_name }}
+          name: dist-main
           path: dist
           run-id: ${{ github.event.workflow_run.id }}
           github-token: ${{ secrets.GITHUB_TOKEN }}
@@ -133,15 +102,61 @@ jobs:
           node-version: 20
 
       - name: Deploy to Surge
-        run: npx surge ./dist "${{ steps.info.outputs.domain }}" --token "${{ secrets.SURGE_TOKEN }}"
+        run: npx surge ./dist "${{ secrets.SURGE_DOMAIN }}" --token "${{ secrets.SURGE_TOKEN }}"
 
-      - name: Comment PR with preview URL
-        if: steps.info.outputs.is_pr == 'true'
+  deploy-pr:
+    if: |
+      github.event_name == 'workflow_run' &&
+      github.event.workflow_run.conclusion == 'success' &&
+      github.event.workflow_run.event == 'pull_request'
+    runs-on: ubuntu-latest
+    name: Deploy PR Preview
+    environment: surge-deploy
+
+    steps:
+      - name: Get PR info
+        id: pr
         uses: actions/github-script@f28e40c7f34bde8b3046d885e986cb6290c5673b # v7
         with:
           script: |
-            const prNumber = ${{ steps.info.outputs.pr_number }};
-            const domain = '${{ steps.info.outputs.domain }}';
+            const headSha = context.payload.workflow_run.head_sha;
+            const { data: prs } = await github.rest.pulls.list({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              state: 'open',
+              head: `${context.payload.workflow_run.head_repository.owner.login}:${context.payload.workflow_run.head_branch}`
+            });
+
+            const pr = prs.find(p => p.head.sha === headSha);
+            if (pr) {
+              core.setOutput('number', pr.number);
+              core.setOutput('domain', `pr-${pr.number}-${{ secrets.SURGE_DOMAIN }}`);
+            } else {
+              core.setFailed(`Could not find PR for SHA ${headSha}`);
+            }
+
+      - name: Download build artifact
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: dist-pr-${{ steps.pr.outputs.number }}
+          path: dist
+          run-id: ${{ github.event.workflow_run.id }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Setup Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 20
+
+      - name: Deploy to Surge
+        run: npx surge ./dist "${{ steps.pr.outputs.domain }}" --token "${{ secrets.SURGE_TOKEN }}"
+
+      - name: Comment PR with preview URL
+        uses: actions/github-script@f28e40c7f34bde8b3046d885e986cb6290c5673b # v7
+        with:
+          script: |
+            const prNumber = ${{ steps.pr.outputs.number }};
+            const domain = '${{ steps.pr.outputs.domain }}';
             const body = `## Surge Preview
 
             Your preview is ready!
@@ -174,7 +189,7 @@ jobs:
               });
             }
 
-  teardown:
+  teardown-pr:
     if: |
       github.event_name == 'pull_request_target' &&
       github.event.action == 'closed'
@@ -212,10 +227,10 @@ surge token
 
 In the `surge-deploy` environment:
 
-| Secret         | Value                         | Example           |
-| -------------- | ----------------------------- | ----------------- |
-| `SURGE_TOKEN`  | Your token from `surge token` | `abc123...`       |
-| `SURGE_DOMAIN` | Your surge domain             | `my-app.surge.sh` |
+| Secret         | Value                                    | Example           |
+| -------------- | ---------------------------------------- | ----------------- |
+| `SURGE_TOKEN`  | Your token from `surge token`            | `abc123...`       |
+| `SURGE_DOMAIN` | Your surge domain (no `https://` prefix) | `my-app.surge.sh` |
 
 ### 4. Rotate Token
 
@@ -227,7 +242,7 @@ surge token | gh secret set SURGE_TOKEN --repo OWNER/REPO --env surge-deploy
 
 The two-stage workflow pattern safely handles untrusted PR code:
 
-```
+```text
 ┌─────────────────────────────────────────────────────────────────┐
 │ Stage 1: Build Workflow (build.yml)                             │
 │ - Triggers on: push to main, pull_request                       │
@@ -292,6 +307,7 @@ deploy-prod: test build
 - Verify `SURGE_TOKEN` is valid: `surge token`
 - Check `SURGE_DOMAIN` format (no `https://` prefix)
 - Ensure secrets are in the `surge-deploy` environment (not repo secrets)
+- Check if `surge-deploy` environment has deployment branch restrictions that might be blocking
 
 ### Site Not Updating
 
