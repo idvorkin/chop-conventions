@@ -113,7 +113,7 @@ jobs:
           node-version: 20
 
       - name: Deploy to Surge
-        run: npx surge ./dist "${{ secrets.SURGE_DOMAIN }}" --token "${{ secrets.SURGE_TOKEN }}"
+        run: npx surge ./dist "${{ vars.SURGE_DOMAIN }}" --token "${{ secrets.SURGE_TOKEN }}"
 
   deploy-pr:
     if: |
@@ -141,7 +141,7 @@ jobs:
             const pr = prs.find(p => p.head.sha === headSha);
             if (pr) {
               core.setOutput('number', pr.number);
-              core.setOutput('domain', `pr-${pr.number}-${{ secrets.SURGE_DOMAIN }}`);
+              core.setOutput('domain', `pr-${pr.number}-${{ vars.SURGE_DOMAIN }}`);
             } else {
               core.setFailed(`Could not find PR for SHA ${headSha}`);
             }
@@ -215,10 +215,10 @@ jobs:
           node-version: 20
 
       - name: Teardown Surge deployment
-        run: npx surge teardown "pr-${{ github.event.pull_request.number }}-${{ secrets.SURGE_DOMAIN }}" --token "${{ secrets.SURGE_TOKEN }}"
+        run: npx surge teardown "pr-${{ github.event.pull_request.number }}-${{ vars.SURGE_DOMAIN }}" --token "${{ secrets.SURGE_TOKEN }}"
 ```
 
-## GitHub Secrets Setup
+## GitHub Configuration
 
 ### 1. Get Your Surge Token
 
@@ -234,14 +234,34 @@ surge token
 2. Click **New environment**
 3. Name it `surge-deploy`
 
-### 3. Add Secrets
+### 3. Add Secret and Variable
 
-In the `surge-deploy` environment:
+**Secret** (sensitive, hidden in logs):
 
-| Secret         | Value                                    | Example           |
-| -------------- | ---------------------------------------- | ----------------- |
-| `SURGE_TOKEN`  | Your token from `surge token`            | `abc123...`       |
-| `SURGE_DOMAIN` | Your surge domain (no `https://` prefix) | `my-app.surge.sh` |
+```bash
+gh secret set SURGE_TOKEN --repo OWNER/REPO --env surge-deploy --body "your-surge-token"
+```
+
+**Variable** (non-sensitive, visible in logs):
+
+```bash
+gh variable set SURGE_DOMAIN --repo OWNER/REPO --body "my-app.surge.sh"
+```
+
+| Name           | Type         | Value                                    | Example           |
+| -------------- | ------------ | ---------------------------------------- | ----------------- |
+| `SURGE_TOKEN`  | **Secret**   | Your token from `surge token`            | `abc123...`       |
+| `SURGE_DOMAIN` | **Variable** | Your surge domain (no `https://` prefix) | `my-app.surge.sh` |
+
+### Why Use a Variable for Domain?
+
+Use `vars.SURGE_DOMAIN` instead of `secrets.SURGE_DOMAIN` because:
+
+- **Visibility**: Domain names aren't sensitive—seeing them in logs helps debug deployment issues
+- **Debugging**: When deployments fail, you can verify the correct domain was used
+- **Transparency**: Team members can see where the app deploys without needing secrets access
+
+Reserve `secrets.*` for truly sensitive values like tokens and API keys.
 
 ### 4. Rotate Token
 
@@ -330,3 +350,4 @@ deploy-prod: test build
 
 - [idvorkin-ai-tools/hello-surge](https://github.com/idvorkin-ai-tools/hello-surge) - Minimal starter
 - [idvorkin/igor-breathe](https://github.com/idvorkin/igor-breathe) - Full PWA example
+- [idvorkin/religion-evolution-explorer](https://github.com/idvorkin/religion-evolution-explorer) - D3 visualization PWA
