@@ -104,7 +104,7 @@ git pull origin main
 
 ### On feature branch with PR
 
-- **PR merged** → Switch to main, sync properly, delete branch:
+- **PR merged** → Switch to main, sync properly, delete branch (no need to ask; it's already merged):
 
   ```bash
   BRANCH=$(git branch --show-current)
@@ -200,7 +200,7 @@ Then take the actions and report results.
 ## Safety Rules
 
 - NEVER force push
-- NEVER delete unmerged branches without asking
+- NEVER delete unmerged branches without asking (deleting merged branches is OK without asking)
 - NEVER commit uncommitted changes without user approval
 - NEVER discard changes without explicit user confirmation
 - Always preserve user's work
