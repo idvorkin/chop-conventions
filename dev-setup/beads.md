@@ -276,6 +276,21 @@ bd config set sync.branch beads-sync
 - Check `.beads/config.yaml` for sync-branch setting
 - Ensure git hooks are installed
 
+**Permission denied on `bd sync` (fork-based workflows)**
+
+If you use a fork workflow (`origin` = your fork, `upstream` = main repo), the `beads-metadata` branch may be tracking the wrong remote:
+
+```bash
+# Check current tracking
+git branch -vv | grep beads-metadata
+
+# If it shows "upstream" instead of "origin", fix it:
+git branch --set-upstream-to=origin/beads-metadata beads-metadata
+
+# Now sync will push to your fork
+bd sync
+```
+
 **Stale `in_progress` issues**
 
 - Review with `bd list --status=in_progress`
