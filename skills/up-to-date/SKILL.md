@@ -104,10 +104,28 @@ git pull origin main
 
 ### On feature branch with PR
 
-- **PR merged** → Switch to main, sync properly, delete branch (no need to ask; it's already merged):
+- **PR merged** → Check for leftover commits, then switch to main and sync:
 
   ```bash
   BRANCH=$(git branch --show-current)
+
+  # Check if there are commits on feature branch that didn't make it into the PR
+  # (e.g., commits made after PR was merged)
+  SOURCE_REMOTE=$(git remote | grep -q '^upstream$' && echo "upstream" || echo "origin")
+  git fetch $SOURCE_REMOTE main
+  COMMITS_NOT_IN_MAIN=$(git log --oneline $SOURCE_REMOTE/main..$BRANCH | wc -l)
+
+  if [ "$COMMITS_NOT_IN_MAIN" -gt 0 ]; then
+      echo "⚠️  Found $COMMITS_NOT_IN_MAIN commit(s) on $BRANCH not in $SOURCE_REMOTE/main:"
+      git log --oneline $SOURCE_REMOTE/main..$BRANCH
+      echo ""
+      echo "These commits were made after the PR merged."
+      # ASK USER: "Do you want to create a new PR for these commits?"
+      # If YES: Keep branch, ask for PR title/description
+      # If NO: Cherry-pick to main, push, then delete branch
+  fi
+
+  # After handling leftover commits, switch to main and sync
   git checkout main
 
   # Sync main with source of truth
@@ -118,7 +136,7 @@ git pull origin main
       git pull origin main
   fi
 
-  git branch -d "$BRANCH"
+  git branch -d "$BRANCH"  # Or -D if commits were cherry-picked
   ```
 
 - **PR closed (not merged)** → Ask user: delete branch or keep working?
@@ -200,7 +218,7 @@ Then take the actions and report results.
 ## Safety Rules
 
 - NEVER force push
-- NEVER delete unmerged branches without asking (deleting merged branches is OK without asking)
+- NEVER delete unmerged branches without asking
 - NEVER commit uncommitted changes without user approval
 - NEVER discard changes without explicit user confirmation
 - Always preserve user's work
