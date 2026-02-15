@@ -215,6 +215,16 @@ Then summarize findings in a table:
 
 Then take the actions and report results.
 
+## Post-Sync: Offer Context Clear
+
+After all sync actions are complete and the summary is shown, ask the user if they'd like to clear their conversation context (via `/clear`). This is useful because:
+
+- They often run `/up-to-date` at the start of a new work session
+- The previous conversation context may be stale or irrelevant
+- A fresh context helps avoid confusion from old file reads and outdated state
+
+Simply ask: "Want to `/clear` context for a fresh start?"
+
 ## Safety Rules
 
 - NEVER force push
