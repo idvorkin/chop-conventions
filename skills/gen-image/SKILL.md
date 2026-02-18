@@ -1,7 +1,7 @@
 ---
 name: gen-image
 description: "Analyze content and generate illustrations via Gemini image API"
-argument-hint: "<post-or-topic> [--style 'description'] [--api-url 'gemini-endpoint']"
+argument-hint: "<post-or-topic> [--style 'description'] [--ref 'image-path'] [--api-url 'gemini-endpoint']"
 allowed-tools: Bash, Read, Write, Glob, Grep, AskUserQuestion, WebFetch
 ---
 
@@ -15,9 +15,10 @@ Parse the user's input for:
 
 - **Target**: A file path (e.g., `_d/four-healths.md`) or a freeform topic (e.g., "meditation benefits")
 - **`--style 'description'`**: Override the default illustration style entirely
+- **`--ref 'path'`**: One or more reference images for character consistency (can be repeated). When using the default raccoon style, **always** pass the canonical reference image (see below) unless the user opts out
 - **`--api-url 'url'`**: Override the Gemini API endpoint (default below)
 - **`--count N`**: Max number of images to generate (default: 3)
-- **`--aspect 'W:H'`**: Aspect ratio hint in the prompt (default: 3:4, portrait)
+- **`--aspect 'W:H'`**: Aspect ratio via `imageConfig` (default: 3:4, portrait). Valid values: `1:1`, `2:3`, `3:2`, `3:4`, `4:3`, `4:5`, `5:4`, `9:16`, `16:9`, `21:9`
 
 ## Configuration
 
@@ -29,9 +30,19 @@ Parse the user's input for:
 
 When no `--style` is given, use this base style:
 
-> Cute anthropomorphic raccoon character, big rainbow round glasses, green t-shirt with bold white text, blue left Croc and yellow right Croc, soft plush 3D/vinyl illustration, big friendly eyes, studio softbox lighting, clean pastel background, subtle vintage film grain, children's book style. Full body.
+> Cute anthropomorphic raccoon character with chibi proportions (oversized head, small body), dark raccoon mask markings around eyes, big friendly dark eyes, small black nose, round brown ears with lighter inner ear, soft brown felt/plush fur, striped ringed tail with brown and dark brown bands. Wearing big round rainbow-colored glasses (frames cycle through red, orange, yellow, green, blue, purple), green t-shirt with bold white text, blue denim shorts, IMPORTANT: mismatched Crocs shoes — one BLUE Croc on the left foot and one YELLOW Croc on the right foot (never the same color on both feet). Soft plush 3D/vinyl toy illustration style, studio softbox lighting, clean warm pastel background, subtle vintage film grain, children's book style. Full body.
 
 When `--style` is provided, it **replaces** the default entirely (it is not appended).
+
+### Canonical Reference Image
+
+For raccoon-style generations, always pass a reference image to maintain character consistency across generations. The canonical reference is:
+
+```
+~/gits/blog7/images/raccoon-nerd.webp
+```
+
+This image contains the clearest full-body shot with all defining traits visible. Pass it as a reference image to every raccoon generation unless the user explicitly opts out.
 
 ## Workflow
 
@@ -89,18 +100,34 @@ For each approved illustration:
    SKILL_DIR="$(dirname "$(find ~/gits/chop-conventions/skills/gen-image -name 'gemini-image.sh' -print -quit)")"
    ```
 
-3. Generate each image:
+3. Resolve the reference image path (for raccoon style):
 
    ```bash
-   bash "$SKILL_DIR/gemini-image.sh" \
+   REF_IMAGE="$(ls ~/gits/blog7/images/raccoon-nerd.webp 2>/dev/null || ls ~/gits/blog*/images/raccoon-nerd.webp 2>/dev/null | head -1)"
+   ```
+
+4. Generate each image (with reference image and aspect ratio):
+
+   ```bash
+   ASPECT_RATIO="3:4" bash "$SKILL_DIR/gemini-image.sh" \
+     "Generate this character in a new scene: THE FULL PROMPT HERE" \
+     "/path/to/output/filename.webp" \
+     "API_URL_IF_OVERRIDDEN" \
+     "$REF_IMAGE"
+   ```
+
+   Without reference images (custom style):
+
+   ```bash
+   ASPECT_RATIO="3:4" bash "$SKILL_DIR/gemini-image.sh" \
      "THE FULL PROMPT HERE" \
      "/path/to/output/filename.webp" \
      "API_URL_IF_OVERRIDDEN"
    ```
 
-4. After each image is generated, show it to the user by reading the file with the Read tool (which renders images inline)
+5. After each image is generated, show it to the user by reading the file with the Read tool (which renders images inline)
 
-5. If generation fails, report the error and ask if the user wants to retry with a modified prompt or skip
+6. If generation fails, report the error and ask if the user wants to retry with a modified prompt or skip
 
 ### Phase 5: Insert References (Optional)
 
