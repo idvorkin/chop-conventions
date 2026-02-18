@@ -50,40 +50,63 @@ rodney start
 showboat init docs/demo.md "App Walkthrough"
 ```
 
-### 2. Navigate and screenshot
+### 2. Add Table of Contents
+
+After `showboat init`, add a TOC using `<table>` (GitHub/pandoc sanitize `<div>` styles and `<style>` blocks, so use `<table>` and `<p align="center">` instead).
 
 ```bash
-showboat note docs/demo.md "## Home Screen"
+showboat note docs/demo.md '## Table of Contents
+
+<table><tr>
+<td><a href="#home-screen">1. Home Screen</a></td>
+<td><a href="#settings-panel">2. Settings Panel</a></td>
+</tr><tr>
+<td><a href="#accessibility-audit">3. Accessibility Audit</a></td>
+<td><a href="#summary">4. Summary</a></td>
+</tr></table>
+
+---'
+```
+
+### 3. Navigate and screenshot with styled nav bars
+
+Each section gets a styled nav bar with prev/TOC/next pill buttons.
+
+```bash
+showboat note docs/demo.md '## Home Screen
+<p align="center"><a href="#table-of-contents">📋 TOC</a> · <a href="#settings-panel">Settings Panel →</a></p>'
 showboat exec docs/demo.md bash "rodney open https://your-app.example.com"
 showboat exec docs/demo.md bash "rodney screenshot -w 1280 -h 720 docs/home.png"
 showboat image docs/demo.md docs/home.png
 ```
 
-### 3. Interact and capture more
+### 4. Interact and capture more
 
 ```bash
-showboat note docs/demo.md "## Settings Panel"
+showboat note docs/demo.md '## Settings Panel
+<p align="center"><a href="#home-screen">← Home Screen</a> · <a href="#table-of-contents">📋 TOC</a> · <a href="#accessibility-audit">Accessibility →</a></p>'
 showboat exec docs/demo.md bash "rodney click 'button[aria-label=Settings]'"
 showboat exec docs/demo.md bash "rodney sleep 0.5"
 showboat exec docs/demo.md bash "rodney screenshot -w 1280 -h 720 docs/settings.png"
 showboat image docs/demo.md docs/settings.png
 ```
 
-### 4. Accessibility audit
+### 5. Accessibility audit
 
 ```bash
-showboat note docs/demo.md "## Accessibility Audit"
+showboat note docs/demo.md '## Accessibility Audit
+<p align="center"><a href="#settings-panel">← Settings</a> · <a href="#table-of-contents">📋 TOC</a> · <a href="#summary">Summary →</a></p>'
 showboat exec docs/demo.md bash "rodney ax-tree --depth 3"
 showboat exec docs/demo.md bash "rodney ax-find --role button"
 ```
 
-### 5. Clean up
+### 6. Clean up
 
 ```bash
 rodney stop
 ```
 
-### 6. Verify later
+### 7. Verify later
 
 ```bash
 rodney start
@@ -93,21 +116,138 @@ rodney stop
 
 ## Serving the Document
 
-To view the rendered markdown with images locally:
+**Use pandoc + python http.server** to render and serve the walkthrough locally. This avoids grip's GitHub API rate limits (60 req/hour unauthenticated).
+
+**Important:** Run from the document's directory so relative image paths resolve correctly.
 
 ```bash
-# grip renders GitHub-flavored markdown with images
-grip docs/demo.md 0.0.0.0:5002
+cd docs/walk-the-store
 
-# Then open: http://$(hostname):5002/
+# Generate HTML with pandoc (includes nav styling)
+pandoc walkthrough.md -o walkthrough.html --standalone \
+  --metadata title="Walkthrough Title" \
+  --template pandoc-template.html
+
+# Find an available port and serve
+running-servers suggest
+python3 -m http.server <port> --bind 0.0.0.0
 ```
 
-Or serve the raw files:
+The rendered walkthrough will be at `http://$(hostname):<port>/walkthrough.html`
 
-```bash
-cd docs && python3 -m http.server 5001
-# Images at: http://$(hostname):5001/screenshot.png
+**Pandoc template** — save as `pandoc-template.html` in the document directory:
+
+```html
+<!DOCTYPE html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <title>$title$</title>
+    <style>
+      body {
+        max-width: 900px;
+        margin: 40px auto;
+        padding: 0 20px;
+        font-family:
+          -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial,
+          sans-serif;
+        line-height: 1.6;
+        color: #24292e;
+      }
+      h1 {
+        border-bottom: 1px solid #eaecef;
+        padding-bottom: 8px;
+      }
+      h2 {
+        border-bottom: 1px solid #eaecef;
+        padding-bottom: 6px;
+        margin-top: 32px;
+      }
+      table {
+        border-collapse: collapse;
+      }
+      td {
+        padding: 8px 16px;
+        border: 1px solid #ddd;
+      }
+      td a {
+        text-decoration: none;
+        color: #0366d6;
+        font-weight: 500;
+      }
+      p[align="center"] a {
+        display: inline-block;
+        padding: 4px 14px;
+        border-radius: 16px;
+        background: #f0f0f0;
+        color: #333;
+        text-decoration: none;
+        font-size: 14px;
+        border: 1px solid #ddd;
+      }
+      p[align="center"] a:hover {
+        background: #dbeafe;
+        border-color: #93c5fd;
+      }
+      pre {
+        background: #f6f8fa;
+        border-radius: 6px;
+        padding: 16px;
+        overflow-x: auto;
+        font-size: 13px;
+      }
+      code {
+        background: #f6f8fa;
+        padding: 2px 6px;
+        border-radius: 3px;
+        font-size: 85%;
+      }
+      pre code {
+        background: none;
+        padding: 0;
+      }
+      img {
+        max-width: 100%;
+        border: 1px solid #e1e4e8;
+        border-radius: 6px;
+        margin: 8px 0;
+      }
+      hr {
+        border: none;
+        border-top: 2px solid #0366d6;
+        margin: 24px 0;
+      }
+    </style>
+  </head>
+  <body>
+    $body$
+  </body>
+</html>
 ```
+
+### Navigation HTML patterns
+
+**TOC grid** (use `<table>` — GitHub/pandoc sanitize `<div>` styles):
+
+```html
+<table>
+  <tr>
+    <td><a href="#section-slug">1. Section Name</a></td>
+    <td><a href="#other-slug">2. Other Section</a></td>
+  </tr>
+</table>
+```
+
+**Section nav bar** (centered pill links with arrows):
+
+```html
+<p align="center">
+  <a href="#prev-section">← Previous</a> ·
+  <a href="#table-of-contents">📋 TOC</a> · <a href="#next-section">Next →</a>
+</p>
+```
+
+**Note on anchor IDs:** Pandoc generates IDs by lowercasing, removing special chars, and replacing spaces with hyphens. Em dashes become single hyphens, numbers at the start are kept. Example: `## 3. Featured Post — Eulogy` → `#featured-post-eulogy`. Verify with `rodney js` if unsure.
 
 ## Showboat Command Reference
 
