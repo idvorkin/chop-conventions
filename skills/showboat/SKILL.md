@@ -100,13 +100,38 @@ showboat exec docs/demo.md bash "rodney ax-tree --depth 3"
 showboat exec docs/demo.md bash "rodney ax-find --role button"
 ```
 
-### 6. Clean up
+### 6. Add attribution footer
+
+Every walkthrough gets a footer linking to the showboat skill, the current repo, and the current PR (if any). Detect these dynamically:
+
+```bash
+# Get repo and PR info
+REPO_URL=$(gh repo view --json url -q .url 2>/dev/null)
+REPO_NAME=$(basename "$REPO_URL")
+PR_NUM=$(gh pr view --json number -q .number 2>/dev/null)
+PR_URL=$(gh pr view --json url -q .url 2>/dev/null)
+
+# Build the footer
+FOOTER="---
+*Generated with [Showboat](https://github.com/idvorkin/chop-conventions/tree/main/skills/showboat) + [Rodney](https://github.com/simonw/rodney)*"
+
+if [ -n "$REPO_URL" ]; then
+  FOOTER="$FOOTER | [$REPO_NAME]($REPO_URL)"
+fi
+if [ -n "$PR_NUM" ]; then
+  FOOTER="$FOOTER | [PR #$PR_NUM]($PR_URL)"
+fi
+
+showboat note docs/demo.md "$FOOTER"
+```
+
+### 7. Clean up
 
 ```bash
 rodney stop
 ```
 
-### 7. Verify later
+### 8. Verify later
 
 ```bash
 rodney start
@@ -317,6 +342,80 @@ export SHOWBOAT_REMOTE_URL="http://$(hostname):8001/-/showboat/receive?token=sec
 ```
 
 Every showboat command will POST updates to the viewer in real-time.
+
+## Publishing to Gisthost
+
+[Gisthost](https://gisthost.github.io/) renders HTML gists in the browser. It's Simon Willison's improved fork of gistpreview that handles large files and Substack URL mangling.
+
+### Constraints
+
+- **GitHub API truncates gist files over 1MB** — keep `index.html` under 1MB
+- **Gists don't support binary uploads via API** — use `git clone` + `git push` for images
+- **Gisthost uses `document.write()`** — relative image paths won't resolve. Use absolute raw URLs
+- **Gisthost looks for `index.html` by name** — always name your HTML file `index.html`
+- **Max 300 files per gist** — split into multiple gists if needed
+
+### Publish Flow
+
+```bash
+# 1. Generate HTML from showboat markdown
+pandoc walkthrough.md -o index.html --standalone \
+  --metadata title="Title" --template pandoc-template.html
+
+# 2. Create the gist with just the HTML (small, no images)
+gh gist create --public -d "Walkthrough Title" index.html
+# Returns: https://gist.github.com/USER/GIST_ID
+
+# 3. Clone the gist as a git repo
+git clone https://gist.github.com/GIST_ID.git /tmp/gist-publish
+cd /tmp/gist-publish
+
+# 4. Convert screenshots to JPEG for smaller size
+for png in /path/to/screenshots/*.png; do
+  name=$(basename "$png" .png)
+  magick "$png" -quality 70 "${name}.jpg"
+done
+
+# 5. Update image src attributes to use absolute gist raw URLs
+#    Replace: src="uuid.png"
+#    With:    src="https://gist.githubusercontent.com/USER/GIST_ID/raw/name.jpg"
+python3 << 'PYEOF'
+import re
+GIST_RAW = "https://gist.githubusercontent.com/USER/GIST_ID/raw"
+# ... replace src attributes with absolute URLs pointing to GIST_RAW/filename.jpg
+PYEOF
+
+# 6. Add images and push via git (API doesn't support binary files)
+git remote set-url origin https://x-access-token:$(gh auth token)@gist.github.com/GIST_ID.git
+git add *.jpg index.html
+git commit -m "Add screenshots"
+git push
+```
+
+### View the result
+
+```
+https://gisthost.github.io/?GIST_ID
+```
+
+### Image naming convention
+
+Use numbered, descriptive names that match the walkthrough sections:
+
+```
+01-landing.jpg
+02-user-menu.jpg
+03-load-demo-data.jpg
+04-weekly-tracker.jpg
+```
+
+### Why not `<base href>`?
+
+A `<base>` tag would let you use relative image paths, but gisthost uses `document.write()` which replaces the entire page — the `<base>` tag affects gisthost's own resource resolution and breaks the page. Always use absolute raw URLs.
+
+### Why not base64-embedded images?
+
+Base64 encoding inflates file size ~33%. A walkthrough with 8 screenshots easily exceeds the 1MB API truncation limit. Gisthost handles truncated files via `raw_url` fallback, but keeping files small is more reliable.
 
 ## Tips
 
