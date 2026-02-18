@@ -29,11 +29,12 @@ if [[ -z "${GOOGLE_API_KEY:-}" ]]; then
     exit 1
 fi
 
-# Use temp files to avoid shell argument length limits with large base64 data
-PARTS_FILE=$(mktemp /tmp/gemini-parts-XXXXXX.json)
-PAYLOAD_FILE=$(mktemp /tmp/gemini-payload-XXXXXX.json)
-RESPONSE_FILE=$(mktemp /tmp/gemini-response-XXXXXX.json)
-trap 'rm -f "$PARTS_FILE" "$PAYLOAD_FILE" "$RESPONSE_FILE"' EXIT
+# Use a temp directory for all working files to ensure cleanup on any exit
+WORK_DIR=$(mktemp -d /tmp/gemini-work-XXXXXX)
+trap 'rm -rf "$WORK_DIR"' EXIT
+PARTS_FILE="$WORK_DIR/parts.json"
+PAYLOAD_FILE="$WORK_DIR/payload.json"
+RESPONSE_FILE="$WORK_DIR/response.json"
 
 # Build the parts array: text prompt first, then any reference images
 jq -n --arg prompt "$PROMPT" '[{ text: $prompt }]' > "$PARTS_FILE"
@@ -52,12 +53,11 @@ for ref in "${REF_IMAGES[@]}"; do
         webp) ref_mime="image/webp" ;;
         *)    ref_mime="image/png" ;;
     esac
-    REF_B64_FILE=$(mktemp /tmp/gemini-ref-XXXXXX.b64)
-    base64 -w0 "$ref" > "$REF_B64_FILE" 2>/dev/null || base64 "$ref" > "$REF_B64_FILE"
+    REF_B64_FILE="$WORK_DIR/ref-$(basename "$ref").b64"
+    base64 -w0 "$ref" > "$REF_B64_FILE" 2>/dev/null || base64 "$ref" | tr -d '\n' > "$REF_B64_FILE"
     jq --arg mime "$ref_mime" --rawfile data "$REF_B64_FILE" \
         '. + [{ inlineData: { mimeType: $mime, data: $data } }]' \
         "$PARTS_FILE" > "${PARTS_FILE}.tmp" && mv "${PARTS_FILE}.tmp" "$PARTS_FILE"
-    rm -f "$REF_B64_FILE"
     echo "Attached reference image: $ref" >&2
 done
 
@@ -84,31 +84,30 @@ curl -s -X POST \
     "${API_URL}?key=${GOOGLE_API_KEY}" \
     -H "Content-Type: application/json" \
     -d @"$PAYLOAD_FILE" > "$RESPONSE_FILE"
-RESPONSE=$(cat "$RESPONSE_FILE")
 
 # Check for errors in the response
-ERROR=$(echo "$RESPONSE" | jq -r '.error.message // empty' 2>/dev/null)
+ERROR=$(jq -r '.error.message // empty' "$RESPONSE_FILE" 2>/dev/null)
 if [[ -n "$ERROR" ]]; then
     echo "API Error: $ERROR" >&2
     exit 1
 fi
 
 # Extract base64 image data — find the first inline_data part with an image mime type
-IMAGE_DATA=$(echo "$RESPONSE" | jq -r '
+IMAGE_DATA=$(jq -r '
     [.candidates[0].content.parts[] | select(.inlineData.mimeType // "" | startswith("image/"))] |
-    first | .inlineData.data // empty')
+    first | .inlineData.data // empty' "$RESPONSE_FILE")
 
 if [[ -z "$IMAGE_DATA" ]]; then
     echo "Error: No image data in response" >&2
     echo "Response preview:" >&2
-    echo "$RESPONSE" | jq '.candidates[0].content.parts[] | keys' 2>/dev/null >&2 || echo "$RESPONSE" | head -20 >&2
+    jq '.candidates[0].content.parts[] | keys' "$RESPONSE_FILE" 2>/dev/null >&2 || head -20 "$RESPONSE_FILE" >&2
     exit 1
 fi
 
 # Extract the mime type to determine the native format
-MIME_TYPE=$(echo "$RESPONSE" | jq -r '
+MIME_TYPE=$(jq -r '
     [.candidates[0].content.parts[] | select(.inlineData.mimeType // "" | startswith("image/"))] |
-    first | .inlineData.mimeType // "image/png"')
+    first | .inlineData.mimeType // "image/png"' "$RESPONSE_FILE")
 
 # Determine the native extension from the mime type
 case "$MIME_TYPE" in
