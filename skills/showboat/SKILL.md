@@ -10,40 +10,28 @@ Create markdown documents that mix commentary, screenshots, and captured command
 
 ## Prerequisites
 
-Both tools are Go binaries. Install if missing:
+Install both Go binaries:
 
 ```bash
 go install github.com/simonw/showboat@latest
 go install github.com/simonw/rodney@latest
-```
-
-Ensure they're on PATH:
-
-```bash
 export PATH="$HOME/go/bin:$PATH"
 ```
 
 ### Chrome Setup
 
-Rodney needs a Chrome/Chromium binary. If none is installed system-wide, point it at Playwright's:
+Rodney needs Chrome/Chromium. If none is installed system-wide, use Playwright's:
 
 ```bash
-# Find Playwright's Chromium (pick the latest version)
 ls ~/.cache/ms-playwright/chromium-*/chrome-linux/chrome
-
-# Set the env var
 export ROD_CHROME_BIN=~/.cache/ms-playwright/chromium-<VERSION>/chrome-linux/chrome
 ```
 
-If Playwright isn't installed either:
-
-```bash
-npx playwright install chromium --with-deps
-```
+If Playwright isn't installed: `npx playwright install chromium --with-deps`
 
 ## Workflow
 
-### 1. Start Rodney and create the document
+### 1. Start and init
 
 ```bash
 rodney start
@@ -52,7 +40,7 @@ showboat init docs/demo.md "App Walkthrough"
 
 ### 2. Add Table of Contents
 
-After `showboat init`, add a TOC using `<table>` (GitHub/pandoc sanitize `<div>` styles and `<style>` blocks, so use `<table>` and `<p align="center">` instead).
+Use `<table>` for TOC grids (GitHub/pandoc sanitize `<div>` styles and `<style>` blocks):
 
 ```bash
 showboat note docs/demo.md '## Table of Contents
@@ -60,47 +48,40 @@ showboat note docs/demo.md '## Table of Contents
 <table><tr>
 <td><a href="#home-screen">1. Home Screen</a></td>
 <td><a href="#settings-panel">2. Settings Panel</a></td>
-</tr><tr>
-<td><a href="#accessibility-audit">3. Accessibility Audit</a></td>
-<td><a href="#summary">4. Summary</a></td>
 </tr></table>
 
 ---'
 ```
 
-### 3. Navigate and screenshot with styled nav bars
+### 3. Navigate, screenshot, repeat
 
-Each section gets a styled nav bar with prev/TOC/next pill buttons.
+Each section gets a nav bar with prev/TOC/next links, then screenshots:
 
 ```bash
 showboat note docs/demo.md '## Home Screen
-<p align="center"><a href="#table-of-contents">📋 TOC</a> · <a href="#settings-panel">Settings Panel →</a></p>'
+<p align="center"><a href="#table-of-contents">📋 TOC</a> · <a href="#settings-panel">Settings →</a></p>'
 showboat exec docs/demo.md bash "rodney open https://your-app.example.com"
 showboat exec docs/demo.md bash "rodney screenshot -w 1280 -h 720 docs/home.png"
 showboat image docs/demo.md docs/home.png
 ```
 
-### 4. Interact and capture more
+For interactions before capturing:
 
 ```bash
-showboat note docs/demo.md '## Settings Panel
-<p align="center"><a href="#home-screen">← Home Screen</a> · <a href="#table-of-contents">📋 TOC</a> · <a href="#accessibility-audit">Accessibility →</a></p>'
 showboat exec docs/demo.md bash "rodney click 'button[aria-label=Settings]'"
 showboat exec docs/demo.md bash "rodney sleep 0.5"
 showboat exec docs/demo.md bash "rodney screenshot -w 1280 -h 720 docs/settings.png"
 showboat image docs/demo.md docs/settings.png
 ```
 
-### 5. Accessibility audit
+### 4. Accessibility audit
 
 ```bash
-showboat note docs/demo.md '## Accessibility Audit
-<p align="center"><a href="#settings-panel">← Settings</a> · <a href="#table-of-contents">📋 TOC</a> · <a href="#summary">Summary →</a></p>'
 showboat exec docs/demo.md bash "rodney ax-tree --depth 3"
 showboat exec docs/demo.md bash "rodney ax-find --role button"
 ```
 
-### 6. Add attribution footer
+### 5. Add attribution footer
 
 Every walkthrough gets a footer linking to the showboat skill, the current repo, and the current PR (if any). Detect these dynamically:
 
@@ -125,15 +106,12 @@ fi
 showboat note docs/demo.md "$FOOTER"
 ```
 
-### 7. Clean up
+### 6. Clean up and verify
 
 ```bash
 rodney stop
-```
 
-### 8. Verify later
-
-```bash
+# Later, to verify the doc still matches:
 rodney start
 showboat verify docs/demo.md
 rodney stop
@@ -141,140 +119,23 @@ rodney stop
 
 ## Serving the Document
 
-**Use pandoc + python http.server** to render and serve the walkthrough locally. This avoids grip's GitHub API rate limits (60 req/hour unauthenticated).
-
-**Important:** Run from the document's directory so relative image paths resolve correctly.
+Use pandoc + python http.server (avoids grip's GitHub API rate limits). Run from the document's directory so relative image paths resolve.
 
 ```bash
 cd docs/walk-the-store
-
-# Generate HTML with pandoc (includes nav styling)
 pandoc walkthrough.md -o walkthrough.html --standalone \
   --metadata title="Walkthrough Title" \
   --template pandoc-template.html
-
-# Find an available port and serve
-running-servers suggest
 python3 -m http.server <port> --bind 0.0.0.0
 ```
 
-The rendered walkthrough will be at `http://$(hostname):<port>/walkthrough.html`
+The pandoc template is at `skills/showboat/pandoc-template.html` in this repo — copy it to the document directory.
 
-**Pandoc template** — save as `pandoc-template.html` in the document directory:
+**Anchor ID note:** Pandoc lowercases, removes special chars, replaces spaces with hyphens. Em dashes become single hyphens. Example: `## 3. Featured Post — Eulogy` → `#featured-post-eulogy`.
 
-```html
-<!DOCTYPE html>
-<html>
-  <head>
-    <meta charset="utf-8" />
-    <title>$title$</title>
-    <style>
-      body {
-        max-width: 900px;
-        margin: 40px auto;
-        padding: 0 20px;
-        font-family:
-          -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial,
-          sans-serif;
-        line-height: 1.6;
-        color: #24292e;
-      }
-      h1 {
-        border-bottom: 1px solid #eaecef;
-        padding-bottom: 8px;
-      }
-      h2 {
-        border-bottom: 1px solid #eaecef;
-        padding-bottom: 6px;
-        margin-top: 32px;
-      }
-      table {
-        border-collapse: collapse;
-      }
-      td {
-        padding: 8px 16px;
-        border: 1px solid #ddd;
-      }
-      td a {
-        text-decoration: none;
-        color: #0366d6;
-        font-weight: 500;
-      }
-      p[align="center"] a {
-        display: inline-block;
-        padding: 4px 14px;
-        border-radius: 16px;
-        background: #f0f0f0;
-        color: #333;
-        text-decoration: none;
-        font-size: 14px;
-        border: 1px solid #ddd;
-      }
-      p[align="center"] a:hover {
-        background: #dbeafe;
-        border-color: #93c5fd;
-      }
-      pre {
-        background: #f6f8fa;
-        border-radius: 6px;
-        padding: 16px;
-        overflow-x: auto;
-        font-size: 13px;
-      }
-      code {
-        background: #f6f8fa;
-        padding: 2px 6px;
-        border-radius: 3px;
-        font-size: 85%;
-      }
-      pre code {
-        background: none;
-        padding: 0;
-      }
-      img {
-        max-width: 100%;
-        border: 1px solid #e1e4e8;
-        border-radius: 6px;
-        margin: 8px 0;
-      }
-      hr {
-        border: none;
-        border-top: 2px solid #0366d6;
-        margin: 24px 0;
-      }
-    </style>
-  </head>
-  <body>
-    $body$
-  </body>
-</html>
-```
+## Command Reference
 
-### Navigation HTML patterns
-
-**TOC grid** (use `<table>` — GitHub/pandoc sanitize `<div>` styles):
-
-```html
-<table>
-  <tr>
-    <td><a href="#section-slug">1. Section Name</a></td>
-    <td><a href="#other-slug">2. Other Section</a></td>
-  </tr>
-</table>
-```
-
-**Section nav bar** (centered pill links with arrows):
-
-```html
-<p align="center">
-  <a href="#prev-section">← Previous</a> ·
-  <a href="#table-of-contents">📋 TOC</a> · <a href="#next-section">Next →</a>
-</p>
-```
-
-**Note on anchor IDs:** Pandoc generates IDs by lowercasing, removing special chars, and replacing spaces with hyphens. Em dashes become single hyphens, numbers at the start are kept. Example: `## 3. Featured Post — Eulogy` → `#featured-post-eulogy`. Verify with `rodney js` if unsure.
-
-## Showboat Command Reference
+### Showboat
 
 | Command                              | Purpose                           |
 | ------------------------------------ | --------------------------------- |
@@ -284,9 +145,8 @@ The rendered walkthrough will be at `http://$(hostname):<port>/walkthrough.html`
 | `showboat image <file> <path>`       | Copy image into document          |
 | `showboat pop <file>`                | Remove the most recent entry      |
 | `showboat verify <file>`             | Re-run all blocks and diff output |
-| `showboat extract <file>`            | Emit commands to recreate the doc |
 
-## Rodney Command Reference (Key Commands)
+### Rodney (key commands)
 
 | Command                                  | Purpose                   |
 | ---------------------------------------- | ------------------------- |
@@ -300,48 +160,8 @@ The rendered walkthrough will be at `http://$(hostname):<port>/walkthrough.html`
 | `rodney js <expression>`                 | Run JavaScript            |
 | `rodney wait <selector>`                 | Wait for element          |
 | `rodney waitstable`                      | Wait for DOM to stabilize |
-| `rodney sleep <seconds>`                 | Sleep N seconds           |
 | `rodney ax-tree [--depth N]`             | Dump accessibility tree   |
 | `rodney ax-find [--name N] [--role R]`   | Find accessible nodes     |
-| `rodney ax-node <selector>`              | Inspect element a11y info |
-| `rodney title`                           | Print page title          |
-| `rodney url`                             | Print current URL         |
-| `rodney pdf [file]`                      | Save page as PDF          |
-
-## Chartroom - Embed Charts
-
-[Chartroom](https://github.com/simonw/chartroom) generates chart PNGs from CSV/JSON/SQL data. No install needed with `uvx`:
-
-```bash
-# Bar chart from inline CSV
-echo 'name,value
-Alice,42
-Bob,28' | uvx chartroom bar --csv --title "Sales" -o chart.png
-
-# Line chart from a SQLite database
-uvx chartroom line --sql data.db "select date, count from metrics" -o trend.png
-
-# Embed in showboat doc
-showboat image docs/demo.md chart.png
-```
-
-Supports `bar`, `line`, `scatter`, and `histogram`. Use `-f alt` to generate alt text for accessibility, or `-f markdown` for ready-to-embed markdown with image.
-
-## Remote Viewing with datasette-showboat
-
-For real-time viewing of docs as they're built, set `SHOWBOAT_REMOTE_URL`:
-
-```bash
-# Start the viewer
-uvx --with datasette-showboat datasette showboat.db --create \
-  -s plugins.datasette-showboat.database showboat \
-  -s plugins.datasette-showboat.token secret123
-
-# Tell showboat to stream to it
-export SHOWBOAT_REMOTE_URL="http://$(hostname):8001/-/showboat/receive?token=secret123"
-```
-
-Every showboat command will POST updates to the viewer in real-time.
 
 ## Publishing to Gisthost
 
@@ -419,10 +239,10 @@ Base64 encoding inflates file size ~33%. A walkthrough with 8 screenshots easily
 
 ## Tips
 
-- **Undo mistakes:** `showboat pop` removes the last entry (failed command, bad screenshot, etc.)
-- **Viewport size:** Use `rodney screenshot -w 1280 -h 720` for consistent dimensions
+- **Undo mistakes:** `showboat pop` removes the last entry
+- **Viewport size:** `rodney screenshot -w 1280 -h 720` for consistent dimensions
 - **Wait for animations:** `rodney sleep 0.5` or `rodney waitstable` before screenshots
 - **Element screenshots:** `rodney screenshot-el ".modal"` to capture just a component
 - **Selectors:** Prefer `[data-testid=...]` or `[aria-label=...]` for stability
-- **Accessibility wins:** `rodney ax-find --role button` quickly reveals unlabeled controls
-- **Images with alt text:** `showboat image demo.md '![Settings panel](settings.png)'`
+- **Charts:** Use [Chartroom](https://github.com/simonw/chartroom) via `uvx chartroom bar --csv -o chart.png` then `showboat image`
+- **Remote viewing:** Set `SHOWBOAT_REMOTE_URL` to stream to a datasette-showboat viewer in real-time
