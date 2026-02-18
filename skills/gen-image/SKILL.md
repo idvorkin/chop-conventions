@@ -22,7 +22,7 @@ Parse the user's input for:
 ## Configuration
 
 - **Default API URL**: `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash-exp:generateContent`
-- **Auth**: Reads `GEMINI_API_KEY` from environment
+- **Auth**: Reads `GOOGLE_API_KEY` from environment
 - **Helper script**: `gemini-image.sh` in the same directory as this skill
 
 ### Default Style (Raccoon)
@@ -76,10 +76,10 @@ Ask the user to approve, modify, or remove items before generating. Use `AskUser
 
 For each approved illustration:
 
-1. Verify `GEMINI_API_KEY` is set:
+1. Verify `GOOGLE_API_KEY` is set:
 
    ```bash
-   [[ -n "${GEMINI_API_KEY:-}" ]] && echo "API key is set" || echo "ERROR: GEMINI_API_KEY not set"
+   [[ -n "${GOOGLE_API_KEY:-}" ]] && echo "API key is set" || echo "ERROR: GOOGLE_API_KEY not set"
    ```
 
 2. Locate the helper script:
@@ -129,7 +129,7 @@ If the target was a freeform topic (not a file), skip this phase — just tell t
 
 ## Error Handling
 
-- **Missing API key**: Stop immediately, tell the user to `export GEMINI_API_KEY=...`
+- **Missing API key**: Stop immediately, tell the user to `export GOOGLE_API_KEY=...`
 - **API error**: Show the error message, suggest checking the API key or endpoint
 - **No jq**: The helper script requires `jq` — check and suggest `brew install jq` or `apt install jq`
 - **No cwebp**: Images will be saved as PNG instead of WebP — inform the user
