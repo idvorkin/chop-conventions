@@ -21,7 +21,7 @@ Parse the user's input for:
 
 ## Configuration
 
-- **Default API URL**: `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash-exp:generateContent`
+- **Default API URL**: `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-image:generateContent`
 - **Auth**: Reads `GOOGLE_API_KEY` from environment
 - **Helper script**: `gemini-image.sh` in the same directory as this skill
 
