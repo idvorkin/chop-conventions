@@ -4,7 +4,7 @@
 # Usage: gemini-image.sh <prompt> <output-file> [api-url]
 #
 # Environment:
-#   GEMINI_API_KEY  (required) — your Gemini API key
+#   GOOGLE_API_KEY  (required) — your Google API key
 #
 # The script sends the prompt to the Gemini image generation endpoint,
 # extracts the base64-encoded image from the response, and decodes it
@@ -17,8 +17,8 @@ PROMPT="${1:?Usage: gemini-image.sh <prompt> <output-file> [api-url]}"
 OUTPUT="${2:?Usage: gemini-image.sh <prompt> <output-file> [api-url]}"
 API_URL="${3:-https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash-exp:generateContent}"
 
-if [[ -z "${GEMINI_API_KEY:-}" ]]; then
-    echo "Error: GEMINI_API_KEY environment variable is not set" >&2
+if [[ -z "${GOOGLE_API_KEY:-}" ]]; then
+    echo "Error: GOOGLE_API_KEY environment variable is not set" >&2
     exit 1
 fi
 
@@ -38,7 +38,7 @@ echo "Calling Gemini API..." >&2
 
 # Make the API call
 RESPONSE=$(curl -s -X POST \
-    "${API_URL}?key=${GEMINI_API_KEY}" \
+    "${API_URL}?key=${GOOGLE_API_KEY}" \
     -H "Content-Type: application/json" \
     -d "$PAYLOAD")
 
