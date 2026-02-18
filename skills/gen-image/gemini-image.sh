@@ -51,7 +51,7 @@ fi
 
 # Extract base64 image data — find the first inline_data part with an image mime type
 IMAGE_DATA=$(echo "$RESPONSE" | jq -r '
-    [.candidates[0].content.parts[] | select(.inlineData.mimeType | startswith("image/"))] |
+    [.candidates[0].content.parts[] | select(.inlineData.mimeType // "" | startswith("image/"))] |
     first | .inlineData.data // empty')
 
 if [[ -z "$IMAGE_DATA" ]]; then
@@ -63,7 +63,7 @@ fi
 
 # Extract the mime type to determine the native format
 MIME_TYPE=$(echo "$RESPONSE" | jq -r '
-    [.candidates[0].content.parts[] | select(.inlineData.mimeType | startswith("image/"))] |
+    [.candidates[0].content.parts[] | select(.inlineData.mimeType // "" | startswith("image/"))] |
     first | .inlineData.mimeType // "image/png"')
 
 # Determine the native extension from the mime type
