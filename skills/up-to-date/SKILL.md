@@ -8,140 +8,80 @@ allowed-tools: Bash, Read
 
 Diagnose and sync the current git repository state with upstream.
 
-## When To Use
+## Remote Setup
 
-- At the start of a new session (proactively)
-- When the user says "up to date", "sync", "git status", or similar
-- When you suspect you're on a stale or merged branch
-- Before starting new work
-
-## Understanding Remote Setup
-
-First, detect the remote configuration:
-
-```bash
-git remote -v
-```
-
-**Two common setups:**
+Detect the remote configuration — this determines where to sync from:
 
 | Setup         | Remotes           | Source of Truth | Push To |
 | ------------- | ----------------- | --------------- | ------- |
 | Fork workflow | origin + upstream | upstream/main   | origin  |
 | Direct access | origin only       | origin/main     | origin  |
 
-**Key principle**: Always sync against the canonical source:
-
-- If `upstream` exists → compare against `upstream/main`
-- If only `origin` → compare against `origin/main`
-
-```bash
-# Detect which remote is the source of truth
-if git remote | grep -q '^upstream$'; then
-    SOURCE_REMOTE="upstream"
-else
-    SOURCE_REMOTE="origin"
-fi
-echo "Source of truth: $SOURCE_REMOTE/main"
-```
-
 ## Diagnostic Steps
 
-Run these checks:
+Run all checks in one go:
 
 ```bash
-# Current state
+SOURCE_REMOTE=$(git remote | grep -q '^upstream$' && echo "upstream" || echo "origin")
+echo "Source of truth: $SOURCE_REMOTE/main"
+
 git branch --show-current
 git status --porcelain
 git stash list
-
-# Fetch all remotes
 git fetch --all --prune 2>&1
 
-# Determine source remote
-SOURCE_REMOTE=$(git remote | grep -q '^upstream$' && echo "upstream" || echo "origin")
-
-# Compare against source of truth
 echo "Behind $SOURCE_REMOTE/main:"
 git rev-list --count HEAD..$SOURCE_REMOTE/main 2>/dev/null || echo "0"
-
 echo "Ahead of $SOURCE_REMOTE/main:"
 git rev-list --count $SOURCE_REMOTE/main..HEAD 2>/dev/null || echo "0"
 
-# Show what landed upstream
 git log --oneline HEAD..$SOURCE_REMOTE/main 2>/dev/null | head -10
 ```
 
-If on a feature branch (not main), also check PR status:
+If on a feature branch, also check PR status:
 
 ```bash
 gh pr view --json state,number,title,mergeable,reviewDecision 2>/dev/null || echo "NO_PR"
 ```
 
-## Decision Tree and Actions
-
-### Determine source remote first
-
-```bash
-SOURCE_REMOTE=$(git remote | grep -q '^upstream$' && echo "upstream" || echo "origin")
-```
+## Decision Tree
 
 ### On main branch
 
-**With upstream remote (fork workflow):**
-
 ```bash
-# Pull from upstream, push to origin to keep fork in sync
-git pull upstream main
-git push origin main  # Keep fork's main up to date
-```
-
-**Without upstream (direct access):**
-
-```bash
-git pull origin main
+SOURCE_REMOTE=$(git remote | grep -q '^upstream$' && echo "upstream" || echo "origin")
+git pull $SOURCE_REMOTE main
+# Fork workflow: also push to origin to keep fork in sync
+if [ "$SOURCE_REMOTE" = "upstream" ]; then
+    git push origin main
+fi
 ```
 
 ### On feature branch with PR
 
-- **PR merged** → Check for leftover commits, then switch to main and sync:
+- **PR merged** → Check for leftover commits, switch to main, sync:
 
   ```bash
   BRANCH=$(git branch --show-current)
-
-  # Check if there are commits on feature branch that didn't make it into the PR
-  # (e.g., commits made after PR was merged)
   SOURCE_REMOTE=$(git remote | grep -q '^upstream$' && echo "upstream" || echo "origin")
   git fetch $SOURCE_REMOTE main
-  COMMITS_NOT_IN_MAIN=$(git log --oneline $SOURCE_REMOTE/main..$BRANCH | wc -l)
+  LEFTOVER=$(git log --oneline $SOURCE_REMOTE/main..$BRANCH | wc -l)
 
-  if [ "$COMMITS_NOT_IN_MAIN" -gt 0 ]; then
-      echo "⚠️  Found $COMMITS_NOT_IN_MAIN commit(s) on $BRANCH not in $SOURCE_REMOTE/main:"
+  if [ "$LEFTOVER" -gt 0 ]; then
+      echo "⚠️  $LEFTOVER commit(s) on $BRANCH not in $SOURCE_REMOTE/main:"
       git log --oneline $SOURCE_REMOTE/main..$BRANCH
-      echo ""
-      echo "These commits were made after the PR merged."
-      # ASK USER: "Do you want to create a new PR for these commits?"
-      # If YES: Keep branch, ask for PR title/description
-      # If NO: Cherry-pick to main, push, then delete branch
+      # ASK USER: create new PR for these, or cherry-pick to main?
   fi
 
-  # After handling leftover commits, switch to main and sync
   git checkout main
-
-  # Sync main with source of truth
-  if git remote | grep -q '^upstream$'; then
-      git pull upstream main
-      git push origin main  # Keep fork in sync
-  else
-      git pull origin main
-  fi
-
-  git branch -d "$BRANCH"  # Or -D if commits were cherry-picked
+  git pull $SOURCE_REMOTE main
+  [ "$SOURCE_REMOTE" = "upstream" ] && git push origin main
+  git branch -d "$BRANCH"
   ```
 
 - **PR closed (not merged)** → Ask user: delete branch or keep working?
 
-- **PR open** → Report status, show any review comments:
+- **PR open** → Report status, show recent review feedback:
   ```bash
   gh pr view --json reviews,comments --jq '.reviews[-3:], .comments[-3:]'
   ```
@@ -151,36 +91,19 @@ git pull origin main
 - **Has commits ahead of main** → Ask if user wants to create PR
 - **No commits ahead** → Ask if user wants to delete branch
 
-### Fork is stale
+### Uncommitted changes
 
-If origin/main is behind upstream/main:
-
-```bash
-# Check if fork's main is behind upstream
-FORK_BEHIND=$(git rev-list --count origin/main..upstream/main 2>/dev/null || echo "0")
-if [ "$FORK_BEHIND" -gt 0 ]; then
-    echo "Fork's main is $FORK_BEHIND commits behind upstream"
-    # After pulling upstream, push to keep fork in sync
-    git checkout main
-    git pull upstream main
-    git push origin main
-fi
-```
-
-### Uncommitted changes present
-
-- **List them clearly** with `git status`
-- **Ask user** what to do: commit, stash, or discard
+- List with `git status`
+- **Ask user**: commit, stash, or discard
 - Do NOT automatically commit or discard
 
-### Stashed changes present
+### Stashed changes
 
-- **List stashes** with `git stash list`
-- **Inform user** they have stashed work
+- List with `git stash list` and inform user
 
 ## Cleanup: Delete Merged Branches
 
-After switching to main, clean up merged branches:
+After switching to main:
 
 ```bash
 git branch --merged main | grep -v '^\*' | grep -v 'main' | while read branch; do
@@ -191,19 +114,7 @@ done
 
 ## Output Format
 
-First, report the remote setup:
-
-```
-Remote setup: Fork workflow (origin=fork, upstream=source)
-```
-
-or
-
-```
-Remote setup: Direct access (origin=source)
-```
-
-Then summarize findings in a table:
+Report remote setup, then summarize findings:
 
 | Check                | Status           | Action            |
 | -------------------- | ---------------- | ----------------- |
@@ -213,23 +124,15 @@ Then summarize findings in a table:
 | Behind upstream/main | 5 commits        | Will pull         |
 | Fork main stale      | 3 commits behind | Will sync         |
 
-Then take the actions and report results.
+Then take actions and report results.
 
-## Post-Sync: Offer Context Clear
+## Post-Sync
 
-After all sync actions are complete and the summary is shown, ask the user if they'd like to clear their conversation context (via `/clear`). This is useful because:
-
-- They often run `/up-to-date` at the start of a new work session
-- The previous conversation context may be stale or irrelevant
-- A fresh context helps avoid confusion from old file reads and outdated state
-
-Simply ask: "Want to `/clear` context for a fresh start?"
+After sync completes, ask: "Want to `/clear` context for a fresh start?" — users often run this at session start and stale context causes confusion.
 
 ## Safety Rules
 
 - NEVER force push
 - NEVER delete unmerged branches without asking
-- NEVER commit uncommitted changes without user approval
-- NEVER discard changes without explicit user confirmation
+- NEVER commit or discard uncommitted changes without user approval
 - Always preserve user's work
-- When pushing to origin after upstream pull, use regular push (not force)
