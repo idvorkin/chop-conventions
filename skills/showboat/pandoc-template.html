@@ -81,5 +81,24 @@
   </head>
   <body>
     $body$
+    <script>
+      // Hot reload: polls for file changes and reloads when updated (local dev only)
+      (function () {
+        let lastModified = "";
+        async function poll() {
+          try {
+            const resp = await fetch(location.href, {
+              method: "HEAD",
+              cache: "no-cache",
+            });
+            const modified = resp.headers.get("Last-Modified") || "";
+            if (lastModified && modified !== lastModified) location.reload();
+            lastModified = modified;
+          } catch (e) {}
+          setTimeout(poll, 2000);
+        }
+        setTimeout(poll, 2000);
+      })();
+    </script>
   </body>
 </html>
