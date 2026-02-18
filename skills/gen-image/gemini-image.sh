@@ -15,7 +15,7 @@ set -euo pipefail
 
 PROMPT="${1:?Usage: gemini-image.sh <prompt> <output-file> [api-url]}"
 OUTPUT="${2:?Usage: gemini-image.sh <prompt> <output-file> [api-url]}"
-API_URL="${3:-https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash-exp:generateContent}"
+API_URL="${3:-https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-image:generateContent}"
 
 if [[ -z "${GOOGLE_API_KEY:-}" ]]; then
     echo "Error: GOOGLE_API_KEY environment variable is not set" >&2
