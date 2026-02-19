@@ -66,16 +66,18 @@ Confirm with user via `AskUserQuestion` before generating. User may add, remove,
 
 ### Phase 3: Generate Images in Parallel
 
-1. Locate the gen-image helper script:
+1. Resolve the chop-conventions root and set up paths (avoids hardcoded absolute paths):
 
    ```bash
-   SKILL_DIR="$(dirname "$(find ~/gits/chop-conventions/skills/gen-image -name 'gemini-image.sh' -print -quit)")"
+   CHOP_ROOT="$(cd "$(dirname "$(readlink -f ~/.claude/skills/image-explore/SKILL.md)")" && git rev-parse --show-toplevel)"
+   SKILL_DIR="$CHOP_ROOT/skills/gen-image"
+   TEMPLATE="$CHOP_ROOT/skills/showboat/pandoc-template.html"
    ```
 
 2. Locate the canonical raccoon reference image:
 
    ```bash
-   REF_IMAGE="$(ls ~/gits/blog7/images/raccoon-nerd.webp 2>/dev/null || ls ~/gits/blog*/images/raccoon-nerd.webp 2>/dev/null | head -1)"
+   REF_IMAGE="$(ls images/raccoon-nerd.webp 2>/dev/null || ls ~/gits/idvorkin.github.io/images/raccoon-nerd.webp 2>/dev/null || ls ~/gits/blog*/images/raccoon-nerd.webp 2>/dev/null | head -1)"
    ```
 
 3. **SECURITY: Never expand secrets into commands.** When using `showboat exec`, the full
@@ -144,11 +146,12 @@ Confirm with user via `AskUserQuestion` before generating. User may add, remove,
 4. Convert to HTML with the showboat pandoc template:
 
    ```bash
-   TEMPLATE="$(find ~/gits/chop-conventions/skills/showboat -name 'pandoc-template.html' -print -quit)"
    pandoc demo.md -o demo.html --standalone \
      --metadata title="Title" \
      --template "$TEMPLATE"
    ```
+
+   (`$TEMPLATE` was resolved in Phase 3 step 1.)
 
 5. Serve locally for preview:
 
@@ -165,8 +168,7 @@ Ask the user: "Want to publish this as a shareable gist?"
 If yes, use the helper script:
 
 ```bash
-PUBLISH="$(find ~/gits/chop-conventions/skills/image-explore -name 'publish-gist.py' -print -quit)"
-python3 "$PUBLISH" demo.html --title "Description"
+python3 "$CHOP_ROOT/skills/image-explore/publish-gist.py" demo.html --title "Description"
 ```
 
 This handles: gist creation, image conversion to JPEG, URL rewriting, git push. It prints the gisthost URL.
