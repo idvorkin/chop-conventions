@@ -66,100 +66,62 @@ Confirm with user via `AskUserQuestion` before generating. User may add, remove,
 
 ### Phase 3: Generate Images in Parallel
 
-1. Resolve the chop-conventions root and set up paths (avoids hardcoded absolute paths):
+1. Resolve the script path once:
 
    ```bash
    CHOP_ROOT="$(cd "$(dirname "$(readlink -f ~/.claude/skills/image-explore/SKILL.md)")" && git rev-parse --show-toplevel)"
-   SKILL_DIR="$CHOP_ROOT/skills/gen-image"
-   TEMPLATE="$CHOP_ROOT/skills/showboat/pandoc-template.html"
+   GEN="$CHOP_ROOT/skills/image-explore/generate.py"
    ```
 
-2. Locate the canonical raccoon reference image:
+2. Write a `directions.json` file with all directions (used by both Phase 3 and Phase 4):
+
+   ```json
+   [
+     {
+       "name": "Mission Control",
+       "section": "Year of Chaos",
+       "vibe": "This is fine",
+       "shirt": "SHIP IT",
+       "scene": "Raccoon at NASA console, screens showing fire",
+       "output": "mission-control.webp"
+     },
+     {
+       "name": "Surfing the Wave",
+       "section": "AI Adoption",
+       "vibe": "Riding chaos",
+       "shirt": "SHIP IT",
+       "scene": "Raccoon surfing tidal wave of AI debris",
+       "output": "surfing-wave.webp"
+     }
+   ]
+   ```
+
+3. **Generate all images in parallel** with a single command:
 
    ```bash
-   REF_IMAGE="$(ls images/raccoon-nerd.webp 2>/dev/null || ls ~/gits/idvorkin.github.io/images/raccoon-nerd.webp 2>/dev/null || ls ~/gits/blog*/images/raccoon-nerd.webp 2>/dev/null | head -1)"
+   python3 "$GEN" --batch directions.json
    ```
 
-3. **SECURITY: Never expand secrets into commands.** When using `showboat exec`, the full
-   command string is recorded in the document. Use `source ~/.env` _inside_ the exec command
-   so showboat records the reference, not the secret value. NEVER do `export $(cat ~/.env | xargs)`
-   before calling `showboat exec` — that expands the key into the captured command text.
+   Pass `--aspect`, `--ref`, or `--style` if overriding defaults. The script handles env loading,
+   prompt assembly, ref image resolution, and parallel execution via thread pool
+   (secrets never leak into command strings).
 
-4. Build full prompts for each direction. Each prompt combines:
-   - The default raccoon style from gen-image (or `--style` override)
-   - `IMPORTANT: Main raccoon LARGE and PROMINENT, at least 40% of image, shirt text clearly readable.`
-   - The direction-specific scene description
-   - Aspect ratio
-
-5. Write each prompt to a temp file via `showboat exec` (so the prompt is readable in the doc):
-
-   ```bash
-   showboat exec "$DEMO" bash "cat > /tmp/prompt-NAME.txt << 'PROMPT'
-   [SCENE DESCRIPTION with shirt text]
-   PROMPT
-   cat /tmp/prompt-NAME.txt"
-   ```
-
-6. **Run ALL generations in parallel** via `showboat exec` — issue all bash calls in a single message.
-   This captures the generation command in the document, making it reproducible:
-
-   ```bash
-   showboat exec "$DEMO" bash "source ~/.env && ASPECT_RATIO=3:4 bash $SKILL_DIR/gemini-image.sh \
-     \"[STYLE] IMPORTANT: Main raccoon LARGE and PROMINENT, at least 40% of image, shirt text clearly readable. \$(cat /tmp/prompt-NAME.txt)\" \
-     NAME.webp '' $REF_IMAGE"
-   ```
-
-   Then convert and add the image:
-
-   ```bash
-   magick NAME.webp NAME.png
-   showboat image "$DEMO" NAME.png
-   ```
-
-   Output files: `raccoon-explore-{direction-name}.webp` in the output directory.
-
-7. After all complete, show each image to the user with the `Read` tool.
+4. After all complete, show each image to the user with the `Read` tool.
 
 ### Phase 4: Build Comparison Page
 
-1. Create an output directory (e.g., `docs/image-explore-{topic}/`)
+Build and serve the comparison page (reuses the same `directions.json` —
+`build-page.py` reads `name`/`section`/`vibe`/`shirt` and accepts either `image` or `output` for the file path):
 
-2. Convert all images to PNG for showboat:
+```bash
+python3 "$CHOP_ROOT/skills/image-explore/build-page.py" \
+  --title "Image Explore: Topic Name" \
+  --dir docs/image-explore-topic/ \
+  directions.json
+```
 
-   ```bash
-   magick input.webp output.png
-   ```
-
-3. Build the showboat document:
-
-   ```bash
-   showboat init "$DEMO" "Title"
-   # For each direction:
-   showboat note "$DEMO" '## A. Direction Name
-   **Concept:** ...
-   **Vibe:** ...'
-   showboat image "$DEMO" "direction.png"
-   # No manual footer needed — the showboat pandoc template includes a
-   # "Built with Showboat" footer automatically.
-   ```
-
-4. Convert to HTML with the showboat pandoc template:
-
-   ```bash
-   pandoc demo.md -o demo.html --standalone \
-     --metadata title="Title" \
-     --template "$TEMPLATE"
-   ```
-
-   (`$TEMPLATE` was resolved in Phase 3 step 1.)
-
-5. Serve locally for preview:
-
-   ```bash
-   nohup python3 -m http.server PORT --bind 0.0.0.0 > /dev/null 2>&1 &
-   ```
-
-   Use `running-servers suggest` or pick a free port. Provide the Tailscale URL.
+This creates the showboat doc, converts images, generates HTML via pandoc,
+and starts a local HTTP server. It prints the Tailscale URL.
 
 ### Phase 5: Publish (Ask First)
 
