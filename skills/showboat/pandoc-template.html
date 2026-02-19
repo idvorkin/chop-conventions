@@ -55,6 +55,27 @@
         padding: 16px;
         overflow-x: auto;
         font-size: 13px;
+        position: relative;
+      }
+      pre .copy-btn {
+        position: absolute;
+        top: 6px;
+        right: 6px;
+        padding: 2px 8px;
+        border: 1px solid #d1d5da;
+        border-radius: 4px;
+        background: #fff;
+        color: #6a737d;
+        font-size: 12px;
+        cursor: pointer;
+        opacity: 0;
+        transition: opacity 0.15s;
+      }
+      pre:hover .copy-btn {
+        opacity: 1;
+      }
+      pre .copy-btn:hover {
+        background: #f0f0f0;
       }
       code {
         background: #f6f8fa;
@@ -81,7 +102,48 @@
   </head>
   <body>
     $body$
+    <footer
+      style="
+        margin-top: 48px;
+        padding-top: 16px;
+        border-top: 1px solid #eaecef;
+        font-size: 13px;
+        color: #6a737d;
+        text-align: center;
+      "
+    >
+      <a
+        href="https://github.com/idvorkin/chop-conventions"
+        style="color: #0366d6; text-decoration: none"
+        >Igor's Skills</a
+      >
+      ·
+      <a
+        href="https://github.com/idvorkin/chop-conventions/tree/main/skills/showboat"
+        style="color: #0366d6; text-decoration: none"
+        >Showboat</a
+      >
+    </footer>
     <script>
+      // Copy button on pre blocks
+      document.querySelectorAll("pre").forEach(function (pre) {
+        var btn = document.createElement("button");
+        btn.className = "copy-btn";
+        btn.textContent = "Copy";
+        btn.addEventListener("click", function () {
+          var text = pre.querySelector("code")
+            ? pre.querySelector("code").textContent
+            : pre.textContent;
+          navigator.clipboard.writeText(text).then(function () {
+            btn.textContent = "Copied!";
+            setTimeout(function () {
+              btn.textContent = "Copy";
+            }, 1500);
+          });
+        });
+        pre.appendChild(btn);
+      });
+
       // Hot reload: polls for file changes and reloads when updated (local dev only)
       (function () {
         let lastModified = "";
