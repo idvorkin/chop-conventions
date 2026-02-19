@@ -93,6 +93,108 @@
         border-radius: 6px;
         margin: 8px 0;
       }
+      /* Lightbox */
+      .lb-thumb {
+        cursor: pointer;
+        transition:
+          transform 0.15s ease,
+          box-shadow 0.15s ease;
+      }
+      .lb-thumb:hover {
+        transform: scale(1.03);
+        box-shadow: 0 2px 16px rgba(0, 0, 0, 0.25);
+      }
+      #lb-overlay {
+        display: none;
+        position: fixed;
+        inset: 0;
+        background: rgba(0, 0, 0, 0.88);
+        z-index: 9999;
+        justify-content: center;
+        align-items: center;
+        flex-direction: column;
+      }
+      #lb-img {
+        max-width: 85vw;
+        max-height: 75vh;
+        object-fit: contain;
+        border-radius: 8px;
+        border: none;
+        box-shadow: 0 4px 40px rgba(0, 0, 0, 0.5);
+      }
+      #lb-caption {
+        color: #eee;
+        font-size: 1.1em;
+        margin-top: 12px;
+        text-align: center;
+        max-width: 80vw;
+        line-height: 1.5;
+      }
+      #lb-counter {
+        color: #888;
+        font-size: 0.85em;
+        margin-top: 6px;
+      }
+      #lb-close {
+        position: absolute;
+        top: 12px;
+        right: 20px;
+        color: #aaa;
+        font-size: 2.2em;
+        cursor: pointer;
+        line-height: 1;
+        padding: 8px;
+        z-index: 10001;
+      }
+      #lb-close:hover {
+        color: #fff;
+      }
+      .lb-nav {
+        position: absolute;
+        top: 0;
+        bottom: 0;
+        width: 15%;
+        min-width: 60px;
+        display: flex;
+        align-items: center;
+        cursor: pointer;
+        z-index: 10000;
+        user-select: none;
+        -webkit-user-select: none;
+      }
+      .lb-nav:hover .lb-arrow {
+        opacity: 1;
+      }
+      .lb-nav-prev {
+        left: 0;
+        justify-content: flex-start;
+        padding-left: 16px;
+      }
+      .lb-nav-next {
+        right: 0;
+        justify-content: flex-end;
+        padding-right: 16px;
+      }
+      .lb-arrow {
+        color: #ccc;
+        font-size: 2.5em;
+        opacity: 0.5;
+        transition: opacity 0.15s;
+        text-shadow: 0 1px 4px rgba(0, 0, 0, 0.5);
+      }
+      @media (max-width: 600px) {
+        .lb-nav {
+          width: 20%;
+        }
+        .lb-arrow {
+          opacity: 0.7;
+          font-size: 2em;
+        }
+        #lb-img {
+          max-width: 95vw;
+          max-height: 70vh;
+        }
+      }
       hr {
         border: none;
         border-top: 2px solid #0366d6;
@@ -151,6 +253,162 @@
         });
         pre.appendChild(btn);
       });
+
+      // Lightbox with keyboard nav and tap targets
+      (function () {
+        var images = [];
+        var currentIdx = -1;
+
+        // Build overlay DOM
+        var overlay = document.createElement("div");
+        overlay.id = "lb-overlay";
+        overlay.innerHTML =
+          '<div class="lb-nav lb-nav-prev" id="lb-prev"><span class="lb-arrow">&#8249;</span></div>' +
+          '<div class="lb-nav lb-nav-next" id="lb-next"><span class="lb-arrow">&#8250;</span></div>' +
+          '<img id="lb-img" />' +
+          '<div id="lb-caption"></div>' +
+          '<div id="lb-counter"></div>' +
+          '<div id="lb-close">&times;</div>';
+        document.body.appendChild(overlay);
+
+        var lbImg = document.getElementById("lb-img");
+        var lbCaption = document.getElementById("lb-caption");
+        var lbCounter = document.getElementById("lb-counter");
+
+        function showImage(idx) {
+          if (idx < 0 || idx >= images.length) return;
+          currentIdx = idx;
+          lbImg.src = images[idx].src;
+          lbCaption.innerHTML = images[idx].caption || "";
+          lbCounter.textContent = idx + 1 + " / " + images.length;
+        }
+
+        function openLightbox(src, caption) {
+          // Find index in images array by src
+          currentIdx = -1;
+          for (var i = 0; i < images.length; i++) {
+            if (images[i].src === src) {
+              currentIdx = i;
+              break;
+            }
+          }
+          if (currentIdx === -1) {
+            // Not in array — show standalone
+            images.push({ src: src, caption: caption });
+            currentIdx = images.length - 1;
+          }
+          showImage(currentIdx);
+          overlay.style.display = "flex";
+        }
+
+        function closeLightbox() {
+          overlay.style.display = "none";
+        }
+
+        function prevImage() {
+          if (currentIdx > 0) showImage(currentIdx - 1);
+        }
+
+        function nextImage() {
+          if (currentIdx < images.length - 1) showImage(currentIdx + 1);
+        }
+
+        // Tap targets
+        document
+          .getElementById("lb-prev")
+          .addEventListener("click", function (e) {
+            e.stopPropagation();
+            prevImage();
+          });
+        document
+          .getElementById("lb-next")
+          .addEventListener("click", function (e) {
+            e.stopPropagation();
+            nextImage();
+          });
+
+        // Close on background click (not on image or nav)
+        overlay.addEventListener("click", function (e) {
+          if (e.target === overlay) closeLightbox();
+        });
+        document
+          .getElementById("lb-close")
+          .addEventListener("click", function (e) {
+            e.stopPropagation();
+            closeLightbox();
+          });
+
+        // Prevent image click from closing
+        lbImg.addEventListener("click", function (e) {
+          e.stopPropagation();
+        });
+
+        // Keyboard navigation
+        document.addEventListener("keydown", function (e) {
+          if (overlay.style.display !== "flex") return;
+          switch (e.key) {
+            case "Escape":
+              closeLightbox();
+              break;
+            case "ArrowLeft":
+            case "ArrowUp":
+              e.preventDefault();
+              prevImage();
+              break;
+            case "ArrowRight":
+            case "ArrowDown":
+              e.preventDefault();
+              nextImage();
+              break;
+            case "Home":
+              e.preventDefault();
+              showImage(0);
+              break;
+            case "End":
+              e.preventDefault();
+              showImage(images.length - 1);
+              break;
+          }
+        });
+
+        // Touch swipe support
+        var touchStartX = 0;
+        overlay.addEventListener(
+          "touchstart",
+          function (e) {
+            touchStartX = e.changedTouches[0].screenX;
+          },
+          { passive: true },
+        );
+        overlay.addEventListener(
+          "touchend",
+          function (e) {
+            var dx = e.changedTouches[0].screenX - touchStartX;
+            if (Math.abs(dx) > 50) {
+              if (dx > 0) prevImage();
+              else nextImage();
+            }
+          },
+          { passive: true },
+        );
+
+        // Expose globally
+        window.openLightbox = openLightbox;
+
+        // Collect all images with data-caption and make them clickable
+        document.querySelectorAll("img[data-caption]").forEach(function (img) {
+          var entry = {
+            src: img.src,
+            caption: img.getAttribute("data-caption"),
+          };
+          images.push(entry);
+          img.classList.add("lb-thumb");
+          img.addEventListener("click", function (e) {
+            e.stopPropagation();
+            openLightbox(img.src, img.getAttribute("data-caption"));
+          });
+        });
+      })();
 
       // Hot reload: polls for file changes and reloads when updated (local dev only)
       (function () {

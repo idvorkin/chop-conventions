@@ -1,7 +1,7 @@
 ---
 name: image-explore
 description: "Brainstorm multiple visual directions for a blog image, generate them in parallel, build a comparison page, and optionally publish as a shareable gist."
-argument-hint: "<post-or-topic> [--count N] [--style 'override'] [--aspect 'W:H']"
+argument-hint: "<post-or-topic> [--count N] [--variants N] [--style 'override'] [--aspect 'W:H']"
 allowed-tools: Bash, Read, Write, Glob, Grep, AskUserQuestion, WebFetch
 ---
 
@@ -15,6 +15,7 @@ Parse the user's input for:
 
 - **Target**: A file path (e.g., `_d/ai-native-manager.md`) or a freeform topic (e.g., "chaos of AI adoption")
 - **`--count N`**: Number of directions to brainstorm and generate (default: 5, max: 8)
+- **`--variants N`**: Number of minor variants per direction (default: 1, max: 3). Each variant tweaks the scene (different angle, lighting, composition) while keeping the same concept and shirt text.
 - **`--style 'description'`**: Override the default illustration style (passed through to gen-image)
 - **`--aspect 'W:H'`**: Aspect ratio (default: 3:4). Valid: `1:1`, `2:3`, `3:2`, `3:4`, `4:3`, `9:16`, `16:9`
 - **`--ref 'path'`**: Override reference image (default: raccoon canonical ref)
@@ -64,6 +65,8 @@ Present directions as a table:
 
 Confirm with user via `AskUserQuestion` before generating. User may add, remove, or modify directions.
 
+**If `--variants` > 1:** After user approves the directions, craft variant scenes for each. Each variant keeps the same concept, shirt text, and vibe, but varies the specific scene description (different angle, setting detail, composition, or lighting). Do NOT present variant scenes for approval — just generate them.
+
 ### Phase 3: Generate Images in Parallel
 
 1. Resolve the script path once:
@@ -73,7 +76,9 @@ Confirm with user via `AskUserQuestion` before generating. User may add, remove,
    GEN="$CHOP_ROOT/skills/image-explore/generate.py"
    ```
 
-2. Write a `directions.json` file with all directions (used by both Phase 3 and Phase 4):
+2. Write a `directions.json` file with all directions (used by both Phase 3 and Phase 4).
+
+   **Without variants** (1 entry per direction):
 
    ```json
    [
@@ -84,17 +89,37 @@ Confirm with user via `AskUserQuestion` before generating. User may add, remove,
        "shirt": "SHIP IT",
        "scene": "Raccoon at NASA console, screens showing fire",
        "output": "mission-control.webp"
-     },
-     {
-       "name": "Surfing the Wave",
-       "section": "AI Adoption",
-       "vibe": "Riding chaos",
-       "shirt": "SHIP IT",
-       "scene": "Raccoon surfing tidal wave of AI debris",
-       "output": "surfing-wave.webp"
      }
    ]
    ```
+
+   **With variants** (multiple entries per direction, grouped by `group` field):
+
+   ```json
+   [
+     {
+       "name": "Mission Control v1",
+       "group": "Mission Control",
+       "section": "Year of Chaos",
+       "vibe": "This is fine",
+       "shirt": "SHIP IT",
+       "scene": "Raccoon at NASA console, screens showing fire, dramatic front view",
+       "output": "mission-control-v1.webp"
+     },
+     {
+       "name": "Mission Control v2",
+       "group": "Mission Control",
+       "section": "Year of Chaos",
+       "vibe": "This is fine",
+       "shirt": "SHIP IT",
+       "scene": "Raccoon at NASA console seen from side, leaning back in chair sipping tea",
+       "output": "mission-control-v2.webp"
+     }
+   ]
+   ```
+
+   The `group` field enables `build-page.py` to group variants under a shared heading.
+   Output filenames follow the pattern `{slug}-v{N}.webp` when using variants.
 
 3. **Generate all images in parallel** with a single command:
 
@@ -117,11 +142,20 @@ Build and serve the comparison page (reuses the same `directions.json` —
 python3 "$CHOP_ROOT/skills/image-explore/build-page.py" \
   --title "Image Explore: Topic Name" \
   --dir docs/image-explore-topic/ \
+  --images-dir images/ \
   directions.json
 ```
 
+Options:
+
+- `--images-dir PATH`: Where to find generated images (default: current directory). Useful when images were written to a different directory than where you run the command (e.g., `images/`).
+- `--no-serve`: Skip starting the HTTP server.
+
 This creates the showboat doc, converts images, generates HTML via pandoc,
 and starts a local HTTP server. It prints the Tailscale URL.
+
+When `directions.json` contains entries with a `group` field, the page groups variants
+under shared direction headings with sub-headers for each variant.
 
 ### Phase 5: Publish (Ask First)
 
