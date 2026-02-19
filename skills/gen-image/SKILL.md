@@ -22,27 +22,13 @@ Parse the user's input for:
 
 ## Configuration
 
-- **Default API URL**: `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-image:generateContent`
-- **Auth**: Reads `GOOGLE_API_KEY` from environment
-- **Helper script**: `gemini-image.sh` in the same directory as this skill
+- **Auth**: `GOOGLE_API_KEY` — auto-loaded from `~/.env` by `generate.py`
+- **Default style**: Read from `raccoon-style.txt` (in this skill's directory) by `generate.py`
+- **Reference image**: Auto-resolved by `generate.py` (searches `~/gits/blog*/images/raccoon-nerd.webp`)
+- **Low-level script**: `gemini-image.sh` handles single API calls (used internally by `generate.py`)
+- **Generation wrapper**: `../image-explore/generate.py` handles env loading, style, ref image, and parallel batch execution
 
-### Default Style (Raccoon)
-
-When no `--style` is given, use this base style:
-
-> Cute anthropomorphic raccoon character with chibi proportions (oversized head, small body), dark raccoon mask markings around eyes, big friendly dark eyes, small black nose, round brown ears with lighter inner ear, soft brown felt/plush fur, striped ringed tail with brown and dark brown bands. Wearing big round rainbow-colored glasses (frames cycle through red, orange, yellow, green, blue, purple), green t-shirt with bold white text, blue denim shorts, IMPORTANT: mismatched Crocs shoes — one BLUE Croc on the left foot and one YELLOW Croc on the right foot (never the same color on both feet). Soft plush 3D/vinyl toy illustration style, studio softbox lighting, clean warm pastel background, subtle vintage film grain, children's book style. Full body.
-
-When `--style` is provided, it **replaces** the default entirely (it is not appended).
-
-### Canonical Reference Image
-
-For raccoon-style generations, always pass a reference image to maintain character consistency across generations. The canonical reference is:
-
-```
-~/gits/blog7/images/raccoon-nerd.webp
-```
-
-This image contains the clearest full-body shot with all defining traits visible. Pass it as a reference image to every raccoon generation unless the user explicitly opts out.
+When `--style` is provided, it **replaces** the default raccoon style entirely (it is not appended).
 
 ## Workflow
 
@@ -85,49 +71,48 @@ Ask the user to approve, modify, or remove items before generating. Use `AskUser
 
 ### Phase 4: Generate Images
 
-For each approved illustration:
+Use `generate.py` from the `image-explore` skill. It handles env loading (`~/.env`), raccoon style
+(from `raccoon-style.txt`), reference image resolution, and parallel batch execution automatically.
 
-1. Verify `GOOGLE_API_KEY` is set:
-
-   ```bash
-   [[ -n "${GOOGLE_API_KEY:-}" ]] && echo "API key is set" || echo "ERROR: GOOGLE_API_KEY not set"
-   ```
-
-2. Locate the helper script:
+1. Resolve the script path:
 
    ```bash
-   # The helper script is in the same directory as this skill
-   SKILL_DIR="$(dirname "$(find ~/gits/chop-conventions/skills/gen-image -name 'gemini-image.sh' -print -quit)")"
+   CHOP_ROOT="$(cd "$(dirname "$(readlink -f ~/.claude/skills/gen-image/SKILL.md)")" && git rev-parse --show-toplevel)"
+   GEN="$CHOP_ROOT/skills/image-explore/generate.py"
    ```
 
-3. Resolve the reference image path (for raccoon style):
+2. **Single image:**
 
    ```bash
-   REF_IMAGE="$(ls ~/gits/blog7/images/raccoon-nerd.webp 2>/dev/null || ls ~/gits/blog*/images/raccoon-nerd.webp 2>/dev/null | head -1)"
+   python3 "$GEN" --scene "Raccoon lifting kettlebell in a gym" --shirt "FIT" --output raccoon-kettlebell.webp
    ```
 
-4. Generate each image (with reference image and aspect ratio):
+   Pass `--aspect`, `--ref`, or `--style` to override defaults.
+
+3. **Multiple images (parallel):** Write a JSON file and use batch mode:
+
+   ```json
+   [
+     {
+       "scene": "Raccoon lifting kettlebell in a gym",
+       "shirt": "FIT",
+       "output": "raccoon-kettlebell.webp"
+     },
+     {
+       "scene": "Raccoon at family picnic",
+       "shirt": "FAMILY",
+       "output": "raccoon-picnic.webp"
+     }
+   ]
+   ```
 
    ```bash
-   ASPECT_RATIO="3:4" bash "$SKILL_DIR/gemini-image.sh" \
-     "Generate this character in a new scene: THE FULL PROMPT HERE" \
-     "/path/to/output/filename.webp" \
-     "API_URL_IF_OVERRIDDEN" \
-     "$REF_IMAGE"
+   python3 "$GEN" --batch illustrations.json --aspect 3:4
    ```
 
-   Without reference images (custom style):
+4. After generation, show each image to the user by reading the file with the Read tool (which renders images inline).
 
-   ```bash
-   ASPECT_RATIO="3:4" bash "$SKILL_DIR/gemini-image.sh" \
-     "THE FULL PROMPT HERE" \
-     "/path/to/output/filename.webp" \
-     "API_URL_IF_OVERRIDDEN"
-   ```
-
-5. After each image is generated, show it to the user by reading the file with the Read tool (which renders images inline)
-
-6. If generation fails, report the error and ask if the user wants to retry with a modified prompt or skip
+5. If generation fails, report the error and ask if the user wants to retry with a modified prompt or skip.
 
 ### Phase 5: Insert References (Optional)
 
@@ -156,9 +141,9 @@ If the target was a freeform topic (not a file), skip this phase — just tell t
 
 ## Error Handling
 
-- **Missing API key**: Stop immediately, tell the user to `export GOOGLE_API_KEY=...`
+- **Missing API key**: `generate.py` auto-loads from `~/.env`. If still missing, tell the user to set `GOOGLE_API_KEY`
 - **API error**: Show the error message, suggest checking the API key or endpoint
-- **No jq**: The helper script requires `jq` — check and suggest `brew install jq` or `apt install jq`
+- **No jq**: The helper script (`gemini-image.sh`) requires `jq`
 - **No cwebp**: Images will be saved as PNG instead of WebP — inform the user
 
 ## Safety
