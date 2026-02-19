@@ -11,6 +11,7 @@ Actions the agent can NEVER take without explicit user approval. Approval means 
 - **Force pushing** - Can destroy history and break collaborators
 - **Accepting/merging PRs** - Human must review and approve
 - **Any action that loses work** - Deleting branches with unmerged commits, hard resets, discarding uncommitted changes
+- **Big refactors during bug fixes** - If you discover an architectural issue while fixing a bug, ask user before refactoring: "I found [issue]. Address now or just fix the immediate bug?"
 
 ## Encouraged (not losing work)
 
