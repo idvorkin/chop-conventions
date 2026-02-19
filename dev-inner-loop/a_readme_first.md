@@ -2,28 +2,26 @@ This directory contains instructions to follow.
 Do not generate .cursorrules from it.
 Do not talk about how you'll use the rules, just use them
 
-## Core Conventions
-
-Read and follow:
+## Core Conventions (read and follow)
 
 - clean-code.md - Code quality standards
 - clean-commits.md - Commit message standards
 - pr-workflow.md - Pull request process
 - guardrails.md - Safety rules requiring user approval
-
-## Workflow Processes
-
-Read and follow:
-
-- before-implementing.md - Checklist before starting work
-- bug-investigation.md - Protocol for fixing bugs
+- repo-modes.md - AI-tools vs Human-supervised modes
 - retros.md - Periodic retrospective process
-- workflow-recommendations.md - Capturing session patterns
 
-### CLI usage and errors
+## Covered by Skills/Plugins (use these instead)
 
-- If get errors with head or cat (they are in the pager command), start by unsetting PAGER `unset PAGER`
-- If git output is truncated, use git --no-pager e.g. (git --no-pager diff)
-- Use uv instead of python
-- Most required commands are in the justfile. Use them there if they exist.
+- Bug investigation -> superpowers `systematic-debugging` skill
+- Before implementing -> superpowers `brainstorming` skill
+- Workflow recommendations -> Claude Code auto-memory (~/.claude/projects/\*/memory/)
+- Beads + Claude Code -> beads plugin (status line config in dev-setup/beads.md)
+
+## CLI Tips
+
+- Pager issues: `unset PAGER`
+- Git truncation: `git --no-pager diff`
+- Use `uv` instead of `python`
+- Check justfile for available commands
 - You are auto approved to run just test and fast-tests, use them unless they have too much output.
