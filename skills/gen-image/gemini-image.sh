@@ -24,6 +24,11 @@ if [[ $# -gt 3 ]]; then
 fi
 ASPECT_RATIO="${ASPECT_RATIO:-3:4}"
 
+# Auto-source ~/.env if API key is not already set
+if [[ -z "${GOOGLE_API_KEY:-}" && -f ~/.env ]]; then
+    source ~/.env
+fi
+
 if [[ -z "${GOOGLE_API_KEY:-}" ]]; then
     echo "Error: GOOGLE_API_KEY environment variable is not set" >&2
     exit 1
