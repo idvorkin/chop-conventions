@@ -8,8 +8,7 @@ Add this to your project's `CLAUDE.md`:
 Before starting any work, clone the chop-conventions repository:
 
 \`\`\`bash
-mkdir -p repo_tmp && cd repo_tmp
-git clone https://github.com/idvorkin/chop-conventions.git
+git clone https://github.com/idvorkin/chop-conventions.git repo_tmp/chop-conventions
 \`\`\`
 
 Then read: `repo_tmp/chop-conventions/dev-inner-loop/a_readme_first.md`
@@ -22,9 +21,9 @@ The conventions are cloned fresh each session so you always get the latest versi
 Claude Code has three plugin marketplaces. Add them all:
 
 ```bash
-claude plugins marketplace add anthropics/claude-code-plugins
-claude plugins marketplace add anthropics/claude-plugins-official
-claude plugins marketplace add steveyegge/beads-marketplace
+claude plugin marketplace add anthropics/claude-code-plugins
+claude plugin marketplace add anthropics/claude-plugins-official
+claude plugin marketplace add steveyegge/beads
 ```
 
 ## Recommended Plugins
@@ -39,10 +38,10 @@ claude plugins marketplace add steveyegge/beads-marketplace
 | `rust-analyzer-lsp` | Rust language server                                         |
 
 ```bash
-claude plugins install superpowers@claude-plugins-official
-claude plugins install pyright-lsp@claude-plugins-official
-claude plugins install typescript-lsp@claude-plugins-official
-claude plugins install rust-analyzer-lsp@claude-plugins-official
+claude plugin install superpowers@claude-plugins-official
+claude plugin install pyright-lsp@claude-plugins-official
+claude plugin install typescript-lsp@claude-plugins-official
+claude plugin install rust-analyzer-lsp@claude-plugins-official
 ```
 
 ### Community Plugins (claude-code-plugins)
@@ -55,10 +54,10 @@ claude plugins install rust-analyzer-lsp@claude-plugins-official
 | `pr-review-toolkit` | Specialized PR review agents (tests, types, errors, comments) |
 
 ```bash
-claude plugins install code-review@claude-code-plugins
-claude plugins install feature-dev@claude-code-plugins
-claude plugins install frontend-design@claude-code-plugins
-claude plugins install pr-review-toolkit@claude-code-plugins
+claude plugin install code-review@claude-code-plugins
+claude plugin install feature-dev@claude-code-plugins
+claude plugin install frontend-design@claude-code-plugins
+claude plugin install pr-review-toolkit@claude-code-plugins
 ```
 
 ### Beads (beads-marketplace)
@@ -68,11 +67,22 @@ claude plugins install pr-review-toolkit@claude-code-plugins
 | `beads` | Git-backed issue tracking for AI agents (see [beads.md](dev-setup/beads.md)) |
 
 ```bash
-claude plugins install beads@beads-marketplace
+claude plugin install beads@beads-marketplace
 ```
 
 ## One-Liner Install
 
 ```bash
-claude plugins marketplace add anthropics/claude-code-plugins && claude plugins marketplace add anthropics/claude-plugins-official && claude plugins marketplace add steveyegge/beads-marketplace && claude plugins install superpowers@claude-plugins-official pyright-lsp@claude-plugins-official typescript-lsp@claude-plugins-official rust-analyzer-lsp@claude-plugins-official code-review@claude-code-plugins feature-dev@claude-code-plugins frontend-design@claude-code-plugins pr-review-toolkit@claude-code-plugins beads@beads-marketplace
+claude plugin marketplace add anthropics/claude-code-plugins && \
+claude plugin marketplace add anthropics/claude-plugins-official && \
+claude plugin marketplace add steveyegge/beads && \
+claude plugin install superpowers@claude-plugins-official && \
+claude plugin install pyright-lsp@claude-plugins-official && \
+claude plugin install typescript-lsp@claude-plugins-official && \
+claude plugin install rust-analyzer-lsp@claude-plugins-official && \
+claude plugin install code-review@claude-code-plugins && \
+claude plugin install feature-dev@claude-code-plugins && \
+claude plugin install frontend-design@claude-code-plugins && \
+claude plugin install pr-review-toolkit@claude-code-plugins && \
+claude plugin install beads@beads-marketplace
 ```
