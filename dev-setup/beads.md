@@ -281,6 +281,48 @@ bd config set sync.branch beads-sync
 - Review with `bd list --status=in_progress`
 - Close completed ones: `bd close ID --reason="done"`
 
+## Claude Code Integration
+
+### Status Line Configuration
+
+Show current branch, in-progress issue ID, and truncated title in Claude Code's status line.
+
+Add to `~/.claude/settings.json`:
+
+```json
+{
+  "statusLine": {
+    "type": "command",
+    "command": "input=$(cat); cwd=$(echo \"$input\" | jq -r '.workspace.current_dir'); cwd_short=$(echo \"$cwd\" | sed \"s|^$HOME|~|\"); branch=\"\"; bd_issue=\"\"; if [ -d \"$cwd/.git\" ]; then branch=$(cd \"$cwd\" && git branch --show-current 2>/dev/null); fi; if command -v bd >/dev/null 2>&1 && [ -d \"$cwd/.beads\" ]; then bd_line=$(cd \"$cwd\" && bd list --status=in_progress 2>/dev/null | head -1); if [ -n \"$bd_line\" ]; then bd_id=$(echo \"$bd_line\" | awk '{print $1}'); bd_title=$(echo \"$bd_line\" | sed 's/.*- //' | cut -c1-30); bd_issue=\" [${bd_id}: ${bd_title}]\"; fi; fi; printf '\\033[01;32m%s@%s\\033[00m:\\033[01;34m%s\\033[00m \\033[33m(%s)\\033[00m%s' \"$(whoami)\" \"$(hostname -s)\" \"$cwd_short\" \"$branch\" \"$bd_issue\""
+  }
+}
+```
+
+**Requires:** `jq` installed, `bd` in PATH, project has `.beads/` directory.
+
+### Session Hooks
+
+Auto-prime beads context on session start and before compaction:
+
+```json
+{
+  "hooks": {
+    "PreCompact": [
+      {
+        "matcher": "",
+        "hooks": [{ "type": "command", "command": "bd prime" }]
+      }
+    ],
+    "SessionStart": [
+      {
+        "matcher": "",
+        "hooks": [{ "type": "command", "command": "bd prime" }]
+      }
+    ]
+  }
+}
+```
+
 ## Resources
 
 - [GitHub: steveyegge/beads](https://github.com/steveyegge/beads)
