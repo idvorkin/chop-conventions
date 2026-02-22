@@ -120,32 +120,14 @@ git push
 
 ### 5. Install Git Hooks for Zero-Lag Sync
 
-Create `.githooks/pre-commit`:
+Chain bd hooks on top of prek (see [githooks.md](./githooks.md)):
 
 ```bash
-#!/bin/bash
-# Flush pending beads changes before commit
-if command -v bd &> /dev/null && [ -d ".beads" ]; then
-    bd sync --quiet 2>/dev/null || true
-fi
+prek install               # Install prek hook first
+bd hooks install --chain   # Chain bd hooks on top
 ```
 
-Create `.githooks/post-merge`:
-
-```bash
-#!/bin/bash
-# Import beads changes after merge/pull
-if command -v bd &> /dev/null && [ -d ".beads" ]; then
-    bd sync --quiet 2>/dev/null || true
-fi
-```
-
-Enable hooks:
-
-```bash
-git config core.hooksPath .githooks
-chmod +x .githooks/pre-commit .githooks/post-merge
-```
+This installs pre-commit, post-merge, and other hooks automatically. Do NOT use `core.hooksPath` — it conflicts with prek.
 
 ### 6. Use a Dedicated Sync Branch
 

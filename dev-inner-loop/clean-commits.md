@@ -6,7 +6,7 @@ When making commits propose to the user to split them to be logical users.
 
 ### Avoid mixing linting/formatting with edits.
 
-Before editig a file, try to run the pre-commit hooks on it.
+Before editing a file, try to run the prek hooks on it.
 If something is changed, propose committing it by itself.
 
 E.g.
@@ -14,10 +14,9 @@ E.g.
 ```
 git stash # store other changes
 git add file_to_change
-pre-commit
+prek run --files file_to_change
 git add file_to_change  # if it was changed
-git commit -m "chore: pre-commiting  file_to_change
-
+git commit -m "chore: apply formatting to file_to_change"
 ```
 
 ### Seeing full diffs
@@ -93,4 +92,4 @@ git commit -m "Add feature X"
 
 Try to avoid grouping independent changes in 1 checkin. If it makes sense, offer the user to split them into logical commits
 
-Run pre-commit before trying to commit and after staging.
+Run prek before trying to commit and after staging.

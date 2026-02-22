@@ -6,7 +6,7 @@ default:
     @just --list
 ```
 
-Ensure we always have a test command, and fast-test command (it's called by pre-commit).
+Ensure we always have a test command, and fast-test command (it's called by prek hooks).
 It can just print 0/0 tests passed until we have more tests
 
 ```
