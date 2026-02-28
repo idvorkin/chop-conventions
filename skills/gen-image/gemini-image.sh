@@ -16,7 +16,7 @@ set -euo pipefail
 
 PROMPT="${1:?Usage: gemini-image.sh <prompt> <output-file> [api-url] [ref-image...]}"
 OUTPUT="${2:?Usage: gemini-image.sh <prompt> <output-file> [api-url] [ref-image...]}"
-API_URL="${3:-https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-image:generateContent}"
+API_URL="${3:-https://generativelanguage.googleapis.com/v1beta/models/gemini-3.1-flash-image-preview:generateContent}"
 REF_IMAGES=()
 if [[ $# -gt 3 ]]; then
     shift 3
