@@ -19,6 +19,7 @@ Parse the user's input for:
 - **`--api-url 'url'`**: Override the Gemini API endpoint (default below)
 - **`--count N`**: Max number of images to generate (default: 3)
 - **`--aspect 'W:H'`**: Aspect ratio via `imageConfig` (default: 3:4, portrait). Valid values: `1:1`, `2:3`, `3:2`, `3:4`, `4:3`, `4:5`, `5:4`, `9:16`, `16:9`, `21:9`
+- **`--transparent`**: Generate on magenta chroma-key background, then remove background with `rembg` (via `uvx`) to produce a PNG/webp with real alpha transparency. Adds ~15s per image.
 
 ## Configuration
 

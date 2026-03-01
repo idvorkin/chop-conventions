@@ -14,10 +14,17 @@
 import argparse
 import json
 import os
+import shutil
 import subprocess
 import sys
+import tempfile
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
+
+GREENSCREEN_PROMPT = (
+    "IMPORTANT: Solid bright magenta chroma-key background (#FF00FF), "
+    "uniform flat magenta everywhere behind the character."
+)
 
 
 def resolve_chop_root():
@@ -77,12 +84,52 @@ def read_default_style(chop_root):
         "dark brown bands. Wearing big round rainbow-colored glasses, green t-shirt "
         "with bold white text, blue denim shorts, IMPORTANT: mismatched Crocs shoes. "
         "Soft plush 3D/vinyl toy illustration style, studio softbox lighting, "
-        "clean warm pastel background, subtle vintage film grain, children's book style. "
+        "solid bright magenta chroma-key background (#FF00FF), subtle vintage film grain, children's book style. "
         "Full body."
     )
 
 
-def generate_one(scene, shirt, output, gemini_script, style, ref_image, aspect):
+def remove_background(image_path):
+    """Remove background using rembg via uvx. Returns (success, error_msg)."""
+    uvx = shutil.which("uvx")
+    if not uvx:
+        return False, "uvx not found — needed to run rembg"
+
+    with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as tmp:
+        tmp_path = tmp.name
+
+    try:
+        result = subprocess.run(
+            [uvx, "--from", "rembg[cpu,cli]", "rembg", "i", image_path, tmp_path],
+            capture_output=True,
+            text=True,
+        )
+        if result.returncode != 0:
+            return False, f"rembg failed: {result.stderr.strip()}"
+
+        ext = Path(image_path).suffix.lower()
+        if ext == ".webp":
+            magick = shutil.which("magick") or shutil.which("convert")
+            if magick:
+                conv = subprocess.run(
+                    [magick, tmp_path, "-quality", "90", image_path],
+                    capture_output=True,
+                    text=True,
+                )
+                if conv.returncode != 0:
+                    return False, f"magick convert failed: {conv.stderr.strip()}"
+            else:
+                shutil.copy2(tmp_path, image_path.replace(".webp", ".png"))
+        else:
+            shutil.copy2(tmp_path, image_path)
+        return True, None
+    finally:
+        Path(tmp_path).unlink(missing_ok=True)
+
+
+def generate_one(
+    scene, shirt, output, gemini_script, style, ref_image, aspect, transparent=False
+):
     """Generate a single image. Returns (output, success, error_msg)."""
     prompt_parts = [
         style,
@@ -90,6 +137,9 @@ def generate_one(scene, shirt, output, gemini_script, style, ref_image, aspect):
         f'shirt text clearly readable. Shirt reads: "{shirt}".',
         scene,
     ]
+    if transparent:
+        prompt_parts.append(GREENSCREEN_PROMPT)
+
     full_prompt = " ".join(prompt_parts)
 
     cmd = ["bash", gemini_script, full_prompt, output, ""]
@@ -106,6 +156,13 @@ def generate_one(scene, shirt, output, gemini_script, style, ref_image, aspect):
         return (output, False, result.stderr.strip())
     if result.stderr:
         print(result.stderr, file=sys.stderr)
+
+    if transparent:
+        print(f"Removing background: {output}", file=sys.stderr)
+        success, err = remove_background(output)
+        if not success:
+            return (output, False, f"Background removal failed: {err}")
+
     return (output, True, None)
 
 
@@ -135,6 +192,12 @@ def main():
     parser.add_argument("--aspect", default="3:4", help="Aspect ratio (default: 3:4)")
     parser.add_argument("--ref", default=None, help="Override reference image path")
     parser.add_argument("--style", default=None, help="Override default raccoon style")
+    parser.add_argument(
+        "--transparent",
+        action="store_true",
+        default=False,
+        help="Generate on magenta greenscreen, then remove background with rembg",
+    )
 
     args = parser.parse_args()
 
@@ -170,6 +233,7 @@ def main():
             style,
             ref_image,
             args.aspect,
+            transparent=args.transparent,
         )
         if not success:
             print(f"Error: {err}", file=sys.stderr)
@@ -203,6 +267,7 @@ def main():
                     style,
                     ref_image,
                     args.aspect,
+                    transparent=args.transparent,
                 ): d
                 for d in directions
             }
