@@ -12,6 +12,8 @@
 # directions.json format:
 #   [{"scene": "...", "shirt": "TEXT", "output": "file.webp"}, ...]
 
+from __future__ import annotations
+
 import argparse
 import json
 import os
@@ -21,12 +23,38 @@ import sys
 import tempfile
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from dataclasses import dataclass
 from pathlib import Path
 
 GREENSCREEN_PROMPT = (
     "IMPORTANT: Solid bright magenta chroma-key background (#FF00FF), "
     "uniform flat magenta everywhere behind the character."
 )
+
+
+@dataclass
+class Direction:
+    scene: str
+    shirt: str
+    output: str
+
+
+@dataclass
+class GenerateConfig:
+    gemini_script: str
+    style: str
+    ref_image: str | None
+    aspect: str
+    transparent: bool = False
+
+
+@dataclass
+class GenerationResult:
+    output: str
+    success: bool
+    error: str | None
+    prompt: str
+    duration_s: float
 
 
 def resolve_chop_root():
@@ -129,45 +157,61 @@ def remove_background(image_path):
         Path(tmp_path).unlink(missing_ok=True)
 
 
-def generate_one(
-    scene, shirt, output, gemini_script, style, ref_image, aspect, transparent=False
-):
-    """Generate a single image. Returns (output, success, error_msg, full_prompt, duration_s)."""
+def generate_one(direction: Direction, config: GenerateConfig) -> GenerationResult:
+    """Generate a single image."""
     prompt_parts = [
-        style,
+        config.style,
         f"IMPORTANT: Main raccoon LARGE and PROMINENT, at least 40% of image, "
-        f'shirt text clearly readable. Shirt reads: "{shirt}".',
-        scene,
+        f'shirt text clearly readable. Shirt reads: "{direction.shirt}".',
+        direction.scene,
     ]
-    if transparent:
+    if config.transparent:
         prompt_parts.append(GREENSCREEN_PROMPT)
 
     full_prompt = " ".join(prompt_parts)
 
-    cmd = ["bash", gemini_script, full_prompt, output, ""]
-    if ref_image:
-        cmd.append(ref_image)
+    cmd = ["bash", config.gemini_script, full_prompt, direction.output, ""]
+    if config.ref_image:
+        cmd.append(config.ref_image)
 
     env = os.environ.copy()
-    env["ASPECT_RATIO"] = aspect
+    env["ASPECT_RATIO"] = config.aspect
 
-    print(f"Generating: {output}", file=sys.stderr)
+    print(f"Generating: {direction.output}", file=sys.stderr)
     t0 = time.monotonic()
     result = subprocess.run(cmd, env=env, capture_output=True, text=True)
     duration_s = round(time.monotonic() - t0, 1)
 
     if result.returncode != 0:
-        return (output, False, result.stderr.strip(), full_prompt, duration_s)
+        return GenerationResult(
+            output=direction.output,
+            success=False,
+            error=result.stderr.strip(),
+            prompt=full_prompt,
+            duration_s=duration_s,
+        )
     if result.stderr:
         print(result.stderr, file=sys.stderr)
 
-    if transparent:
-        print(f"Removing background: {output}", file=sys.stderr)
-        success, err = remove_background(output)
+    if config.transparent:
+        print(f"Removing background: {direction.output}", file=sys.stderr)
+        success, err = remove_background(direction.output)
         if not success:
-            return (output, False, f"Background removal failed: {err}", full_prompt, duration_s)
+            return GenerationResult(
+                output=direction.output,
+                success=False,
+                error=f"Background removal failed: {err}",
+                prompt=full_prompt,
+                duration_s=duration_s,
+            )
 
-    return (output, True, None, full_prompt, duration_s)
+    return GenerationResult(
+        output=direction.output,
+        success=True,
+        error=None,
+        prompt=full_prompt,
+        duration_s=duration_s,
+    )
 
 
 def main():
@@ -224,26 +268,24 @@ def main():
         )
         sys.exit(1)
 
-    style = args.style or read_default_style(chop_root)
-    gemini_script = str(chop_root / "skills" / "gen-image" / "gemini-image.sh")
-    ref_image = args.ref or resolve_ref_image()
+    config = GenerateConfig(
+        gemini_script=str(chop_root / "skills" / "gen-image" / "gemini-image.sh"),
+        style=args.style or read_default_style(chop_root),
+        ref_image=args.ref or resolve_ref_image(),
+        aspect=args.aspect,
+        transparent=args.transparent,
+    )
 
     if is_single:
-        _, success, err, full_prompt, duration_s = generate_one(
-            args.scene,
-            args.shirt,
-            args.output,
-            gemini_script,
-            style,
-            ref_image,
-            args.aspect,
-            transparent=args.transparent,
+        direction = Direction(
+            scene=args.scene, shirt=args.shirt, output=args.output
         )
-        if not success:
-            print(f"Error: {err}", file=sys.stderr)
+        result = generate_one(direction, config)
+        if not result.success:
+            print(f"Error: {result.error}", file=sys.stderr)
             sys.exit(1)
-        print(args.output)
-        print(f"Generated in {duration_s}s", file=sys.stderr)
+        print(result.output)
+        print(f"Generated in {result.duration_s}s", file=sys.stderr)
     else:
         # Batch mode: read directions JSON and generate in parallel
         batch_path = Path(args.batch)
@@ -252,56 +294,50 @@ def main():
             sys.exit(1)
 
         with open(batch_path) as f:
-            directions = json.load(f)
+            raw_directions = json.load(f)
 
-        if not directions:
+        if not raw_directions:
             print("Error: No directions in batch file", file=sys.stderr)
             sys.exit(1)
 
-        print(f"Generating {len(directions)} images in parallel...", file=sys.stderr)
+        print(f"Generating {len(raw_directions)} images in parallel...", file=sys.stderr)
         failures = []
 
-        # Map output filename -> direction for augmenting with debug info
-        dir_by_output = {d["output"]: d for d in directions}
+        # Map output filename -> raw dict for augmenting with debug info
+        dir_by_output = {d["output"]: d for d in raw_directions}
 
         batch_t0 = time.monotonic()
-        with ThreadPoolExecutor(max_workers=len(directions)) as pool:
+        with ThreadPoolExecutor(max_workers=len(raw_directions)) as pool:
             futures = {
                 pool.submit(
                     generate_one,
-                    d["scene"],
-                    d["shirt"],
-                    d["output"],
-                    gemini_script,
-                    style,
-                    ref_image,
-                    args.aspect,
-                    transparent=args.transparent,
+                    Direction(scene=d["scene"], shirt=d["shirt"], output=d["output"]),
+                    config,
                 ): d
-                for d in directions
+                for d in raw_directions
             }
             for future in as_completed(futures):
-                output, success, err, full_prompt, duration_s = future.result()
-                # Augment the direction with debug info
-                if output in dir_by_output:
-                    dir_by_output[output]["_prompt"] = full_prompt
-                    dir_by_output[output]["_duration_s"] = duration_s
-                if success:
-                    print(output)
+                result = future.result()
+                # Augment the raw dict with debug info
+                if result.output in dir_by_output:
+                    dir_by_output[result.output]["_prompt"] = result.prompt
+                    dir_by_output[result.output]["_duration_s"] = result.duration_s
+                if result.success:
+                    print(result.output)
                 else:
-                    failures.append((output, err))
-                    print(f"FAILED: {output} — {err}", file=sys.stderr)
+                    failures.append((result.output, result.error))
+                    print(f"FAILED: {result.output} — {result.error}", file=sys.stderr)
 
         batch_duration = round(time.monotonic() - batch_t0, 1)
 
         # Write augmented directions back with debug info
         with open(batch_path, "w") as f:
-            json.dump(directions, f, indent=2)
+            json.dump(raw_directions, f, indent=2)
 
         if failures:
-            print(f"\n{len(failures)}/{len(directions)} failed ({batch_duration}s total)", file=sys.stderr)
+            print(f"\n{len(failures)}/{len(raw_directions)} failed ({batch_duration}s total)", file=sys.stderr)
             sys.exit(1)
-        print(f"\nAll {len(directions)} images generated ({batch_duration}s total)", file=sys.stderr)
+        print(f"\nAll {len(raw_directions)} images generated ({batch_duration}s total)", file=sys.stderr)
 
 
 if __name__ == "__main__":

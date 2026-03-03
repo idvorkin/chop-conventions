@@ -124,7 +124,7 @@ Confirm with user via `AskUserQuestion` before generating. User may add, remove,
 3. **Generate all images in parallel** with a single command:
 
    ```bash
-   python3 "$GEN" --batch directions.json
+   uv run "$GEN" --batch directions.json
    ```
 
    Pass `--aspect`, `--ref`, or `--style` if overriding defaults. The script handles env loading,
@@ -171,7 +171,7 @@ Build and serve the comparison page (reuses the same `directions.json` —
 `build-page.py` reads `name`/`section`/`vibe`/`shirt` and accepts either `image` or `output` for the file path):
 
 ```bash
-python3 "$CHOP_ROOT/skills/image-explore/build-page.py" \
+uv run "$CHOP_ROOT/skills/image-explore/build-page.py" \
   --title "Image Explore: Topic Name" \
   --dir docs/image-explore-topic/ \
   --images-dir images/ \
@@ -196,7 +196,7 @@ Ask the user: "Want to publish this as a shareable gist?"
 If yes, use the helper script:
 
 ```bash
-python3 "$CHOP_ROOT/skills/image-explore/publish-gist.py" demo.html --title "Description"
+uv run "$CHOP_ROOT/skills/image-explore/publish-gist.py" demo.html --title "Description"
 ```
 
 This handles: gist creation, image conversion to JPEG, URL rewriting, git push. It prints the gisthost URL.
