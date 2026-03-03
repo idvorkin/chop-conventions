@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 # ABOUTME: Wrapper around gemini-image.sh for image generation (single or batch).
 # ABOUTME: Handles env loading, prompt assembly, and ref image resolution safely.
+# ABOUTME: In batch mode, augments the input JSON with _prompt and _duration_s debug fields.
 #
 # Single mode:
 #   generate.py --scene "..." --shirt "TEXT" --output file.webp [options]

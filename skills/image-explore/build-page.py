@@ -17,6 +17,11 @@
 #   {"name": "Mountain Vista v2", "group": "Mountain Vista", "section": "Purpose",
 #    "vibe": "Quiet awe", "shirt": "NORTH", "image": "mountain-v2.webp"}
 # ]
+#
+# Optional debug fields (added by generate.py --batch):
+#   "_prompt": "full assembled prompt text"
+#   "_duration_s": 16.2
+# When present, these render as collapsible debug details under each image.
 
 import argparse
 import json
