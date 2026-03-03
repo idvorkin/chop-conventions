@@ -2,7 +2,7 @@
 name: image-explore
 description: "Brainstorm multiple visual directions for a blog image, generate them in parallel, build a comparison page, and optionally publish as a shareable gist."
 argument-hint: "<post-or-topic> [--count N] [--variants N] [--style 'override'] [--aspect 'W:H']"
-allowed-tools: Bash, Read, Write, Glob, Grep, AskUserQuestion, WebFetch
+allowed-tools: Bash, Read, Write, Glob, Grep, AskUserQuestion, WebFetch, Agent
 ---
 
 # Image Explore - Visual Direction Brainstorming
