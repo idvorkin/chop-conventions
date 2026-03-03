@@ -21,6 +21,9 @@
 # Optional debug fields (added by generate.py --batch):
 #   "_prompt": "full assembled prompt text"
 #   "_duration_s": 16.2
+# Optional verification fields (added by Phase 3b verify-retry):
+#   "_verification": "pass" or "fail"
+#   "_verification_reason": "explanation of why it passed or failed"
 # When present, these render as collapsible debug details under each image.
 
 from __future__ import annotations
@@ -50,6 +53,9 @@ class Direction:
     # Debug fields (populated by generate.py --batch)
     prompt: str = ""
     duration_s: float | None = None
+    # Verification fields (populated by Phase 3b verify-retry)
+    verification: str = ""  # "pass" or "fail"
+    verification_reason: str = ""
 
     @classmethod
     def from_dict(cls, d: dict) -> Direction:
@@ -64,6 +70,8 @@ class Direction:
             group=d.get("group", ""),
             prompt=d.get("_prompt", ""),
             duration_s=d.get("_duration_s"),
+            verification=d.get("_verification", ""),
+            verification_reason=d.get("_verification_reason", ""),
         )
 
     @property
@@ -305,18 +313,30 @@ def _attr_caption(label: str, name: str, scene: str = "") -> str:
 def _debug_details_html(d: Direction) -> str:
     """Build a collapsible <details> block with generation debug info.
 
-    Shows full prompt and duration if present.
+    Shows verification result, full prompt, and duration if present.
     Returns empty string if no debug info available.
     """
-    if not d.prompt and d.duration_s is None:
+    has_debug = d.prompt or d.duration_s is not None or d.verification
+    if not has_debug:
         return ""
 
     parts = ['<details style="margin:0.5em 0 1em 0; font-size:0.85em;">']
     summary_bits = ["Generation debug"]
     if d.duration_s is not None:
         summary_bits.append(f"({d.duration_s}s)")
+    if d.verification:
+        icon = "PASS" if d.verification == "pass" else "FAIL"
+        summary_bits.append(f"[{icon}]")
     parts.append(f'  <summary style="cursor:pointer; color:#666;">{" ".join(summary_bits)}</summary>')
     parts.append('  <div style="padding:0.5em; background:#f8f8f8; border-radius:4px; margin-top:0.3em;">')
+    if d.verification:
+        color = "#2d7d2d" if d.verification == "pass" else "#c0392b"
+        parts.append(
+            f'  <p><strong>Verification:</strong> '
+            f'<span style="color:{color}; font-weight:bold;">{d.verification.upper()}</span></p>'
+        )
+        if d.verification_reason:
+            parts.append(f"  <p>{_html_escape(d.verification_reason)}</p>")
     if d.duration_s is not None:
         parts.append(f"  <p><strong>Duration:</strong> {d.duration_s}s</p>")
     if d.prompt:

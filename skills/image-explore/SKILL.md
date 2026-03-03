@@ -146,11 +146,15 @@ After generation, **verify each image actually matches its scene description** b
      - **Shirt text**: Is it readable and roughly correct?
    - Return a verdict: **pass** (scene clearly rendered) or **fail** with a short explanation of what's wrong
 2. Collect results from all agents. This runs concurrently and doesn't block other work.
-3. Score each image: **pass** or **fail** (scene fundamentally wrong — not minor style differences)
+3. **Write verification results back to the directions JSON** — for each entry, add:
+   - `_verification`: `"pass"` or `"fail"`
+   - `_verification_reason`: short explanation (e.g., "Solo raccoon portrait, no soccer field or group scene")
+   These fields are rendered in the comparison page's collapsible debug details.
 4. For any **failures**, retry up to 2 times:
    - Strengthen the scene description (be more explicit, add emphasis)
    - Re-run `generate.py` for just the failed entries (write a temporary batch JSON)
    - Launch verification agents again for the retried images
+   - Update `_verification` and `_verification_reason` with the retry result
 5. After retries, report any still-failing images to the user rather than silently including bad results
 
 **What counts as a failure:**
