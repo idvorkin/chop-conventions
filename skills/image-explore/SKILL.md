@@ -121,6 +121,29 @@ Confirm with user via `AskUserQuestion` before generating. User may add, remove,
    The `group` field enables `build-page.py` to group variants under a shared heading.
    Output filenames follow the pattern `{slug}-v{N}.webp` when using variants.
 
+   **Scene-first prompt ordering** (`"scene_first": true`):
+
+   By default, prompts are assembled as: character style → "large & prominent 40%" → scene.
+   This works well for character-focused images but fights wide-field compositions where
+   characters should be small elements in a larger scene.
+
+   Set `"scene_first": true` on any direction where the **scene composition matters more
+   than character prominence**. This reorders the prompt to: scene → character style → shirt text,
+   and drops the "40% of image" instruction. Use it for:
+   - Bird's-eye/aerial views of fields, landscapes, maps
+   - Group scenes where many characters are small
+   - Any composition where the environment dominates
+
+   ```json
+   {
+     "name": "Overhead Field",
+     "scene": "Aerial drone shot of a soccer field with raccoons scattered across it...",
+     "shirt": "NEXT",
+     "output": "overhead-field.webp",
+     "scene_first": true
+   }
+   ```
+
 3. **Generate all images in parallel** with a single command:
 
    ```bash
