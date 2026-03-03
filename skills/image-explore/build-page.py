@@ -260,6 +260,38 @@ def _attr_caption(label, name, scene=""):
     return "".join(parts)
 
 
+def _debug_details_html(d):
+    """Build a collapsible <details> block with generation debug info.
+
+    Shows full prompt and duration if _prompt/_duration_s are present.
+    Returns empty string if no debug info available.
+    """
+    prompt = d.get("_prompt")
+    duration = d.get("_duration_s")
+    if not prompt and duration is None:
+        return ""
+
+    parts = ['<details style="margin:0.5em 0 1em 0; font-size:0.85em;">']
+    summary_bits = ["Generation debug"]
+    if duration is not None:
+        summary_bits.append(f"({duration}s)")
+    parts.append(f'  <summary style="cursor:pointer; color:#666;">{" ".join(summary_bits)}</summary>')
+    parts.append('  <div style="padding:0.5em; background:#f8f8f8; border-radius:4px; margin-top:0.3em;">')
+    if duration is not None:
+        parts.append(f"  <p><strong>Duration:</strong> {duration}s</p>")
+    if prompt:
+        escaped = _html_escape(prompt)
+        parts.append(
+            f'  <p><strong>Full prompt:</strong></p>'
+            f'  <pre style="white-space:pre-wrap; word-break:break-word; '
+            f'font-size:0.8em; max-height:300px; overflow-y:auto; '
+            f'background:#f0f0f0; padding:0.5em; border-radius:3px;">{escaped}</pre>'
+        )
+    parts.append("  </div>")
+    parts.append("</details>")
+    return "\n".join(parts)
+
+
 def _convert_image(d, out_dir, has_magick, images_dir):
     """Resolve and convert a single image to PNG. Returns PNG filename or None."""
     image_field = d.get("image") or d["output"]
@@ -315,8 +347,9 @@ def _build_flat_page(directions, demo_file, out_dir, has_magick, images_dir):
     ]
     for i, d in enumerate(directions):
         label = chr(ord("A") + i)
+        duration_note = f" ({d['_duration_s']}s)" if "_duration_s" in d else ""
         table_lines.append(
-            f"| {label} | {d['name']} | {d.get('section', 'standalone')} "
+            f"| {label} | {d['name']}{duration_note} | {d.get('section', 'standalone')} "
             f"| {d.get('vibe', '')} | {d.get('shirt', '')} |"
         )
     run(["showboat", "note", demo_file, "\n".join(table_lines)])
@@ -333,6 +366,11 @@ def _build_flat_page(directions, demo_file, out_dir, has_magick, images_dir):
         )
         run(["showboat", "note", demo_file, note_text])
         _convert_and_add_image(d, demo_file, out_dir, has_magick, images_dir)
+
+        # Add collapsible debug details
+        debug_html = _debug_details_html(d)
+        if debug_html:
+            run(["showboat", "note", demo_file, debug_html])
 
 
 def _build_grouped_page(directions, demo_file, out_dir, has_magick, images_dir):
@@ -418,6 +456,14 @@ def _build_grouped_page(directions, demo_file, out_dir, has_magick, images_dir):
         html_lines.append("</table>")
 
         run(["showboat", "note", demo_file, "\n".join(html_lines)])
+
+        # Add collapsible debug details for each variant in the group
+        for d in entries:
+            debug_html = _debug_details_html(d)
+            if debug_html:
+                variant_name = d.get("name", d.get("output", ""))
+                header = f'<p style="font-size:0.85em; margin-bottom:0;"><em>{_html_escape(variant_name)}</em></p>'
+                run(["showboat", "note", demo_file, header + "\n" + debug_html])
 
 
 if __name__ == "__main__":

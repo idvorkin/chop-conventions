@@ -18,6 +18,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
@@ -130,7 +131,7 @@ def remove_background(image_path):
 def generate_one(
     scene, shirt, output, gemini_script, style, ref_image, aspect, transparent=False
 ):
-    """Generate a single image. Returns (output, success, error_msg)."""
+    """Generate a single image. Returns (output, success, error_msg, full_prompt, duration_s)."""
     prompt_parts = [
         style,
         f"IMPORTANT: Main raccoon LARGE and PROMINENT, at least 40% of image, "
@@ -150,10 +151,12 @@ def generate_one(
     env["ASPECT_RATIO"] = aspect
 
     print(f"Generating: {output}", file=sys.stderr)
+    t0 = time.monotonic()
     result = subprocess.run(cmd, env=env, capture_output=True, text=True)
+    duration_s = round(time.monotonic() - t0, 1)
 
     if result.returncode != 0:
-        return (output, False, result.stderr.strip())
+        return (output, False, result.stderr.strip(), full_prompt, duration_s)
     if result.stderr:
         print(result.stderr, file=sys.stderr)
 
@@ -161,9 +164,9 @@ def generate_one(
         print(f"Removing background: {output}", file=sys.stderr)
         success, err = remove_background(output)
         if not success:
-            return (output, False, f"Background removal failed: {err}")
+            return (output, False, f"Background removal failed: {err}", full_prompt, duration_s)
 
-    return (output, True, None)
+    return (output, True, None, full_prompt, duration_s)
 
 
 def main():
@@ -225,7 +228,7 @@ def main():
     ref_image = args.ref or resolve_ref_image()
 
     if is_single:
-        _, success, err = generate_one(
+        _, success, err, full_prompt, duration_s = generate_one(
             args.scene,
             args.shirt,
             args.output,
@@ -239,6 +242,7 @@ def main():
             print(f"Error: {err}", file=sys.stderr)
             sys.exit(1)
         print(args.output)
+        print(f"Generated in {duration_s}s", file=sys.stderr)
     else:
         # Batch mode: read directions JSON and generate in parallel
         batch_path = Path(args.batch)
@@ -256,6 +260,10 @@ def main():
         print(f"Generating {len(directions)} images in parallel...", file=sys.stderr)
         failures = []
 
+        # Map output filename -> direction for augmenting with debug info
+        dir_by_output = {d["output"]: d for d in directions}
+
+        batch_t0 = time.monotonic()
         with ThreadPoolExecutor(max_workers=len(directions)) as pool:
             futures = {
                 pool.submit(
@@ -272,17 +280,27 @@ def main():
                 for d in directions
             }
             for future in as_completed(futures):
-                output, success, err = future.result()
+                output, success, err, full_prompt, duration_s = future.result()
+                # Augment the direction with debug info
+                if output in dir_by_output:
+                    dir_by_output[output]["_prompt"] = full_prompt
+                    dir_by_output[output]["_duration_s"] = duration_s
                 if success:
                     print(output)
                 else:
                     failures.append((output, err))
                     print(f"FAILED: {output} — {err}", file=sys.stderr)
 
+        batch_duration = round(time.monotonic() - batch_t0, 1)
+
+        # Write augmented directions back with debug info
+        with open(batch_path, "w") as f:
+            json.dump(directions, f, indent=2)
+
         if failures:
-            print(f"\n{len(failures)}/{len(directions)} failed", file=sys.stderr)
+            print(f"\n{len(failures)}/{len(directions)} failed ({batch_duration}s total)", file=sys.stderr)
             sys.exit(1)
-        print(f"\nAll {len(directions)} images generated", file=sys.stderr)
+        print(f"\nAll {len(directions)} images generated ({batch_duration}s total)", file=sys.stderr)
 
 
 if __name__ == "__main__":
