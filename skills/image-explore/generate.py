@@ -37,6 +37,7 @@ class Direction:
     scene: str
     shirt: str
     output: str
+    scene_first: bool = False
 
 
 @dataclass
@@ -158,13 +159,28 @@ def remove_background(image_path):
 
 
 def generate_one(direction: Direction, config: GenerateConfig) -> GenerationResult:
-    """Generate a single image."""
-    prompt_parts = [
-        config.style,
-        f"IMPORTANT: Main raccoon LARGE and PROMINENT, at least 40% of image, "
-        f'shirt text clearly readable. Shirt reads: "{direction.shirt}".',
-        direction.scene,
-    ]
+    """Generate a single image.
+
+    Prompt order depends on direction.scene_first:
+    - False (default): style → "large & prominent" → scene  (character-focused)
+    - True:            scene → style → shirt text only       (scene-focused)
+
+    Scene-first mode drops the "40% of image" instruction so wide-field
+    compositions aren't overridden by the character anchoring.
+    """
+    if direction.scene_first:
+        prompt_parts = [
+            direction.scene,
+            config.style,
+            f'Shirt text clearly readable. Shirt reads: "{direction.shirt}".',
+        ]
+    else:
+        prompt_parts = [
+            config.style,
+            f"IMPORTANT: Main raccoon LARGE and PROMINENT, at least 40% of image, "
+            f'shirt text clearly readable. Shirt reads: "{direction.shirt}".',
+            direction.scene,
+        ]
     if config.transparent:
         prompt_parts.append(GREENSCREEN_PROMPT)
 
@@ -311,7 +327,12 @@ def main():
             futures = {
                 pool.submit(
                     generate_one,
-                    Direction(scene=d["scene"], shirt=d["shirt"], output=d["output"]),
+                    Direction(
+                        scene=d["scene"],
+                        shirt=d["shirt"],
+                        output=d["output"],
+                        scene_first=d.get("scene_first", False),
+                    ),
                     config,
                 ): d
                 for d in raw_directions
