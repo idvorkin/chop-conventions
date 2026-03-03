@@ -131,7 +131,39 @@ Confirm with user via `AskUserQuestion` before generating. User may add, remove,
    prompt assembly, ref image resolution, and parallel execution via thread pool
    (secrets never leak into command strings).
 
-4. After all complete, show each image to the user with the `Read` tool.
+4. After batch completes, the directions JSON is automatically augmented with `_prompt` and `_duration_s` fields for each entry (used by the comparison page for debug info).
+
+### Phase 3b: Verify & Retry
+
+After generation, **verify each image actually matches its scene description** before showing to the user. This catches cases where Gemini ignores complex scene descriptions (e.g., split-screens, multiple characters, specific compositions).
+
+1. **Launch background sub-agents in parallel** (one per image) to verify each result. Each agent should:
+   - `Read` the generated image file (Claude has vision)
+   - Compare what it sees against the **scene** description
+   - Check for:
+     - **Scene composition**: Does the layout match? (e.g., split-screen actually split, multiple characters present)
+     - **Key elements**: Are the described elements visible? (e.g., dust cloud, trajectory arc, binoculars)
+     - **Shirt text**: Is it readable and roughly correct?
+   - Return a verdict: **pass** (scene clearly rendered) or **fail** with a short explanation of what's wrong
+2. Collect results from all agents. This runs concurrently and doesn't block other work.
+3. Score each image: **pass** or **fail** (scene fundamentally wrong — not minor style differences)
+4. For any **failures**, retry up to 2 times:
+   - Strengthen the scene description (be more explicit, add emphasis)
+   - Re-run `generate.py` for just the failed entries (write a temporary batch JSON)
+   - Launch verification agents again for the retried images
+5. After retries, report any still-failing images to the user rather than silently including bad results
+
+**What counts as a failure:**
+- Single character when scene calls for a group (or vice versa)
+- Missing the core concept entirely (e.g., "split-screen" rendered as single scene)
+- Wrong setting (indoor when outdoor was specified)
+
+**What does NOT count as a failure:**
+- Shirt text slightly wrong (Gemini often struggles with exact text)
+- Style differences from the reference
+- Minor composition differences (angle, lighting)
+
+6. Show all verified images to the user with the `Read` tool.
 
 ### Phase 4: Build Comparison Page
 
