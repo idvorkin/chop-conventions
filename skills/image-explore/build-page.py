@@ -23,14 +23,52 @@
 #   "_duration_s": 16.2
 # When present, these render as collapsible debug details under each image.
 
+from __future__ import annotations
+
 import argparse
 import json
+import re
 import shutil
 import socket
 import subprocess
 import sys
 from collections import OrderedDict
+from dataclasses import dataclass
 from pathlib import Path
+
+
+@dataclass
+class Direction:
+    name: str
+    scene: str = ""
+    section: str = "standalone"
+    vibe: str = ""
+    shirt: str = ""
+    image: str = ""
+    output: str = ""
+    group: str = ""
+    # Debug fields (populated by generate.py --batch)
+    prompt: str = ""
+    duration_s: float | None = None
+
+    @classmethod
+    def from_dict(cls, d: dict) -> Direction:
+        return cls(
+            name=d["name"],
+            scene=d.get("scene", ""),
+            section=d.get("section", "standalone"),
+            vibe=d.get("vibe", ""),
+            shirt=d.get("shirt", ""),
+            image=d.get("image", ""),
+            output=d.get("output", ""),
+            group=d.get("group", ""),
+            prompt=d.get("_prompt", ""),
+            duration_s=d.get("_duration_s"),
+        )
+
+    @property
+    def image_field(self) -> str:
+        return self.image or self.output
 
 
 def resolve_chop_root():
@@ -92,7 +130,7 @@ def get_tailscale_hostname():
     return socket.gethostname().lower() + ".squeaker-teeth.ts.net"
 
 
-def resolve_image(image_field, images_dir=None):
+def resolve_image(image_field: str, images_dir: str | None = None) -> Path | None:
     """Resolve an image path, trying multiple locations.
 
     Search order:
@@ -120,15 +158,15 @@ def resolve_image(image_field, images_dir=None):
     return None
 
 
-def group_directions(directions):
-    """Group directions by their 'group' field.
+def group_directions(directions: list[Direction]) -> OrderedDict[str, list[Direction]]:
+    """Group directions by their group field.
 
     Returns OrderedDict of group_name -> list of entries.
     Entries without a group field are treated as their own group (using name).
     """
-    groups = OrderedDict()
+    groups: OrderedDict[str, list[Direction]] = OrderedDict()
     for d in directions:
-        group_name = d.get("group") or d["name"]
+        group_name = d.group or d.name
         if group_name not in groups:
             groups[group_name] = []
         groups[group_name].append(d)
@@ -167,11 +205,13 @@ def main():
         sys.exit(1)
 
     with open(directions_path) as f:
-        directions = json.load(f)
+        raw = json.load(f)
 
-    if not directions:
+    if not raw:
         print("Error: No directions in JSON file", file=sys.stderr)
         sys.exit(1)
+
+    directions = [Direction.from_dict(d) for d in raw]
 
     # Create output directory
     out_dir = Path(args.dir)
@@ -188,7 +228,7 @@ def main():
     run(["showboat", "init", demo_file, args.title])
 
     has_magick = shutil.which("magick") is not None
-    has_groups = any("group" in d for d in directions)
+    has_groups = any(d.group for d in directions)
 
     if has_groups:
         _build_grouped_page(directions, demo_file, out_dir, has_magick, args.images_dir)
@@ -198,9 +238,6 @@ def main():
     # Fix pandoc YAML issue: replace --- separators with *** in the generated markdown
     # (pandoc interprets --- as YAML metadata delimiters)
     content = demo_path.read_text()
-    # Only replace --- that appear as standalone separators (line by themselves)
-    import re
-
     content = re.sub(r"^---$", "***", content, flags=re.MULTILINE)
     demo_path.write_text(content)
 
@@ -239,7 +276,7 @@ def main():
     print(f"Serving at: {url}")
 
 
-def _html_escape(text):
+def _html_escape(text: str) -> str:
     """Escape HTML special characters in text."""
     return (
         text.replace("&", "&amp;")
@@ -250,7 +287,7 @@ def _html_escape(text):
     )
 
 
-def _attr_caption(label, name, scene=""):
+def _attr_caption(label: str, name: str, scene: str = "") -> str:
     """Build an HTML caption string entity-encoded for use inside an attribute.
 
     The browser decodes entities when reading getAttribute(), so innerHTML
@@ -265,27 +302,25 @@ def _attr_caption(label, name, scene=""):
     return "".join(parts)
 
 
-def _debug_details_html(d):
+def _debug_details_html(d: Direction) -> str:
     """Build a collapsible <details> block with generation debug info.
 
-    Shows full prompt and duration if _prompt/_duration_s are present.
+    Shows full prompt and duration if present.
     Returns empty string if no debug info available.
     """
-    prompt = d.get("_prompt")
-    duration = d.get("_duration_s")
-    if not prompt and duration is None:
+    if not d.prompt and d.duration_s is None:
         return ""
 
     parts = ['<details style="margin:0.5em 0 1em 0; font-size:0.85em;">']
     summary_bits = ["Generation debug"]
-    if duration is not None:
-        summary_bits.append(f"({duration}s)")
+    if d.duration_s is not None:
+        summary_bits.append(f"({d.duration_s}s)")
     parts.append(f'  <summary style="cursor:pointer; color:#666;">{" ".join(summary_bits)}</summary>')
     parts.append('  <div style="padding:0.5em; background:#f8f8f8; border-radius:4px; margin-top:0.3em;">')
-    if duration is not None:
-        parts.append(f"  <p><strong>Duration:</strong> {duration}s</p>")
-    if prompt:
-        escaped = _html_escape(prompt)
+    if d.duration_s is not None:
+        parts.append(f"  <p><strong>Duration:</strong> {d.duration_s}s</p>")
+    if d.prompt:
+        escaped = _html_escape(d.prompt)
         parts.append(
             f'  <p><strong>Full prompt:</strong></p>'
             f'  <pre style="white-space:pre-wrap; word-break:break-word; '
@@ -297,13 +332,12 @@ def _debug_details_html(d):
     return "\n".join(parts)
 
 
-def _convert_image(d, out_dir, has_magick, images_dir):
+def _convert_image(d: Direction, out_dir: Path, has_magick: bool, images_dir: str | None) -> str | None:
     """Resolve and convert a single image to PNG. Returns PNG filename or None."""
-    image_field = d.get("image") or d["output"]
-    image_path = resolve_image(image_field, images_dir)
+    image_path = resolve_image(d.image_field, images_dir)
 
     if image_path is None:
-        print(f"Warning: Image not found: {image_field}", file=sys.stderr)
+        print(f"Warning: Image not found: {d.image_field}", file=sys.stderr)
         return None
 
     # Convert image to PNG (if needed)
@@ -318,18 +352,14 @@ def _convert_image(d, out_dir, has_magick, images_dir):
     return png_path.name
 
 
-def _convert_and_add_image(d, demo_file, out_dir, has_magick, images_dir):
+def _convert_and_add_image(d: Direction, demo_file: str, out_dir: Path, has_magick: bool, images_dir: str | None):
     """Resolve, convert, and add a single image to the showboat doc (flat mode)."""
     png_name = _convert_image(d, out_dir, has_magick, images_dir)
     if png_name is None:
-        image_field = d.get("image") or d["output"]
-        run(["showboat", "note", demo_file, f"*Image not found: {image_field}*"])
+        run(["showboat", "note", demo_file, f"*Image not found: {d.image_field}*"])
         return
 
-    # Build caption from direction metadata
-    name = d.get("name", "")
-    scene = d.get("scene", "")
-    caption = _attr_caption("", name, scene)
+    caption = _attr_caption("", d.name, d.scene)
 
     # Add image with data-caption for lightbox (raw HTML so template JS picks it up)
     run(
@@ -343,7 +373,7 @@ def _convert_and_add_image(d, demo_file, out_dir, has_magick, images_dir):
     )
 
 
-def _build_flat_page(directions, demo_file, out_dir, has_magick, images_dir):
+def _build_flat_page(directions: list[Direction], demo_file: str, out_dir: Path, has_magick: bool, images_dir: str | None):
     """Build page with one section per direction (no grouping)."""
     # Add summary table
     table_lines = [
@@ -352,10 +382,10 @@ def _build_flat_page(directions, demo_file, out_dir, has_magick, images_dir):
     ]
     for i, d in enumerate(directions):
         label = chr(ord("A") + i)
-        duration_note = f" ({d['_duration_s']}s)" if "_duration_s" in d else ""
+        duration_note = f" ({d.duration_s}s)" if d.duration_s is not None else ""
         table_lines.append(
-            f"| {label} | {d['name']}{duration_note} | {d.get('section', 'standalone')} "
-            f"| {d.get('vibe', '')} | {d.get('shirt', '')} |"
+            f"| {label} | {d.name}{duration_note} | {d.section} "
+            f"| {d.vibe} | {d.shirt} |"
         )
     run(["showboat", "note", demo_file, "\n".join(table_lines)])
 
@@ -364,10 +394,10 @@ def _build_flat_page(directions, demo_file, out_dir, has_magick, images_dir):
         label = chr(ord("A") + i)
 
         note_text = (
-            f"## {label}. {d['name']}\n"
-            f"**Section:** {d.get('section', 'standalone')}  \n"
-            f"**Vibe:** {d.get('vibe', '')}  \n"
-            f'**Shirt:** "{d.get("shirt", "")}"'
+            f"## {label}. {d.name}\n"
+            f"**Section:** {d.section}  \n"
+            f"**Vibe:** {d.vibe}  \n"
+            f'**Shirt:** "{d.shirt}"'
         )
         run(["showboat", "note", demo_file, note_text])
         _convert_and_add_image(d, demo_file, out_dir, has_magick, images_dir)
@@ -378,7 +408,7 @@ def _build_flat_page(directions, demo_file, out_dir, has_magick, images_dir):
             run(["showboat", "note", demo_file, debug_html])
 
 
-def _build_grouped_page(directions, demo_file, out_dir, has_magick, images_dir):
+def _build_grouped_page(directions: list[Direction], demo_file: str, out_dir: Path, has_magick: bool, images_dir: str | None):
     """Build page with grouped variants displayed horizontally in tables."""
     groups = group_directions(directions)
 
@@ -391,8 +421,8 @@ def _build_grouped_page(directions, demo_file, out_dir, has_magick, images_dir):
         label = chr(ord("A") + i)
         first = entries[0]
         table_lines.append(
-            f"| {label} | {group_name} | {first.get('section', 'standalone')} "
-            f"| {first.get('vibe', '')} | {first.get('shirt', '')} "
+            f"| {label} | {group_name} | {first.section} "
+            f"| {first.vibe} | {first.shirt} "
             f"| {len(entries)} |"
         )
     run(["showboat", "note", demo_file, "\n".join(table_lines)])
@@ -405,9 +435,9 @@ def _build_grouped_page(directions, demo_file, out_dir, has_magick, images_dir):
         # Group heading
         group_note = (
             f"## {label}. {group_name}\n"
-            f"**Section:** {first.get('section', 'standalone')}  \n"
-            f"**Vibe:** {first.get('vibe', '')}  \n"
-            f'**Shirt:** "{first.get("shirt", "")}"'
+            f"**Section:** {first.section}  \n"
+            f"**Vibe:** {first.vibe}  \n"
+            f'**Shirt:** "{first.shirt}"'
         )
         run(["showboat", "note", demo_file, group_note])
 
@@ -427,7 +457,7 @@ def _build_grouped_page(directions, demo_file, out_dir, has_magick, images_dir):
         # Header row with variant labels
         for j, d in enumerate(entries):
             variant_label = f"{label}{j + 1}"
-            variant_name = d["name"]
+            variant_name = d.name
             if variant_name == group_name:
                 variant_name = f"Variant {j + 1}"
             html_lines.append(
@@ -441,9 +471,7 @@ def _build_grouped_page(directions, demo_file, out_dir, has_magick, images_dir):
         for j, png_name in enumerate(variant_pngs):
             d = entries[j]
             variant_label = f"{label}{j + 1}"
-            variant_name = d["name"]
-            scene = d.get("scene", "")
-            caption = _attr_caption(variant_label, variant_name, scene)
+            caption = _attr_caption(variant_label, d.name, d.scene)
             if png_name:
                 html_lines.append(
                     f'    <td style="text-align:center; padding:4px; vertical-align:top;">'
@@ -452,10 +480,9 @@ def _build_grouped_page(directions, demo_file, out_dir, has_magick, images_dir):
                     f'style="max-width:100%; height:auto;" /></td>'
                 )
             else:
-                image_field = d.get("image") or d["output"]
                 html_lines.append(
                     f'    <td style="text-align:center; padding:4px; vertical-align:top;">'
-                    f"<em>Not found: {image_field}</em></td>"
+                    f"<em>Not found: {d.image_field}</em></td>"
                 )
         html_lines.append("  </tr>")
         html_lines.append("</table>")
@@ -466,8 +493,7 @@ def _build_grouped_page(directions, demo_file, out_dir, has_magick, images_dir):
         for d in entries:
             debug_html = _debug_details_html(d)
             if debug_html:
-                variant_name = d.get("name", d.get("output", ""))
-                header = f'<p style="font-size:0.85em; margin-bottom:0;"><em>{_html_escape(variant_name)}</em></p>'
+                header = f'<p style="font-size:0.85em; margin-bottom:0;"><em>{_html_escape(d.name)}</em></p>'
                 run(["showboat", "note", demo_file, header + "\n" + debug_html])
 
 
