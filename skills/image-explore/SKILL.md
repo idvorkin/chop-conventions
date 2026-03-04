@@ -226,13 +226,13 @@ Ask the user: "Want to publish this as a shareable link?" and offer two options:
 #### Option A: Surge.sh
 
 ```bash
-# Prepare deploy directory with HTML + local images
-mkdir -p /tmp/surge-deploy
-cp <docs-dir>/demo.html /tmp/surge-deploy/index.html
-cp <docs-dir>/*.png /tmp/surge-deploy/
+# Prepare deploy directory (random path to avoid accidental overwrites)
+SURGE_DIR=$(mktemp -d /tmp/surge-XXXXXXXX)
+cp <docs-dir>/demo.html "$SURGE_DIR/index.html"
+cp <docs-dir>/*.png "$SURGE_DIR/"
 
 # Deploy (pick a descriptive subdomain)
-surge /tmp/surge-deploy <descriptive-name>.surge.sh
+surge "$SURGE_DIR" <descriptive-name>.surge.sh
 ```
 
 #### Option B: GitHub Gist
