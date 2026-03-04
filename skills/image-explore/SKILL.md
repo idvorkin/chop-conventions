@@ -1,13 +1,13 @@
 ---
 name: image-explore
-description: "Brainstorm multiple visual directions for a blog image, generate them in parallel, build a comparison page, and optionally publish as a shareable gist."
+description: "Brainstorm multiple visual directions for a blog image, generate them in parallel, build a comparison page, and optionally publish as a shareable link (Surge.sh or gist)."
 argument-hint: "<post-or-topic> [--count N] [--variants N] [--style 'override'] [--aspect 'W:H']"
 allowed-tools: Bash, Read, Write, Glob, Grep, AskUserQuestion, WebFetch, Agent
 ---
 
 # Image Explore - Visual Direction Brainstorming
 
-Generate multiple distinct visual directions for a blog image, render them all in parallel, build a comparison page, and optionally publish as a shareable gist for feedback.
+Generate multiple distinct visual directions for a blog image, render them all in parallel, build a comparison page, and optionally publish as a shareable link for feedback.
 
 ## Arguments
 
@@ -218,15 +218,33 @@ under shared direction headings with sub-headers for each variant.
 
 ### Phase 5: Publish (Ask First)
 
-Ask the user: "Want to publish this as a shareable gist?"
+Ask the user: "Want to publish this as a shareable link?" and offer two options:
 
-If yes, use the helper script:
+1. **Surge.sh** (Recommended) — Full HTML/CSS/JS support, lightbox clicking works
+2. **GitHub Gist** — Simpler but gisthost may block inline JS (lightbox won't work)
+
+#### Option A: Surge.sh
+
+```bash
+# Prepare deploy directory with HTML + local images
+mkdir -p /tmp/surge-deploy
+cp <docs-dir>/demo.html /tmp/surge-deploy/index.html
+cp <docs-dir>/*.png /tmp/surge-deploy/
+
+# Deploy (pick a descriptive subdomain)
+surge /tmp/surge-deploy <descriptive-name>.surge.sh
+```
+
+#### Option B: GitHub Gist
+
+Use the helper script:
 
 ```bash
 uv run "$CHOP_ROOT/skills/image-explore/publish-gist.py" demo.html --title "Description"
 ```
 
 This handles: gist creation, image conversion to JPEG, URL rewriting, git push. It prints the gisthost URL.
+Note: gisthost may block inline `<script>` tags, so the lightbox/click-to-expand won't work.
 
 ### Phase 6: Apply Selection (Optional)
 
