@@ -167,10 +167,11 @@ The pandoc template is at `skills/showboat/pandoc-template.html` in this repo �
 
 [Gisthost](https://gisthost.github.io/) renders HTML gists in the browser. It's Simon Willison's improved fork of gistpreview that handles large files and Substack URL mangling.
 
+**Base technique:** Use the **gist-image** skill to create a gist and push binary images via git. Then apply the gisthost-specific steps below.
+
 ### Constraints
 
 - **GitHub API truncates gist files over 1MB** — keep `index.html` under 1MB
-- **Gists don't support binary uploads via API** — use `git clone` + `git push` for images
 - **Gisthost uses `document.write()`** — relative image paths won't resolve. Use absolute raw URLs
 - **Gisthost looks for `index.html` by name** — always name your HTML file `index.html`
 - **Max 300 files per gist** — split into multiple gists if needed
@@ -182,34 +183,21 @@ The pandoc template is at `skills/showboat/pandoc-template.html` in this repo �
 pandoc walkthrough.md -o index.html --standalone \
   --metadata title="Title" --template pandoc-template.html
 
-# 2. Create the gist with just the HTML (small, no images)
-gh gist create --public -d "Walkthrough Title" index.html
-# Returns: https://gist.github.com/USER/GIST_ID
+# 2. Create gist and push images using gist-image technique
+#    (see gist-image skill for the create/clone/push pattern)
 
-# 3. Clone the gist as a git repo
-git clone https://gist.github.com/GIST_ID.git /tmp/gist-publish
-cd /tmp/gist-publish
-
-# 4. Convert screenshots to JPEG for smaller size
-for png in /path/to/screenshots/*.png; do
+# 3. Convert screenshots to JPEG for smaller size (gisthost-specific)
+for png in *.png; do
   name=$(basename "$png" .png)
   magick "$png" -quality 70 "${name}.jpg"
 done
 
-# 5. Update image src attributes to use absolute gist raw URLs
-#    Replace: src="uuid.png"
-#    With:    src="https://gist.githubusercontent.com/USER/GIST_ID/raw/name.jpg"
-python3 << 'PYEOF'
-import re
-GIST_RAW = "https://gist.githubusercontent.com/USER/GIST_ID/raw"
-# ... replace src attributes with absolute URLs pointing to GIST_RAW/filename.jpg
-PYEOF
+# 4. Rewrite image src attributes to absolute gist raw URLs
+#    (required because gisthost uses document.write())
+#    Replace: src="screenshot.png"
+#    With:    src="https://gist.githubusercontent.com/USER/GIST_ID/raw/screenshot.jpg"
 
-# 6. Add images and push via git (API doesn't support binary files)
-git remote set-url origin https://x-access-token:$(gh auth token)@gist.github.com/GIST_ID.git
-git add *.jpg index.html
-git commit -m "Add screenshots"
-git push
+# 5. Git add, commit, push (index.html + converted images)
 ```
 
 ### View the result

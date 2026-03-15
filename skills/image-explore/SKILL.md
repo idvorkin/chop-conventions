@@ -237,7 +237,7 @@ surge "$SURGE_DIR" <descriptive-name>.surge.sh
 
 #### Option B: GitHub Gist
 
-Use the helper script:
+Uses the **gist-image** skill technique (create gist, clone, push binary files via git) plus gisthost-specific URL rewriting. The helper script automates this:
 
 ```bash
 uv run "$CHOP_ROOT/skills/image-explore/publish-gist.py" demo.html --title "Description"
