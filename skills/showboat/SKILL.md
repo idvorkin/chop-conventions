@@ -183,21 +183,33 @@ The pandoc template is at `skills/showboat/pandoc-template.html` in this repo â€
 pandoc walkthrough.md -o index.html --standalone \
   --metadata title="Title" --template pandoc-template.html
 
-# 2. Create gist and push images using gist-image technique
-#    (see gist-image skill for the create/clone/push pattern)
+# 2. Create PUBLIC gist (gisthost requires public access)
+GIST_NAME="showboat-walkthrough"
+GIST_URL=$(gh gist create --public --desc "$GIST_NAME" - <<< "# $GIST_NAME" 2>&1 | grep gist.github.com)
+GIST_ID=$(basename "$GIST_URL")
+GH_USER=$(gh api user --jq '.login')
 
-# 3. Convert screenshots to JPEG for smaller size (gisthost-specific)
+# 3. Clone gist repo, copy in index.html and screenshots
+git clone "$GIST_URL" ".tmp/$GIST_NAME"
+cp index.html /path/to/screenshots/*.png ".tmp/$GIST_NAME/"
+cd ".tmp/$GIST_NAME"
+
+# 4. Convert screenshots to WebP for smaller size
 for png in *.png; do
   name=$(basename "$png" .png)
-  magick "$png" -quality 70 "${name}.jpg"
+  magick "$png" -quality 70 "${name}.webp"
 done
 
-# 4. Rewrite image src attributes to absolute gist raw URLs
+# 5. Rewrite image src attributes to absolute gist raw URLs
 #    (required because gisthost uses document.write())
 #    Replace: src="screenshot.png"
-#    With:    src="https://gist.githubusercontent.com/USER/GIST_ID/raw/screenshot.jpg"
+#    With:    src="https://gist.githubusercontent.com/$GH_USER/$GIST_ID/raw/screenshot.webp"
 
-# 5. Git add, commit, push (index.html + converted images)
+# 6. Git add, commit, push, return to project root
+git add index.html *.webp
+git commit -m "Add walkthrough"
+git push
+cd -
 ```
 
 ### View the result
@@ -211,10 +223,10 @@ https://gisthost.github.io/?GIST_ID
 Use numbered, descriptive names that match the walkthrough sections:
 
 ```
-01-landing.jpg
-02-user-menu.jpg
-03-load-demo-data.jpg
-04-weekly-tracker.jpg
+01-landing.webp
+02-user-menu.webp
+03-load-demo-data.webp
+04-weekly-tracker.webp
 ```
 
 ### Why not `<base href>`?
