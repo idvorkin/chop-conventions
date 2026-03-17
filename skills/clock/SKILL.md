@@ -70,7 +70,7 @@ Report the current time to the user. Run: TZ='America/Los_Angeles' date '+%I:%M 
 
 **If action is a `/skill-name`:**
 ```
-Run the <skill-name> skill now.
+Run the <skill-name> skill now. Use a background Agent subagent (run_in_background: true) so it doesn't block the main conversation.
 ```
 
 **If action is custom text:**

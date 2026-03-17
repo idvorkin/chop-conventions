@@ -8,6 +8,10 @@ allowed-tools: Bash, Read
 
 Check your Claude Code plan usage without leaving your current session. Spawns a hidden tmux session, captures the `/usage` output, and reports a summary.
 
+## Execution Mode
+
+**Always run this skill as a background Agent subagent** (`run_in_background: true`). The tmux polling takes 10-30 seconds and should never block the main conversation. When triggered by a cron job or manually, dispatch via the Agent tool with `run_in_background: true` and report the one-line summary when the agent completes.
+
 ## Steps
 
 ### 1. Clean up any stale session
