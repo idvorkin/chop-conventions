@@ -17,6 +17,91 @@ Detect the remote configuration — this determines where to sync from:
 | Fork workflow | origin + upstream | upstream/main   | origin  |
 | Direct access | origin only       | origin/main     | origin  |
 
+## Remote Hygiene Check
+
+**Run this before any sync operations.** Validates that remotes follow conventions and the correct workflow is being used.
+
+### Naming Convention
+
+The standard convention is:
+- `origin` → your fork (where you push feature branches)
+- `upstream` → the canonical repo (where PRs target)
+
+Detect misconfigurations by inspecting all remote URLs:
+
+```bash
+echo "=== Remote Hygiene Check ==="
+REMOTES=$(git remote -v | grep '(fetch)')
+
+# Collect all remote names and their GitHub orgs/users
+while IFS= read -r line; do
+    REMOTE_NAME=$(echo "$line" | awk '{print $1}')
+    URL=$(echo "$line" | awk '{print $2}')
+    # Extract org/user from GitHub URL (handles https and ssh)
+    ORG=$(echo "$URL" | sed -E 's#.*(github\.com[:/])([^/]+)/.*#\2#')
+    echo "  $REMOTE_NAME -> $ORG ($URL)"
+done <<< "$REMOTES"
+```
+
+Flag these problems:
+
+1. **Non-standard remote names**: If a remote exists that is neither `origin` nor `upstream` (e.g., `fork`), warn that it should be renamed:
+   - The canonical repo should be `upstream`
+   - The fork should be `origin`
+
+2. **origin points to canonical repo in a fork setup**: If there are two remotes and `origin` points to the canonical (non-fork) repo, the remotes are swapped.
+
+### Workflow Convention: Fork Orgs Must Use PRs
+
+Some GitHub orgs are **fork orgs** — they exist to fork repos, not to own canonical code. Commits from these orgs should always reach the canonical repo via pull requests, never direct pushes.
+
+Known fork orgs:
+- `idvorkin-ai-tools`
+
+```bash
+# Check if any remote points to a known fork org
+FORK_ORGS="idvorkin-ai-tools"
+for org in $FORK_ORGS; do
+    FORK_URL=$(git remote -v | grep "(fetch)" | grep "$org" | head -1)
+    if [ -n "$FORK_URL" ]; then
+        FORK_REMOTE=$(echo "$FORK_URL" | awk '{print $1}')
+        echo "⚠️  Remote '$FORK_REMOTE' points to fork org '$org'"
+        echo "   Workflow: push to '$FORK_REMOTE', then create PR to canonical repo"
+        echo "   NEVER push directly to the canonical repo from a fork org"
+
+        # Check if remote naming is correct
+        if [ "$FORK_REMOTE" != "origin" ]; then
+            echo "   ❌ NAMING: '$FORK_REMOTE' should be renamed to 'origin'"
+            echo "   Fix: git remote rename $FORK_REMOTE origin"
+        fi
+
+        # The other remote should be 'upstream'
+        CANONICAL_REMOTE=$(git remote -v | grep "(fetch)" | grep -v "$org" | head -1)
+        if [ -n "$CANONICAL_REMOTE" ]; then
+            CANONICAL_NAME=$(echo "$CANONICAL_REMOTE" | awk '{print $1}')
+            if [ "$CANONICAL_NAME" != "upstream" ]; then
+                echo "   ❌ NAMING: '$CANONICAL_NAME' should be renamed to 'upstream'"
+                echo "   Fix: git remote rename $CANONICAL_NAME upstream"
+            fi
+        fi
+    fi
+done
+```
+
+### Offering to Fix
+
+If remote naming issues are detected, offer the user the rename commands but **never execute them automatically**. Renaming remotes can break existing branch tracking and scripts.
+
+Example fix for swapped remotes:
+```bash
+# Rename origin -> upstream (canonical repo)
+git remote rename origin upstream
+# Rename fork -> origin (your fork)
+git remote rename fork origin
+# Update tracking for main
+git branch --set-upstream-to=upstream/main main
+```
+
 ## Diagnostic Steps
 
 Run all checks in one go:
@@ -114,15 +199,17 @@ done
 
 ## Output Format
 
-Report remote setup, then summarize findings:
+Report remote hygiene first, then summarize sync findings:
 
-| Check                | Status           | Action            |
-| -------------------- | ---------------- | ----------------- |
-| Branch               | `feature-xyz`    | -                 |
-| PR                   | #123 MERGED      | Switching to main |
-| Uncommitted          | 2 files modified | Listed below      |
-| Behind upstream/main | 5 commits        | Will pull         |
-| Fork main stale      | 3 commits behind | Will sync         |
+| Check                | Status                          | Action                  |
+| -------------------- | ------------------------------- | ----------------------- |
+| Remote naming        | ✅ Correct / ❌ `fork`→`origin` | Offer rename commands   |
+| Workflow             | ✅ PR workflow / ❌ Direct push  | Warn about convention   |
+| Branch               | `feature-xyz`                   | -                       |
+| PR                   | #123 MERGED                     | Switching to main       |
+| Uncommitted          | 2 files modified                | Listed below            |
+| Behind upstream/main | 5 commits                       | Will pull               |
+| Fork main stale      | 3 commits behind                | Will sync               |
 
 Then take actions and report results.
 
