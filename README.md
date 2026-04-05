@@ -59,6 +59,35 @@ The goal is to create a feedback loop where:
 2. **Verification** catches issues early and validates results
 3. **Iteration** refines both specs and verification based on learnings
 
+## Skills
+
+Reusable Claude Code skills live in `skills/`. Each skill is a directory with a `SKILL.md` file.
+
+### Installing Skills
+
+Skills are installed by symlinking into Claude Code's skill directories:
+
+```bash
+# Machine-level (available in ALL projects):
+ln -s /path/to/chop-conventions/skills/<skill-name> ~/.claude/skills/<skill-name>
+
+# Project-level (available in one project):
+ln -s /path/to/chop-conventions/skills/<skill-name> <project>/.claude/skills/<skill-name>
+```
+
+Machine-level skills go in `~/.claude/skills/` and are available everywhere. Project-level skills go in `<project>/.claude/skills/` and are scoped to that repo.
+
+### Available Skills
+
+| Skill | Scope | Description |
+|---|---|---|
+| `gen-image` | machine | Generate illustrations via Gemini image API |
+| `gist-image` | machine | Host images on GitHub gists for PRs/issues |
+| `image-explore` | machine | Brainstorm and compare visual directions |
+| `machine-doctor` | machine | Diagnose system health, kill rogue processes |
+| `showboat` | machine | Create executable demo documents with screenshots |
+| `up-to-date` | machine | Sync git repo with upstream |
+
 ## Usage
 
 1. **Start with Setup**: Follow the [dev-setup guides](./dev-setup/) to establish your foundation
