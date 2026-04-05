@@ -1,5 +1,5 @@
 ---
-name: doctor
+name: machine-doctor
 description: Diagnose and fix system health issues — rogue processes, Gas Town runaway agents, resource exhaustion, stale dev servers, and orphaned git state. Use when the machine is slow, unresponsive, or something feels wrong.
 allowed-tools: Bash, Read, Glob, Grep
 ---
