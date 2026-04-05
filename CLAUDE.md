@@ -21,6 +21,20 @@ Copy or symlink the relevant conventions into your project. The conventions are 
 - `dev-setup/` - Development environment configuration
 - `dev-inner-loop/` - Development workflow conventions
 - `pwa/` - PWA-specific specifications and patterns
+- `skills/` - Reusable Claude Code skills (each is a directory with a `SKILL.md`)
+
+## Skills
+
+Skills are Claude Code slash commands that live in `skills/<name>/SKILL.md`.
+
+### Conventions
+
+- Each skill is a directory containing at minimum a `SKILL.md` with YAML frontmatter (`name`, `description`, `allowed-tools`)
+- Skill names must not collide with Claude Code built-in commands (e.g., use `machine-doctor` not `doctor`)
+- Skills are installed by **symlinking** into Claude Code's skill directories:
+  - Machine-level (all projects): `~/.claude/skills/<name>` -> `<chop-conventions>/skills/<name>`
+  - Project-level (one project): `<project>/.claude/skills/<name>` -> `<chop-conventions>/skills/<name>`
+- After adding a skill, create the symlink and document it in the README skills table
 
 ## Convention Updates
 
