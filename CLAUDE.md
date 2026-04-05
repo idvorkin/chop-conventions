@@ -1,27 +1,37 @@
 # Chop Conventions
 
-This repository contains reusable development conventions, specifications, and best practices designed to be **pulled into multiple projects**.
+Reusable development conventions, skills, and agent definitions designed to be pulled into multiple projects.
 
-## Purpose
+## Commands
 
-These conventions serve as a central source of truth for:
+```bash
+just              # List available targets
+just fast-test    # Quick test pass
+just test         # Full test suite
+```
 
-- Development environment setup
-- Code standards and style guides
-- Architecture patterns
-- Testing strategies
-- CI/CD configurations
+## Git Workflow
 
-## Usage
+This repo uses fork workflow via `idvorkin-ai-tools`. Check `gh auth status` — if running as `idvorkin-ai-tools`, push to the fork:
 
-Copy or symlink the relevant conventions into your project. The conventions are designed to be modular—take what you need.
+```bash
+git push -u origin <branch>
+gh pr create --repo idvorkin/chop-conventions
+```
 
 ## Structure
 
-- `dev-setup/` - Development environment configuration
-- `dev-inner-loop/` - Development workflow conventions
-- `pwa/` - PWA-specific specifications and patterns
+- `dev-setup/` - Development environment configuration (beads, hooks, gitignore, justfile, tailscale)
+- `dev-inner-loop/` - Development workflow conventions (clean code, commits, PRs, guardrails)
 - `skills/` - Reusable Claude Code skills (each is a directory with a `SKILL.md`)
+- `claude-agents/` - Agent definitions (code-review, conversation-log-publisher, image-content-analyzer, etc.)
+- `deployment/` - Deployment guides (surge.sh)
+- `copied_prompts/` - Reference prompts from other sources
+- `python/` - Python-specific conventions
+- `pwa/` - PWA-specific specifications and patterns
+- `useful-snippets/` - Reusable patterns for cross-project tasks
+- `docs/` - Design specs and documentation
+- `zz-chop-logs/` - Session logs
 
 ## Skills
 
@@ -36,14 +46,6 @@ Skills are Claude Code slash commands that live in `skills/<name>/SKILL.md`.
   - Project-level (one project): `<project>/.claude/skills/<name>` -> `<chop-conventions>/skills/<name>`
 - After adding a skill, create the symlink and document it in the README skills table
 
-## Convention Updates
+## Agents
 
-**Last reviewed:** _YYYY-MM-DD (chop-conventions @ COMMIT_ID)_
-
-Projects using chop-conventions should periodically:
-
-1. **Pull updates** - Check https://github.com/idvorkin/chop-conventions for new conventions or improvements
-2. **Push improvements** - If you've developed useful patterns locally, submit a PR to chop-conventions
-3. **Update this date** - After reviewing, update the "Last reviewed" date and commit ID above
-
-Example: `**Last reviewed:** 2025-12-05 (chop-conventions @ eb34d6e)`
+Agent definitions live in `claude-agents/`. These are markdown files that define specialized agents for use with the Agent tool. See `AGENTS.md` for beads integration and session workflow.
