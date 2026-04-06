@@ -114,6 +114,6 @@ Ask: "Want to `/clear` context for a fresh start?"
 
 ## Safety
 
-- NEVER force push
+- NEVER force push — **except** when syncing a fork's main and the only divergence is automated backlink commits (`chore: update backlinks [skip ci]`). In that case, force push to the fork is safe and expected.
 - NEVER delete unmerged branches without asking
 - NEVER commit/discard uncommitted changes without user approval
