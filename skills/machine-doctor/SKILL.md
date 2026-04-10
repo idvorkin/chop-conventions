@@ -37,6 +37,28 @@ Set these aliases for the rest of the skill:
 
 **Linux note:** Many machines alias `ps` to `procs` and `top` to `btm`. Use `/usr/bin/ps` when you need standard flags like `--ppid` or `-o`.
 
+### Environment Detection (Linux only)
+
+CPU/memory cap recommendations (Tier 3f) depend on *where* you are — a bare-metal box with systemd behaves nothing like a rootless container with a read-only cgroup fs.
+
+```bash
+if [ "$OS" = "Linux" ]; then
+  INIT=$(cat /proc/1/comm 2>/dev/null)
+  ORBSTACK=$(uname -r | grep -q orbstack && echo "yes" || echo "no")
+
+  if [ "$INIT" != "systemd" ]; then
+    ENV="linux-container"   # no systemd, cgroup2 likely read-only
+  elif [ "$ORBSTACK" = "yes" ]; then
+    ENV="orbstack-vm"       # OrbStack Linux machine, has systemd
+  else
+    ENV="linux-host"        # real VM or bare metal with systemd
+  fi
+  echo "ENV=$ENV"
+fi
+```
+
+**If `ENV=linux-container`, resource caps cannot be applied from inside** — `/sys/fs/cgroup` is read-only and there is no systemd. They must be set on the host (see Tier 3f).
+
 ---
 
 ## Tier 1: Quick Vitals (`/doctor`)
@@ -97,7 +119,7 @@ Present results as:
 | Disk | ok / **full** | Usage % |
 | Zombies | ok / **found** | Count |
 
-If everything is clean, say so and stop. If problems found, offer to kill the offenders.
+If everything is clean, say so and stop. If problems found, offer to kill the offenders. If the same process class repeatedly shows up as a hog (e.g., multiple Claude/node processes summing to >80% of cores), also suggest running `/doctor deep` for a CPU cap recommendation (Tier 3f).
 
 ---
 
@@ -266,6 +288,67 @@ pgrep -af 'tsserver' 2>&1
 ```
 
 Flag any `npm install` running longer than 10 minutes.
+
+### 3f. CPU Cap Recommendation
+
+If Tier 1 found repeated CPU hogs, or you're here because "the machine keeps getting hammered," recommend a cap for the current environment. **Do not apply automatically** — these change global resource policy and need explicit user approval.
+
+**Key gotcha (all Linux/systemd):** `CPUQuota=` is percent **of one core**, not of the whole machine. This trips everyone up the first time. On an N-core box:
+
+| You want | Set |
+|---|---|
+| 80% of one core | `CPUQuota=80%` |
+| 80% of the whole machine | `CPUQuota=$((N * 80))%` |
+| **Leave 1 core free (recommended)** | **`CPUQuota=$(((N - 1) * 100))%`** |
+
+"Leave 1 core free" is the default recommendation — 80% rounds ugly on small-core boxes, and one free core keeps the OS responsive.
+
+#### `ENV=linux-host` or `ENV=orbstack-vm` (systemd available)
+
+```bash
+CORES=$(nproc)
+QUOTA=$(((CORES - 1) * 100))    # leave 1 core free
+
+# One-shot (resets on reboot)
+sudo systemctl set-property user.slice CPUQuota=${QUOTA}%
+
+# Persistent drop-in
+sudo mkdir -p /etc/systemd/system/user.slice.d
+sudo tee /etc/systemd/system/user.slice.d/cpu.conf <<EOF
+[Slice]
+CPUQuota=${QUOTA}%
+EOF
+sudo systemctl daemon-reload
+```
+
+Verify:
+
+```bash
+systemctl show user.slice -p CPUQuotaPerSecUSec
+systemctl status user.slice | grep -E 'CPU|Tasks'
+```
+
+#### `ENV=linux-container`
+
+You cannot set this from inside — `/sys/fs/cgroup` is read-only and there is no systemd. The cap must be set on the **host**:
+
+- **OrbStack on macOS:** `orb config set cpu <N>` on the mac, or OrbStack → Settings → System → CPU.
+- **Docker container:** `docker update --cpus="<N>"` on the host.
+- **k8s pod:** edit `resources.limits.cpu` on the pod spec.
+
+Report this to the user and stop — do not attempt in-container workarounds.
+
+#### `ENV=darwin` (Mac host)
+
+macOS has no native per-user CPU cap. Options:
+
+- **OrbStack is the culprit (most common):** `orb config set cpu <N>` then restart OrbStack. E.g. on a 10-core Mac: `orb config set cpu 9` leaves 1 core free.
+- **Per-process throttle:** `cpulimit -p <PID> -l <percent>` (Homebrew: `brew install cpulimit`).
+- **Background-class throttling:** `taskpolicy -b <cmd>` runs a command under App Nap / background QoS.
+
+Verify with `top -o cpu` or Activity Monitor.
+
+---
 
 ### Output Format
 
