@@ -49,3 +49,20 @@ Skills are Claude Code slash commands that live in `skills/<name>/SKILL.md`.
 ## Agents
 
 Agent definitions live in `claude-agents/`. These are markdown files that define specialized agents for use with the Agent tool. See `AGENTS.md` for beads integration and session workflow.
+
+## Plugins
+
+Marketplace plugins I rely on across projects (user scope). Install with `/plugin install <name>@<marketplace>`.
+
+**`claude-plugins-official`** — `anthropics/claude-plugins-official`
+- `superpowers` — core skills framework: brainstorming, TDD, debugging, planning, etc.
+- `claude-md-management` — audit and improve CLAUDE.md files
+- `code-simplifier` — review and simplify changed code
+- `pyright-lsp`, `typescript-lsp`, `rust-analyzer-lsp` — language servers for the LSP tool
+
+**`claude-code-plugins`** — `anthropics/claude-code`
+- `frontend-design` — distinctive, production-grade UI generation
+- `pr-review-toolkit` — specialized agents for PR review (comments, tests, silent failures, type design)
+
+**`beads-marketplace`** — `steveyegge/beads`
+- `beads` — AI-supervised issue tracker; hooks into `SessionStart` / `PreCompact` to prime context
