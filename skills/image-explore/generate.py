@@ -121,36 +121,47 @@ def read_default_style(chop_root):
 
 
 def remove_background(image_path):
-    """Remove background using rembg via uvx. Returns (success, error_msg)."""
-    uvx = shutil.which("uvx")
-    if not uvx:
-        return False, "uvx not found — needed to run rembg"
+    """Strip the magenta chroma-key background using ImageMagick.
+
+    Since images are generated on a KNOWN solid #FF00FF background, exact
+    color-based transparency with ImageMagick's -fuzz is pixel-accurate,
+    fast, and dependency-free. This beat rembg in testing: rembg left
+    purple halos around character edges and required a heavy ML install.
+
+    Fuzz of 30% handles edge antialiasing (where magenta blends into the
+    subject outline) without bleeding into red/pink character colors.
+    """
+    magick = shutil.which("magick") or shutil.which("convert")
+    if not magick:
+        return False, "magick not found — install ImageMagick"
 
     with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as tmp:
         tmp_path = tmp.name
 
     try:
         result = subprocess.run(
-            [uvx, "--from", "rembg[cpu,cli]", "rembg", "i", image_path, tmp_path],
+            [
+                magick, image_path,
+                "-fuzz", "30%",
+                "-transparent", "#FF00FF",
+                "-quality", "90",
+                tmp_path,
+            ],
             capture_output=True,
             text=True,
         )
         if result.returncode != 0:
-            return False, f"rembg failed: {result.stderr.strip()}"
+            return False, f"magick -transparent failed: {result.stderr.strip()}"
 
         ext = Path(image_path).suffix.lower()
         if ext == ".webp":
-            magick = shutil.which("magick") or shutil.which("convert")
-            if magick:
-                conv = subprocess.run(
-                    [magick, tmp_path, "-quality", "90", image_path],
-                    capture_output=True,
-                    text=True,
-                )
-                if conv.returncode != 0:
-                    return False, f"magick convert failed: {conv.stderr.strip()}"
-            else:
-                shutil.copy2(tmp_path, image_path.replace(".webp", ".png"))
+            conv = subprocess.run(
+                [magick, tmp_path, "-quality", "90", image_path],
+                capture_output=True,
+                text=True,
+            )
+            if conv.returncode != 0:
+                return False, f"magick webp convert failed: {conv.stderr.strip()}"
         else:
             shutil.copy2(tmp_path, image_path)
         return True, None
