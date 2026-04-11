@@ -88,26 +88,6 @@ For each surviving lesson, write the addition in this shape:
 ​```
 ```
 
-### Voice rules — critical
-
-CLAUDE.md is a **directive to a future Claude**, not a personal diary or retrospective. Future Claude is the reader; the current user is *not* in the frame.
-
-**Wrong voice** (do not write CLAUDE.md like this):
-
-- First person singular: "I prefer X", "I learned that...", "my workflow is..."
-- Collective first person: "we discovered", "we do X this way"
-- Named-user anecdotes: "the user is on a Mac", "Igor likes...", "Alice prefers..."
-- Past-tense narrative: "the session showed that...", "yesterday we hit..."
-- Opinion framing: "I think this is better", "this feels cleaner"
-
-**Right voice:**
-
-- Imperative: "Prefer X", "Use Y before Z", "Exclude lifeline processes from signal-based scripts"
-- Declarative fact: "PID 1 is a bash respawn loop, NOT systemd", "`ps` is aliased to `procs`"
-- Neutral rule: "Scripts that send signals by pattern MUST exclude..."
-
-**Voice check before showing diffs:** re-read each proposed addition. Would it still make sense to a reader who never saw this session? If it only works as a message *from* the original user, rewrite it as a standalone rule.
-
 ### Style rules
 
 - **No narrative.** Never say "in this session..." — write as a durable rule, not as a report.
@@ -145,7 +125,7 @@ If the user says "just commit locally, no PR" or "just do it on main", follow th
 
 Red flags that you're adding noise to CLAUDE.md:
 
-- **Wrong voice** — first person ("I", "we"), named-user anecdotes ("Igor likes"), narrative ("in this session we discovered..."), opinion framing ("I think this feels better")
+- **Narrative phrasing** — "We learned that X...", "In this session we discovered...", "Remember that..."
 - **Vague generalities** — "Always test before deploying", "Be careful with X"
 - **Already-covered territory** — guardrail rules already in the shared conventions repo, or things already in the default Claude Code system prompt ("prefer editing existing files", "use feature branches")
 - **One-off bug postmortems** — the bug is fixed; the narrative belongs in the commit message, not CLAUDE.md
