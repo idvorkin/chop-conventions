@@ -1,6 +1,7 @@
 ---
 name: docs
 description: Use when answering questions about or writing code against a named third-party library/framework. Fetches fresh, authoritative documentation via Context7 (`ctx7`) instead of relying on stale training data. Fires both reactively ("how do I X with library Y") and proactively (about to write library code and unsure of current API). Skip for language stdlib and general CS concepts.
+allowed-tools: Bash, WebFetch
 ---
 
 # Docs (Context7 Library Lookup)
