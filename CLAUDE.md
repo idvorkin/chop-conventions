@@ -23,6 +23,15 @@ gh pr create --repo idvorkin/chop-conventions
 
 Scripts that signal processes by pattern (cpulimit, pkill, kill by comm match) MUST exclude lifeline processes or risk wedging the VM / locking out the SSH session: `tailscaled`, `etserver`, **`etterminal`**, `tmux` (bare + `"tmux:"*`), `sshd`, init-like (`sh`, `init`, `systemd`), and kernel threads (`kthreadd`, `kworker*`, `ksoftirqd*`, `migration*`, `rcu_*`). Test the exclude list with a unit test before deploying — see `skills/machine-doctor/doctor-guards.md` for an example.
 
+## Scripting Language Defaults
+
+**Default to Python for any non-trivial script, not shell.** Shell is for one-liners and the occasional `just` target. Anything with branching, data structures, or more than ~20 lines should be Python.
+
+- Use the `uv run --script` shebang with an inline PEP 723 dependency block so scripts self-bootstrap — no venvs, no `pip install`, no setup steps for the user. See [`python/uv-shebang-deps.md`](python/uv-shebang-deps.md) and [`python/python-cli.md`](python/python-cli.md).
+- Stdlib is enough for most helpers. Only add dependencies when they earn their keep (Typer + Rich for user-facing CLIs; plain stdlib for programmatic JSON-emitting helpers).
+- Put pure logic behind functions that can be unit-tested without subprocess mocking. Shell out to external tools (`git`, `gh`, etc.) through a thin wrapper so the business logic stays testable.
+- Working example: [`skills/up-to-date/diagnose.py`](skills/up-to-date/diagnose.py) — stdlib-only, `uv run` shebang, parallelized subprocess calls, unit-tested pure functions.
+
 ## Structure
 
 - `dev-setup/` - Development environment configuration (beads, hooks, gitignore, justfile, tailscale)
