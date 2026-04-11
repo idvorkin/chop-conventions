@@ -58,6 +58,7 @@ Skills are Claude Code slash commands that live in `skills/<name>/SKILL.md`.
   - Machine-level (all projects): `~/.claude/skills/<name>` -> `<chop-conventions>/skills/<name>`
   - Project-level (one project): `<project>/.claude/skills/<name>` -> `<chop-conventions>/skills/<name>`
 - After adding a skill, create the symlink and document it in the README skills table
+- After `/up-to-date` pulls new commits, check the pull delta for newly-added `skills/<name>/` dirs and offer to symlink them into `~/.claude/skills/`. If the delta added no skills, say nothing. Never link automatically.
 
 ### Size Guideline
 
