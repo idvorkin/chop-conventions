@@ -12,6 +12,7 @@ Diagnose and repair system health. Three tiers:
 |---|---|
 | `/doctor` | Quick vitals — CPU hogs, memory, disk |
 | `/doctor gastown` | Gas Town agent shutdown and cleanup |
+| `/doctor guards` | Set up / verify two-layer CPU guard (OrbStack VM cap + in-VM watchdog) |
 | `/doctor deep` | Full probe — git locks, orphaned worktrees, stale servers, MCP |
 
 Always start with **Step 0: Platform Detection**, then run the requested tier.
@@ -108,6 +109,25 @@ Flag if any filesystem is above 90%.
 /usr/bin/ps aux | awk '$8 ~ /Z/'
 ```
 
+### 1e. CPU Guards
+
+Igor's OrbStack VM runs a two-layer CPU guard. Verify both layers are in place.
+
+**Layer 1 — OrbStack Mac-side VM cap (hypervisor ceiling):** set from the Mac with `orb config set cpu <N>` or the OrbStack GUI. Cannot be fully verified from inside the VM — `nproc` shows how many cores are allocated. If it's less than the Mac's physical core count, the cap is set; otherwise trust documented config.
+
+```bash
+nproc  # cores allocated to the VM
+```
+
+**Layer 2 — In-VM watchdog:** `~/bin/cpu-watchdog.sh` polls `top` and attaches `cpulimit` to runaway processes.
+
+```bash
+pgrep -af 'bin/cpu-watchdog.sh$' >/dev/null && echo ok || echo MISSING
+tail -1 /tmp/cpu-watchdog.log 2>/dev/null
+```
+
+Flag if the watchdog is **not running**. The boot hook lives in `~/.zshrc`, but it only fires once an interactive shell has started — if no shell has opened since reboot, or if the watchdog was manually killed, it will be missing. Recovery: run `setsid ~/bin/cpu-watchdog.sh &>/dev/null &`, or open any shell. If the script itself is missing, see `/doctor guards` for the recovery template.
+
 ### Output Format
 
 Present results as:
@@ -118,6 +138,7 @@ Present results as:
 | Memory | ok / **low** | Available RAM |
 | Disk | ok / **full** | Usage % |
 | Zombies | ok / **found** | Count |
+| CPU guards | ok / **missing** | watchdog running, VM cap set |
 
 If everything is clean, say so and stop. If problems found, offer to kill the offenders. If the same process class repeatedly shows up as a hog (e.g., multiple Claude/node processes summing to >80% of cores), also suggest running `/doctor deep` for a CPU cap recommendation (Tier 3f).
 
@@ -210,6 +231,189 @@ Report results. If anything survived, escalate to user — something unexpected 
 1. **Supervisor respawning** — the deacon/mayor restart killed agents. You must kill the supervisor first or use `gt estop` to freeze everything.
 2. **Separate tmux sockets** — `gt` uses its own tmux socket (`gt-<hash>`), so standard `tmux list-sessions` won't see them.
 3. **Orphan reparenting** — killed processes get reparented to the tmux server (PPID becomes the tmux server PID), making parent tracking difficult.
+
+---
+
+## Tier: Guards (`/doctor guards`)
+
+Set up or verify the **two-layer CPU guard** for Igor's OrbStack Linux VM. Layer 1 is a Mac-side hypervisor cap. Layer 2 is an in-VM reactive watchdog that attaches `cpulimit` to runaway processes. Run this when Layer 1e reports the guards as missing, or when first configuring a new machine.
+
+### Why this shape (OrbStack-specific)
+
+The canonical 2026 best practice on Linux is `systemd-run --scope -p CPUQuota=N%`, which creates a transient cgroup v2 scope covering a process tree. **That does not work inside an OrbStack container**, for two reasons:
+
+1. **No systemd.** PID 1 is `sh -c 'while true; do tmux...'`, not systemd. `systemd-run --user` fails with `DBUS_SESSION_BUS_ADDRESS` missing, and `sudo systemd-run` fails with "System has not been booted with systemd as init system".
+2. **Read-only cgroup2 fs.** `/sys/fs/cgroup` is mounted `ro,nsdelegate`. `sudo mount -o remount,rw /sys/fs/cgroup` returns "permission denied" — OrbStack strips the container's capability to remount. Direct writes like `echo "400000 100000" > /sys/fs/cgroup/cpu.max` therefore also fail.
+
+Userspace `cpulimit` is the fallback. It polls (~2s), has a fork-window gap, uses blunt SIGSTOP/SIGCONT duty-cycle throttling, and can only signal processes owned by the user running it. Pairing it with a Mac-side OrbStack cap gives you a hard ceiling *and* an early reactive throttle, which is good enough for a dev VM.
+
+### Layer 1: OrbStack VM cap (runs on the Mac host)
+
+Set from the **Mac**, not from inside the VM:
+
+```bash
+# On the Mac
+orb config set cpu <N>
+# or: OrbStack menu → Settings → System → CPU
+```
+
+Pick `N` = physical cores − 1 (leaves one core for the Mac itself). Restart OrbStack if prompted.
+
+Verify from inside the VM:
+
+```bash
+nproc  # should report N
+```
+
+### Layer 2: In-VM watchdog
+
+**Install cpulimit:**
+
+```bash
+sudo apt install -y cpulimit
+```
+
+Requires cpulimit 3.1+, which is what Ubuntu's apt ships. Homebrew's cpulimit is 0.2 and unrelated — skip it.
+
+**Install the script** at `~/bin/cpu-watchdog.sh` (see full recovery template below), then make it executable:
+
+```bash
+chmod +x ~/bin/cpu-watchdog.sh
+```
+
+**Install the boot hook** in `~/.zshrc` so the watchdog starts with the first interactive shell after reboot. Same idempotent `pgrep`/`setsid` pattern used for tailscaled and etserver:
+
+```bash
+if [ -x ~/bin/cpu-watchdog.sh ] && ! pgrep -f 'bin/cpu-watchdog.sh$' > /dev/null; then
+    setsid ~/bin/cpu-watchdog.sh &>/dev/null &
+fi
+```
+
+**Start it now** (don't wait for a new shell):
+
+```bash
+setsid ~/bin/cpu-watchdog.sh &>/dev/null &
+```
+
+**Verify:**
+
+```bash
+pgrep -af 'bin/cpu-watchdog.sh$'
+tail -5 /tmp/cpu-watchdog.log
+```
+
+You should see a `cpu-watchdog starting ...` line with the current PID.
+
+### Recovery template: `~/bin/cpu-watchdog.sh`
+
+If the script is missing or corrupted and the settings repo is unavailable, recreate it verbatim from this block. This must match the committed script byte-for-byte.
+
+```bash
+#!/bin/bash
+# cpu-watchdog.sh — reactive in-VM CPU runaway catcher.
+#
+# Scans every INTERVAL seconds. When a user process exceeds THRESHOLD%
+# instantaneous CPU (from `top -bn2 -d1`), attaches a cpulimit instance
+# capped at LIMIT_PCT%. cpulimit uses -z so it auto-exits when the target
+# dies. Pairs with the OrbStack Mac-side VM CPU cap for two-layer protection:
+# the hypervisor sets the ceiling, this script catches individual runaways
+# early so the whole VM never approaches the ceiling.
+#
+# Tunables via env:
+#   CPU_WATCHDOG_LIMIT      per-process cap once fired (default 200 = 2 cores)
+#   CPU_WATCHDOG_THRESHOLD  fire threshold (default 400 = 4 cores sustained)
+#   CPU_WATCHDOG_INTERVAL   scan interval in seconds (default 30)
+#   CPU_WATCHDOG_LOG        log file (default /tmp/cpu-watchdog.log)
+
+set -u
+
+LIMIT_PCT=${CPU_WATCHDOG_LIMIT:-200}
+THRESHOLD=${CPU_WATCHDOG_THRESHOLD:-400}
+INTERVAL=${CPU_WATCHDOG_INTERVAL:-30}
+LOG=${CPU_WATCHDOG_LOG:-/tmp/cpu-watchdog.log}
+
+log() {
+    printf '[%s] %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$*" >> "$LOG"
+}
+
+# Do not throttle anything in this list — stopping them would wedge the VM
+is_excluded() {
+    case "$1" in
+        cpulimit|tailscaled|etserver|sh|init|systemd|dolt|\
+        "tmux:"*|kthreadd|kworker*|ksoftirqd*|migration*|rcu_*) return 0 ;;
+    esac
+    return 1
+}
+
+trap 'log "cpu-watchdog stopping (pid=$$)"; exit 0' TERM INT
+
+log "cpu-watchdog starting (limit=${LIMIT_PCT}% threshold=${THRESHOLD}% interval=${INTERVAL}s pid=$$)"
+
+while true; do
+    # top -bn2 -d1 → second iteration has instantaneous CPU over 1s
+    # -w512 prevents COMMAND truncation. awk concatenates cols 12..NF as COMMAND.
+    /usr/bin/top -bn2 -d1 -w512 2>/dev/null \
+        | awk '
+            /^top - /{iter++}
+            iter==2 && $1 ~ /^[0-9]+$/ {
+                comm=""
+                for (i=12; i<=NF; i++) comm = comm (i>12 ? " " : "") $i
+                print $1, $9, comm
+            }
+          ' \
+        | while read -r pid pcpu comm; do
+            # bash can't compare floats; let awk do it
+            over=$(awk -v a="$pcpu" -v t="$THRESHOLD" 'BEGIN{print (a+0 > t+0)}')
+            [ "$over" = "1" ] || continue
+            is_excluded "$comm" && continue
+            # Already being throttled? (our cpulimit has `-p <pid>` in its args)
+            if pgrep -f "cpulimit.*-p $pid " >/dev/null 2>&1; then continue; fi
+            log "throttle pid=$pid comm=\"$comm\" cpu=${pcpu}% → cap ${LIMIT_PCT}%"
+            cpulimit -l "$LIMIT_PCT" -p "$pid" -z -q >/dev/null 2>&1 &
+        done
+    sleep "$INTERVAL"
+done
+```
+
+### Smoke test
+
+Verify end-to-end that the watchdog detects and throttles a runaway. Uses test thresholds (30%/50%) and a 5s interval so you don't have to wait 30s.
+
+```bash
+# 1. Launch watchdog with test thresholds against a separate log
+CPU_WATCHDOG_LIMIT=30 \
+CPU_WATCHDOG_THRESHOLD=50 \
+CPU_WATCHDOG_INTERVAL=5 \
+CPU_WATCHDOG_LOG=/tmp/cpu-watchdog.test.log \
+  ~/bin/cpu-watchdog.sh &
+WATCHDOG=$!
+
+# 2. Burn a core
+yes >/dev/null & YES=$!
+
+# 3. Wait ~10s for one scan cycle + cpulimit settle
+sleep 10
+
+# 4. Verify
+cat /tmp/cpu-watchdog.test.log          # should contain: throttle pid=$YES ... → cap 30%
+/usr/bin/ps -p $YES -o pid,pcpu,comm,state  # %CPU ~30, state T (SIGSTOP duty cycle)
+pgrep -af cpulimit                      # should show a live cpulimit -p $YES
+
+# 5. Cleanup
+kill $YES 2>/dev/null
+kill $WATCHDOG 2>/dev/null
+rm -f /tmp/cpu-watchdog.test.log
+```
+
+A passing test shows a `throttle pid=... → cap 30%` log line, `%CPU` dropped to roughly 30, and process state `T` (caught mid SIGSTOP). If `%CPU` is still ~100, check that `cpulimit` is installed (`which cpulimit`) and that the test `yes` is owned by the same user as the watchdog.
+
+### Caveats
+
+- **Polling gap.** The watchdog scans every `INTERVAL` seconds (30s in production, 5s in the smoke test). A process can burn a core unchecked until the next scan, and newly forked children run unconstrained until discovered.
+- **Blunt throttle.** `cpulimit` uses SIGSTOP/SIGCONT duty cycling, not CFS bandwidth. It's juddery, not smooth. Fine for runaway loops; not appropriate for latency-sensitive workloads.
+- **Per-process, not cumulative.** Ten processes each sitting just under the threshold are invisible to the watchdog even though they sum to 10 cores. Layer 1 is what catches that case.
+- **Not a hard ceiling.** The watchdog is reactive. The OrbStack Mac-side cap (Layer 1) is the actual ceiling — don't remove it thinking the watchdog replaces it.
+- **Must run as the process owner.** `cpulimit` signals processes it can `kill()`. Root-owned processes need `sudo cpulimit`, which the watchdog does not do; they are silently skipped along with the exclusion list.
 
 ---
 
@@ -358,6 +562,7 @@ Verify with `top -o cpu` or Activity Monitor.
 | Memory | ok / **low** | Available RAM |
 | Disk | ok / **full** | Usage % |
 | Zombies | ok / **found** | Count |
+| CPU guards | ok / **missing** | watchdog running, VM cap set |
 | Gas Town | clean / **running** | Process count |
 | Git locks | ok / **stale** | Files found |
 | Worktrees | ok / **orphaned** | Count |
