@@ -113,7 +113,7 @@ Flag if any filesystem is above 90%.
 
 Igor's OrbStack VM runs a two-layer CPU guard. Verify both layers are in place.
 
-**Layer 1 — OrbStack Mac-side VM cap (hypervisor ceiling):** set from the Mac with `orb config set cpu <N>` or the OrbStack GUI. Cannot be fully verified from inside the VM — `nproc` shows how many cores are allocated. If it's less than the Mac's physical core count, the cap is set; otherwise trust documented config.
+**Layer 1 — OrbStack Mac-side VM cap (hypervisor ceiling):** set from the Mac with `orb config set cpu <N>` or the OrbStack GUI. You cannot fully verify this from inside the VM — `nproc` shows how many cores are allocated. If it's less than the Mac's physical core count, the cap is set; otherwise trust documented config.
 
 ```bash
 nproc  # cores allocated to the VM
@@ -275,9 +275,18 @@ sudo apt install -y cpulimit
 
 Requires cpulimit 3.1+, which is what Ubuntu's apt ships. Homebrew's cpulimit is 0.2 and unrelated — skip it.
 
-**Install the script** at `~/bin/cpu-watchdog.sh` (see full recovery template below), then make it executable:
+**Install the script** at `~/bin/cpu-watchdog.sh`. The canonical copy lives in Igor's settings repo at [`shared/cpu-watchdog.sh`](https://github.com/idvorkin/Settings/blob/main/shared/cpu-watchdog.sh):
 
 ```bash
+# Preferred: clone settings and symlink (tracks updates)
+git clone https://github.com/idvorkin/Settings.git ~/settings
+mkdir -p ~/bin
+ln -sf ~/settings/shared/cpu-watchdog.sh ~/bin/cpu-watchdog.sh
+
+# Or fetch the file directly if you don't want the whole settings repo
+mkdir -p ~/bin
+curl -fsSL https://raw.githubusercontent.com/idvorkin/Settings/main/shared/cpu-watchdog.sh \
+    -o ~/bin/cpu-watchdog.sh
 chmod +x ~/bin/cpu-watchdog.sh
 ```
 
@@ -303,77 +312,6 @@ tail -5 /tmp/cpu-watchdog.log
 ```
 
 You should see a `cpu-watchdog starting ...` line with the current PID.
-
-### Recovery template: `~/bin/cpu-watchdog.sh`
-
-If the script is missing or corrupted and the settings repo is unavailable, recreate it verbatim from this block. This must match the committed script byte-for-byte.
-
-```bash
-#!/bin/bash
-# cpu-watchdog.sh — reactive in-VM CPU runaway catcher.
-#
-# Scans every INTERVAL seconds. When a user process exceeds THRESHOLD%
-# instantaneous CPU (from `top -bn2 -d1`), attaches a cpulimit instance
-# capped at LIMIT_PCT%. cpulimit uses -z so it auto-exits when the target
-# dies. Pairs with the OrbStack Mac-side VM CPU cap for two-layer protection:
-# the hypervisor sets the ceiling, this script catches individual runaways
-# early so the whole VM never approaches the ceiling.
-#
-# Tunables via env:
-#   CPU_WATCHDOG_LIMIT      per-process cap once fired (default 200 = 2 cores)
-#   CPU_WATCHDOG_THRESHOLD  fire threshold (default 400 = 4 cores sustained)
-#   CPU_WATCHDOG_INTERVAL   scan interval in seconds (default 30)
-#   CPU_WATCHDOG_LOG        log file (default /tmp/cpu-watchdog.log)
-
-set -u
-
-LIMIT_PCT=${CPU_WATCHDOG_LIMIT:-200}
-THRESHOLD=${CPU_WATCHDOG_THRESHOLD:-400}
-INTERVAL=${CPU_WATCHDOG_INTERVAL:-30}
-LOG=${CPU_WATCHDOG_LOG:-/tmp/cpu-watchdog.log}
-
-log() {
-    printf '[%s] %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$*" >> "$LOG"
-}
-
-# Do not throttle anything in this list — stopping them would wedge the VM
-is_excluded() {
-    case "$1" in
-        cpulimit|tailscaled|etserver|etterminal|etclient|sh|init|systemd|dolt|\
-        tmux|"tmux:"*|kthreadd|kworker*|ksoftirqd*|migration*|rcu_*) return 0 ;;
-    esac
-    return 1
-}
-
-trap 'log "cpu-watchdog stopping (pid=$$)"; exit 0' TERM INT
-
-log "cpu-watchdog starting (limit=${LIMIT_PCT}% threshold=${THRESHOLD}% interval=${INTERVAL}s pid=$$)"
-
-while true; do
-    # top -bn2 -d1 → second iteration has instantaneous CPU over 1s
-    # -w512 prevents COMMAND truncation. awk concatenates cols 12..NF as COMMAND.
-    /usr/bin/top -bn2 -d1 -w512 2>/dev/null \
-        | awk '
-            /^top - /{iter++}
-            iter==2 && $1 ~ /^[0-9]+$/ {
-                comm=""
-                for (i=12; i<=NF; i++) comm = comm (i>12 ? " " : "") $i
-                print $1, $9, comm
-            }
-          ' \
-        | while read -r pid pcpu comm; do
-            # bash can't compare floats; let awk do it
-            over=$(awk -v a="$pcpu" -v t="$THRESHOLD" 'BEGIN{print (a+0 > t+0)}')
-            [ "$over" = "1" ] || continue
-            is_excluded "$comm" && continue
-            # Already being throttled? (our cpulimit has `-p <pid>` in its args)
-            if pgrep -f "cpulimit.*-p $pid " >/dev/null 2>&1; then continue; fi
-            log "throttle pid=$pid comm=\"$comm\" cpu=${pcpu}% → cap ${LIMIT_PCT}%"
-            cpulimit -l "$LIMIT_PCT" -p "$pid" -z -q >/dev/null 2>&1 &
-        done
-    sleep "$INTERVAL"
-done
-```
 
 ### Smoke test
 
