@@ -19,6 +19,10 @@ git push -u origin <branch>
 gh pr create --repo idvorkin/chop-conventions
 ```
 
+## Process-Signaling Safety
+
+Scripts that signal processes by pattern (cpulimit, pkill, kill by comm match) MUST exclude lifeline processes or risk wedging the VM / locking out the SSH session: `tailscaled`, `etserver`, **`etterminal`**, `tmux` (bare + `"tmux:"*`), `sshd`, init-like (`sh`, `init`, `systemd`), and kernel threads (`kthreadd`, `kworker*`, `ksoftirqd*`, `migration*`, `rcu_*`). Test the exclude list with a unit test before deploying — see `skills/machine-doctor/doctor-guards.md` for an example.
+
 ## Structure
 
 - `dev-setup/` - Development environment configuration (beads, hooks, gitignore, justfile, tailscale)
@@ -45,6 +49,10 @@ Skills are Claude Code slash commands that live in `skills/<name>/SKILL.md`.
   - Machine-level (all projects): `~/.claude/skills/<name>` -> `<chop-conventions>/skills/<name>`
   - Project-level (one project): `<project>/.claude/skills/<name>` -> `<chop-conventions>/skills/<name>`
 - After adding a skill, create the symlink and document it in the README skills table
+
+### Size Guideline
+
+When a skill's `SKILL.md` exceeds ~500 lines, or a single tier's detail exceeds ~100 lines, factor the tier into a supplementary `.md` in the same directory with a "loaded on demand" note at the top. `SKILL.md` stays navigable at a glance; detailed runbooks live next door. See `skills/machine-doctor/doctor-guards.md` as a reference.
 
 ## Agents
 
