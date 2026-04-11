@@ -43,7 +43,9 @@ nproc  # should report N
 sudo apt install -y cpulimit
 ```
 
-Requires cpulimit 3.1+, which is what Ubuntu's apt ships. Homebrew's cpulimit is 0.2 and unrelated — skip it.
+Requires cpulimit 3.1+, which is what Ubuntu's apt ships (installs to `/usr/bin/cpulimit`). Homebrew's cpulimit is an unrelated fork stuck at v0.2 — it lacks `-q` (quiet) and other flags the watchdog uses, and silently errors out when called.
+
+**Watch out for linuxbrew PATH shadowing.** If Homebrew's cpulimit is already installed on a Linux box (`/home/linuxbrew/.linuxbrew/bin/cpulimit`), it will shadow `/usr/bin/cpulimit` because linuxbrew prepends its own bin to PATH. A bare `cpulimit` call then picks the v0.2 fork, and the watchdog loop logs `throttle pid=...` every scan but the target process never actually drops below 100% CPU — the giveaway is that no `cpulimit` child process survives between scans. The `cpu-watchdog.sh` in Igor's Settings repo resolves `CPULIMIT=/usr/bin/cpulimit` explicitly to avoid this, but if you're debugging a homegrown script or see this failure pattern, that's your cause. Fix options: `brew uninstall cpulimit`, or hardcode the full path.
 
 **Install the script** at `~/bin/cpu-watchdog.sh`. The canonical copy lives in Igor's settings repo at [`shared/cpu-watchdog.sh`](https://github.com/idvorkin/Settings/blob/main/shared/cpu-watchdog.sh):
 
@@ -113,7 +115,13 @@ kill $WATCHDOG 2>/dev/null
 rm -f /tmp/cpu-watchdog.test.log
 ```
 
-A passing test shows a `throttle pid=... → cap 30%` log line, `%CPU` dropped to roughly 30, and process state `T` (caught mid SIGSTOP). If `%CPU` is still ~100, check that `cpulimit` is installed (`which cpulimit`) and that the test `yes` is owned by the same user as the watchdog.
+A passing test shows a **single** `throttle pid=... → cap 30%` log line, `%CPU` dropped to roughly 30 (allow ~10% slack — SIGSTOP duty cycle is juddery), process state `R` or `T`, and `pgrep -af '/usr/bin/cpulimit'` shows a live `cpulimit -l 30 -p <pid> -z -q` child.
+
+**Failure patterns:**
+
+- **`%CPU` still ~100 and the log shows the throttle line repeated every scan** → cpulimit is being launched but dying immediately. Almost always linuxbrew's broken v0.2 cpulimit shadowing `/usr/bin/cpulimit` (see the PATH-shadowing warning earlier in this doc). Run `which cpulimit` — if it's under `/home/linuxbrew`, that's your cause.
+- **`%CPU` still ~100 and no throttle line at all** → the watchdog isn't scanning. Check `tail /tmp/cpu-watchdog.test.log` for startup errors, and that `/usr/bin/top` exists.
+- **Throttle line fires but `ps` shows the wrong user** → cpulimit can't signal processes it doesn't own. Make sure the test `yes` and the watchdog run as the same user.
 
 ## Caveats
 
