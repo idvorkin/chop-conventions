@@ -339,8 +339,8 @@ log() {
 # Do not throttle anything in this list — stopping them would wedge the VM
 is_excluded() {
     case "$1" in
-        cpulimit|tailscaled|etserver|sh|init|systemd|dolt|\
-        "tmux:"*|kthreadd|kworker*|ksoftirqd*|migration*|rcu_*) return 0 ;;
+        cpulimit|tailscaled|etserver|etterminal|etclient|sh|init|systemd|dolt|\
+        tmux|"tmux:"*|kthreadd|kworker*|ksoftirqd*|migration*|rcu_*) return 0 ;;
     esac
     return 1
 }
@@ -391,8 +391,8 @@ WATCHDOG=$!
 # 2. Burn a core
 yes >/dev/null & YES=$!
 
-# 3. Wait ~10s for one scan cycle + cpulimit settle
-sleep 10
+# 3. Wait ~15s for one scan cycle + cpulimit settle (loaded machines need the slack)
+sleep 15
 
 # 4. Verify
 cat /tmp/cpu-watchdog.test.log          # should contain: throttle pid=$YES ... → cap 30%
@@ -534,13 +534,13 @@ systemctl status user.slice | grep -E 'CPU|Tasks'
 
 #### `ENV=linux-container`
 
-You cannot set this from inside — `/sys/fs/cgroup` is read-only and there is no systemd. The cap must be set on the **host**:
+You cannot set a true cgroup cap from inside — `/sys/fs/cgroup` is read-only and there is no systemd. The hard ceiling must be set on the **host**:
 
 - **OrbStack on macOS:** `orb config set cpu <N>` on the mac, or OrbStack → Settings → System → CPU.
 - **Docker container:** `docker update --cpus="<N>"` on the host.
 - **k8s pod:** edit `resources.limits.cpu` on the pod spec.
 
-Report this to the user and stop — do not attempt in-container workarounds.
+**For OrbStack specifically:** after setting the Mac-side cap above, run `/doctor guards` (see the Guards tier earlier in this doc) to install the in-VM `cpu-watchdog` reactive layer. That's the two-layer pattern — Layer 1 ceiling from the host, Layer 2 early throttle from inside. For Docker/k8s with no in-container fallback, report to the user and stop.
 
 #### `ENV=darwin` (Mac host)
 
