@@ -1,6 +1,6 @@
 ---
 name: docs
-description: Use when answering questions about or writing code against a third-party library/framework. Fetches fresh, authoritative documentation via Context7 (`ctx7`) instead of relying on stale training data. Fires both reactively ("how do I X with library Y") and proactively (about to write library code and unsure of current API).
+description: Use when answering questions about or writing code against a named third-party library/framework. Fetches fresh, authoritative documentation via Context7 (`ctx7`) instead of relying on stale training data. Fires both reactively ("how do I X with library Y") and proactively (about to write library code and unsure of current API). Skip for language stdlib and general CS concepts.
 ---
 
 # Docs (Context7 Library Lookup)
@@ -30,13 +30,14 @@ Context7 splits lookup into a name→ID resolution step and a docs-fetch step.
 npx ctx7 library <name> "<query>"
 ```
 
-The query is optional but strongly recommended — Context7 uses it to rank candidate libraries by relevance. The command returns several candidate IDs ranked by benchmark score; pick the top one unless you have a reason not to.
+Always pass a query — per `ctx7 library --help` it's positional-optional, but Context7 uses it to rank candidate libraries by relevance and results get noticeably worse without it. The command returns several candidates; pick the first result unless it's obviously wrong for your query (e.g., a fork, translated mirror, or unrelated namespace match).
 
 Example:
 ```bash
 npx ctx7 library react "useEffect cleanup function"
-# → /reactjs/react.dev  (top-ranked, 90+ benchmark)
-# → /facebook/react      (also valid but lower-ranked)
+# → /reactjs/react.dev  (first result)
+# → /websites/react_dev  (second result)
+# → /facebook/react      (fifth result — canonical repo, but not always top-ranked)
 ```
 
 ### Step 2: Fetch docs for the resolved ID
@@ -44,6 +45,8 @@ npx ctx7 library react "useEffect cleanup function"
 ```bash
 npx ctx7 docs <libraryId> "<query>"
 ```
+
+Unlike `ctx7 library`, **both arguments are required** on `ctx7 docs` — omitting the query produces `error: missing required argument 'query'` and exits 1.
 
 Example:
 ```bash
@@ -77,4 +80,4 @@ Only skip the `library` step when you already resolved the ID **earlier in the c
 - **Guessing the library ID instead of running `ctx7 library` first.** IDs are not predictable (`/reactjs/react.dev`, `/pola-rs/polars`). Resolve first unless you already saw the ID earlier in this session.
 - **Using ctx7 for stdlib questions.** Wasted tokens — you already know `list.sort()`.
 - **Re-running the same query multiple times in one session** instead of reusing the first output.
-- **Forgetting the query argument** on `ctx7 library` — rankings get noticeably worse without it.
+- **Ignoring errors.** `ctx7` exits 1 and prints `✖ …` or `error: …` on bad IDs, missing queries, or unknown names. If the output looks like an error, it IS — don't proceed as if you got docs. Re-run `ctx7 library` with a different name or fall back to `WebFetch`.
