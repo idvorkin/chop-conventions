@@ -1,5 +1,7 @@
 # `docs` Skill Implementation Plan
 
+> **Post-implementation note:** Task 1's sanity check discovered that `/facebook/react` is NOT the top-ranked Context7 ID for React (it's rank 5 — `/reactjs/react.dev` is rank 1). Several example snippets in this plan still reference `/facebook/react` from the pre-sanity-check assumption. They are preserved as historical context; the shipped `skills/docs/SKILL.md` and the updated spec are the source of truth for the "don't guess IDs" rule.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Ship a machine-level `docs` skill that wraps `ctx7 library` + `ctx7 docs` so Claude fetches fresh third-party library documentation instead of relying on stale training memory.

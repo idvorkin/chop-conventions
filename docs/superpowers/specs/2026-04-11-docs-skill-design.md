@@ -43,12 +43,13 @@ description: Use when answering questions about or writing code against a third-
      ```bash
      npx ctx7 library <name> "<query>"
      ```
-     The query is optional but strongly recommended — it ranks candidate libraries by relevance to what you're actually asking.
+     Always pass a query — per `--help` it's positional-optional, but Context7 uses it to rank candidates by relevance and results get noticeably worse without it.
    - Step 2 — fetch docs for the resolved ID:
      ```bash
      npx ctx7 docs <libraryId> "<query>"
      ```
-   - Shortcut: when the library ID is obvious from prior knowledge (`/facebook/react`, `/anthropics/anthropic-sdk-python`), skip straight to step 2.
+     Both arguments are required on `ctx7 docs` (asymmetric with Step 1).
+   - Shortcut: skip Step 1 *only* when you already resolved the ID earlier in the same session. **Don't guess IDs from intuition.** The highest-ranked match is often not what you'd expect — `/reactjs/react.dev` not `/facebook/react`; `/pola-rs/polars` not `/polars/polars`. (Live sanity-check during implementation showed `/facebook/react` is actually the 5th-ranked result, contradicting my initial assumption — this drove the "don't guess" rule.)
 
 3. **Efficiency rules**
    - Do not re-query the same library+topic twice in one session — reuse the first result from earlier in the conversation.
