@@ -8,102 +8,123 @@ allowed-tools: Bash, Read
 
 Diagnose and sync the current git repo with upstream.
 
-## Step 1: Remote Hygiene
+## Step 1: Diagnose
 
-Check remotes follow convention before doing anything else.
-
-**Convention:** `origin` = your fork (push here), `upstream` = canonical repo (PRs target here). Single-remote repos use `origin` as source of truth.
-
-**Fork orgs** (must use PRs, never direct push to canonical): `idvorkin-ai-tools`
+Run the helper — it fetches, queries `gh pr view`, and checks remote hygiene in parallel, then prints JSON:
 
 ```bash
-git remote -v
+~/.claude/skills/up-to-date/diagnose.py
 ```
 
-Check for these problems and report in output table:
-1. **Non-standard names** — remotes named anything other than `origin`/`upstream` (e.g., `fork`)
-2. **Swapped remotes** — `origin` points to canonical repo when a fork remote exists
-3. **Fork org without PR workflow** — a known fork org remote exists but isn't set up as `origin`
+(Project-level installs: the script lives alongside this SKILL.md at `<project>/.claude/skills/up-to-date/diagnose.py`. If `~/.claude/skills/up-to-date/diagnose.py` is missing, use the project-local path instead.)
 
-If issues found, **offer fix commands but don't execute automatically**:
-```bash
-git remote rename <canonical> upstream
-git remote rename <fork> origin
-git branch --set-upstream-to=upstream/main main
+The JSON output has this shape:
+
+```json
+{
+  "remotes": {
+    "entries": [{"name": "origin", "url": "..."}, ...],
+    "source": "upstream",
+    "is_fork_workflow": true,
+    "issues": [{"kind": "...", "detail": "...", "fix": "..."}]
+  },
+  "branch": {
+    "name": "main",
+    "is_main": true,
+    "behind": 0,
+    "ahead": 0,
+    "behind_commits": ["abc123 subject", ...],
+    "leftover_commits": [...]
+  },
+  "worktree": {
+    "uncommitted": ["M  foo.py", ...],
+    "stashes": ["stash@{0}: ...", ...]
+  },
+  "pr": {
+    "state": "MERGED",
+    "number": 42,
+    "title": "...",
+    "mergeable": "MERGEABLE",
+    "review_decision": "APPROVED",
+    "recent_reviews": [...],
+    "recent_comments": [...]
+  },
+  "errors": []
+}
 ```
 
-## Step 2: Diagnose
+Conventions:
+- `remotes.source` is either `"upstream"` (fork workflow) or `"origin"` (single-remote). Use this as `SRC` for all subsequent git commands.
+- `pr` is `null` on main or when no PR exists for the current branch.
+- `branch.leftover_commits` lists commits on a feature branch not yet in `source/main` — relevant when the PR is merged but work continued.
+- `errors` contains any subprocess failures the script wants surfaced (empty on the happy path).
 
-```bash
-# Determine source of truth
-SRC=$(git remote | grep -q '^upstream$' && echo upstream || echo origin)
+## Step 2: Report Hygiene
 
-git fetch --all --prune 2>&1
-git branch --show-current
-git status --porcelain
-git stash list
-echo "Behind $SRC/main:" && git rev-list --count HEAD..$SRC/main
-echo "Ahead of $SRC/main:" && git rev-list --count $SRC/main..HEAD
-git log --oneline HEAD..$SRC/main | head -10
-```
+If `remotes.issues` is non-empty, show them in the output table and offer the `fix` commands — **do not execute automatically**. Known issue kinds:
 
-On a feature branch, also check:
-```bash
-gh pr view --json state,number,title,mergeable,reviewDecision 2>/dev/null || echo "NO_PR"
-```
+- `non_standard_name` — remote named something other than `origin`/`upstream`
+- `swapped_remotes` — `origin` points at canonical while a fork remote exists
+- `fork_without_canonical` — fork remote exists but no canonical upstream
 
 ## Step 3: Act
 
-Use `SRC` from diagnosis. After any action on main, clean up merged branches:
+Use `SRC = remotes.source`. After any action on main, clean up merged branches:
+
 ```bash
 git branch --merged main | grep -v '^\*\|main' | xargs -r git branch -d
 ```
 
-### On main
+### On main (`branch.is_main` true)
+
 ```bash
 git pull $SRC main
 # Fork workflow: keep fork in sync
 [ "$SRC" = "upstream" ] && git push origin main
 ```
 
-### Feature branch + PR merged
-Check for leftover commits (made after PR merged), then switch to main:
+### Feature branch + PR merged (`pr.state == "MERGED"`)
+
+Check `branch.leftover_commits` first:
+- Non-empty → **ASK USER**: new PR for leftovers, or discard?
+- Empty → safe to switch to main and delete branch
+
 ```bash
 BRANCH=$(git branch --show-current)
-LEFTOVER=$(git log --oneline $SRC/main..$BRANCH)
-# If leftover commits exist → ASK USER: new PR or discard?
 git checkout main && git pull $SRC main
 [ "$SRC" = "upstream" ] && git push origin main
-git branch -d "$BRANCH"  # use -D only if user confirmed discard of leftovers
+git branch -d "$BRANCH"  # use -D only if user confirmed discarding leftovers
 ```
 
-### Feature branch + PR open
-Report status and show recent feedback:
-```bash
-gh pr view --json reviews,comments --jq '.reviews[-3:], .comments[-3:]'
-```
+### Feature branch + PR open (`pr.state == "OPEN"`)
 
-### Feature branch + PR closed (not merged)
-Ask user: delete branch or keep working?
+Report status from the JSON. `pr.recent_reviews` and `pr.recent_comments` already hold the last 3 of each — surface those to the user.
 
-### Feature branch + no PR
-- Has commits ahead → ask if user wants to create PR
-- No commits ahead → ask if user wants to delete branch
+### Feature branch + PR closed, not merged (`pr.state == "CLOSED"`)
+
+**Ask user**: delete branch or keep working?
+
+### Feature branch + no PR (`pr` is null)
+
+- `branch.ahead > 0` → ask if the user wants to create a PR
+- `branch.ahead == 0` → ask if the user wants to delete the branch
 
 ### Uncommitted changes
-List with `git status`. **Ask user**: commit, stash, or discard. Never act automatically.
+
+If `worktree.uncommitted` is non-empty, list the files and **ask user**: commit, stash, or discard. Never act automatically.
 
 ### Stashed changes
-List with `git stash list` and inform user.
+
+If `worktree.stashes` is non-empty, list them and inform the user.
 
 ## Output Format
 
 | Check | Status | Action |
 |---|---|---|
-| Remote naming | pass/fail | Offer rename commands |
+| Remote naming | pass/fail | Offer rename commands from issue `fix` field |
 | Workflow | PR / direct push | Warn if fork org pushing direct |
-| Branch | `branch-name` | — |
-| PR | #N STATE | Context-dependent |
+| Branch | `branch.name` | — |
+| PR | `#N STATE` | Context-dependent |
 | Uncommitted | N files | Listed below |
 | Behind source/main | N commits | Will pull |
 | Stashes | N stashes | Listed below |
@@ -117,3 +138,23 @@ Ask: "Want to `/clear` context for a fresh start?"
 - NEVER force push — **except** when syncing a fork's main and the only divergence is automated backlink commits (`chore: update backlinks [skip ci]`). In that case, force push to the fork is safe and expected.
 - NEVER delete unmerged branches without asking
 - NEVER commit/discard uncommitted changes without user approval
+
+## Manual fallback
+
+If `diagnose.py` is missing or errors, fall back to running commands directly:
+
+```bash
+SRC=$(git remote | grep -q '^upstream$' && echo upstream || echo origin)
+git remote -v
+git fetch --all --prune
+git branch --show-current
+git status --porcelain
+git stash list
+git rev-list --count HEAD..$SRC/main   # behind
+git rev-list --count $SRC/main..HEAD   # ahead
+gh pr view --json state,number,title,mergeable,reviewDecision 2>/dev/null
+```
+
+## Implementation
+
+The `diagnose.py` script is ~150 lines of stdlib Python with a `#!/usr/bin/env -S uv run --script` shebang, so it runs without manual env setup wherever `uv` is installed. Pure classification logic (`parse_remotes`, `is_fork_url`, `classify_remotes`) is unit-tested in `test_diagnose.py` — run `python3 -m unittest test_diagnose.py` from this directory.
