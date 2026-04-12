@@ -81,6 +81,11 @@ Machine-level skills go in `~/.claude/skills/` and are available everywhere. Pro
 
 | Skill | Scope | Description |
 |---|---|---|
+| `ammon` | machine | Look up the current time in Denmark for Ammon |
+| `architect-review` | machine | Iterative architect review passes on design specs, tracking convergence |
+| `background-usage` | machine | Check Claude Code plan usage without blocking the session |
+| `build-bd` | machine | Build and install the `bd` (Beads) CLI with a static build |
+| `clock` | machine | Schedule recurring session tasks (time checks, reminders) |
 | `docs` | machine | Fetch fresh library/framework docs via Context7 (`ctx7`) |
 | `gen-image` | machine | Generate illustrations via Gemini image API |
 | `gist-image` | machine | Host images on GitHub gists for PRs/issues |
