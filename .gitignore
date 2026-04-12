@@ -517,3 +517,6 @@ robots.txt
 # Beads / Dolt files (added by bd init)
 .dolt/
 .beads-credential-key
+
+# Git worktrees (superpowers:using-git-worktrees default location)
+.worktrees/
