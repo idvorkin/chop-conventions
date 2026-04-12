@@ -56,11 +56,16 @@ result (PR URL + summary) when the subagent returns.
 
 ### Parent's visible work
 
-1. Resolves the target (may ask for disambiguation)
-2. Creates a worktree at `<target>/.worktrees/delegated-<slug>` off
-   `origin/main`
-3. Dispatches the subagent (foreground by default)
-4. Reports back: **PR URL**, branch name, 3–5-bullet summary of changes,
+1. Resolves the target (may ask for disambiguation, **always confirms
+   before dispatch** when target was inferred rather than explicit)
+2. Runs `git -C <target> fetch origin` (no `cd` — the parent stays in its
+   own working directory so its shell state is not polluted)
+3. Creates a worktree at `<target>/.worktrees/delegated-<slug>` based on
+   `origin/<default-branch>` (see Worktree Creation for the exact commands —
+   this deviates from `using-git-worktrees`' default of branching off HEAD)
+4. Dispatches the subagent (foreground by default). The subagent is the
+   only actor that `cd`s — into the worktree, as its first action.
+5. Reports back: **PR URL**, branch name, 3–5-bullet summary of changes,
    worktree path (for post-hoc inspection)
 
 ## Architecture
@@ -72,8 +77,10 @@ result (PR URL + summary) when the subagent returns.
 │ Parent Claude (current session)                             │
 │                                                             │
 │  1. Resolve target repo          [skill markdown prompt]   │
-│  2. Fetch origin/main in target  [git fetch]               │
-│  3. Invoke using-git-worktrees   [skill call, cd'd in]     │
+│  2. git -C <target> fetch origin (parent does NOT cd)      │
+│  3. Verify .worktrees/ ignored; create worktree off        │
+│     origin/<default> (explicit commands —                  │
+│     do NOT delegate to using-git-worktrees; see below)     │
 │  4. Construct self-contained brief                         │
 │  5. Dispatch Agent tool          ──────────┐               │
 │  6. Wait for result                        │               │
@@ -99,7 +106,11 @@ result (PR URL + summary) when the subagent returns.
 ### Parent responsibilities — infrastructure
 
 - **Target resolution** (prompt-driven; no Python needed)
-- **Baseline worktree creation** — delegated to `superpowers:using-git-worktrees`
+- **Worktree creation** — direct `git worktree add` commands (see Worktree
+  Creation). We do **not** call `using-git-worktrees` here because that
+  skill branches off current HEAD, auto-runs `npm install` / `cargo build`,
+  and runs a baseline test pass — none of which we want for a delegated
+  change off `origin/main` that may be a pure doc edit.
 - **Brief construction** — self-contained, see below
 - **Dispatch + result relay** — via the `Agent` tool
 
@@ -118,13 +129,22 @@ the right place to:
 - Extract the user's original task wording
 - Resolve "the blog" → `~/gits/idvorkin.github.io` from conversational
   context
-- Own the git-worktree infrastructure setup (which `using-git-worktrees`
-  already knows how to do)
+- Own the git-worktree infrastructure setup
 
 The subagent gets a clean context — no distracting history, just the brief
 and the target repo's files. That's the entire win of this skill; if the
 subagent inherited the parent's context we could've just done the work
 in-session.
+
+**Security note:** The escape-hatch session-log pointer (see Brief Format)
+hands the subagent read access to the parent's entire conversation jsonl,
+which may contain secrets, tokens, or private file contents pasted in by
+the user. The subagent inherits full tool access in its fresh context and
+could read that file. v1 accepts this risk because (a) the subagent is
+still the user's own Claude session, and (b) the instruction is "only if
+genuinely stuck; prefer a clarifying question." If a repo is sensitive
+enough that this matters, the user should not delegate to it via this
+skill.
 
 ## Brief Format
 
@@ -148,27 +168,84 @@ cd <absolute path to worktree> # FIRST action you take
 
 Read, in order (skip any that don't exist):
 
-- CLAUDE.md (root, then any nested)
+- CLAUDE.md (root, then any nested — use `find . -name CLAUDE.md -not -path './.worktrees/*'`)
 - AGENTS.md
-- justfile, Makefile, package.json (scripts section)
+- justfile, Makefile, package.json (scripts section only — `jq .scripts package.json`)
 - .github/workflows/\*.yml (names only — so you know what CI will run)
+- .pre-commit-config.yaml if present (hooks may reformat your staged files;
+  if a commit fails with "files were modified by this hook", re-stage and
+  re-commit — do not fight the formatter)
 
-Then enumerate (list contents only, don't read every SKILL.md):
-
-- skills/
-- .claude/skills/
+Then enumerate (list contents only, don't read every SKILL.md) by running
+`ls -1 skills/` and `ls -1 .claude/skills/` (either may not exist; that's
+fine). Only read a specific `SKILL.md` if the task directly matches its
+name.
 
 # Git workflow
 
-Detect fork vs direct-push workflow:
+Detect fork vs direct-push workflow. **Shortcut: if
+`~/.claude/skills/up-to-date/diagnose.py` exists, run it first** — it
+handles `parse_remotes` / `is_fork_url` / `classify_remotes` and prints
+JSON. Invoke as `~/.claude/skills/up-to-date/diagnose.py --pretty` from
+inside the worktree (no `--path` arg; the script reads cwd's git context),
+then `jq .remotes` to extract the relevant block.
 
-1. Run `gh auth status` — note the active account
-2. Run `git remote -v` — check for both `origin` and `upstream`
-3. If `upstream` points to a canonical repo and `origin` points to a fork,
-   this is **fork workflow**: push to `origin`, open PR with
-   `gh pr create --repo <canonical>`
-4. Otherwise, this is **direct-push workflow**: push to `origin`, open PR
-   with `gh pr create`
+Interpretation of the JSON:
+
+- `remotes.is_fork_workflow == true` AND a remote named `upstream` exists
+  → Two-remote fork workflow (case A below).
+- `remotes.is_fork_workflow == false` with a single `origin` → you still
+  must run the single-remote check below. `diagnose.py` classifies purely
+  by URL owner against a hardcoded `FORK_ORGS` list and has no concept of
+  `gh auth status` or `gh repo view --json parent`, so it cannot tell the
+  difference between Case B (canonical-only origin matching auth) and
+  Case C (origin is itself a fork that needs PRs to its parent — the
+  chop-conventions pattern).
+
+Then run these checks manually regardless of script output:
+
+1. `gh auth status` — note the active account (e.g. `idvorkin-ai-tools`)
+2. `git remote -v` — inspect `origin` and any `upstream`
+3. For the single-remote case, check whether the repo `origin` points to is
+   itself a fork: `gh repo view <owner/repo from origin URL> --json isFork,parent -q '{isFork, parent: (.parent.owner.login + "/" + .parent.name)}'`.
+   If `isFork` is true, the canonical repo is `parent`. If false, there is
+   no upstream and the canonical IS `origin`.
+4. Classify using the decision tree below:
+   - **Branch on remote count.** If two remotes (`origin` + `upstream`):
+     check whether `upstream` URL is canonical and `origin` URL is the
+     fork. If yes → **Case A: two-remote fork workflow** (push origin,
+     PR --repo canonical). If swapped (origin canonical, upstream fork)
+     → STOP and report; do not guess.
+   - If one remote (`origin` only): use the `gh repo view` result from
+     step 3 above plus the auth-account check.
+     - If `origin` is NOT a fork AND the org segment of `origin`'s URL
+       matches the auth account → **Case B: direct-push workflow**
+       (push origin, PR with no `--repo` flag).
+     - If `origin` IS a fork AND its owner matches the auth account →
+       **Case C (chop-conventions pattern): single fork-origin, push
+       direct, PR to parent.** Push to `origin`, then
+       `gh pr create --repo <parent-owner>/<parent-repo>`.
+     - If `origin` is NOT a fork AND its owner does NOT match the auth
+       account → **Case D: canonical-only origin, no fork wired up.**
+       Look for any other remote whose URL owner segment matches the
+       auth account; if found, push to it and `gh pr create --repo <canonical>`.
+       If none found → STOP and fail: "cannot push to a repo this auth
+       account does not own; set up the fork first with
+       `gh repo fork --remote --remote-name=fork`".
+   - **Case A details:** push branch to the fork remote, open PR with
+     `gh pr create --repo <canonical-owner>/<repo>`.
+   - **Case B details:** active account owns `origin` and there is no
+     `upstream`. Push to `origin`, PR with `gh pr create` (no `--repo`).
+   - **Case C details (the chop-conventions pattern):** only `origin`
+     exists, it is `idvorkin-ai-tools/chop-conventions` (a fork), auth
+     account is also `idvorkin-ai-tools`, and PRs go to the parent
+     `idvorkin/chop-conventions`. There is NO separate `upstream` remote.
+     The `gh repo view --json parent` lookup is what tells you the
+     canonical slug to pass to `--repo`.
+
+5. Commit messages must end with the standard trailer:
+   `Co-Authored-By: Claude <noreply@anthropic.com>` (or whatever trailer
+   the target repo's CLAUDE.md specifies — repo convention wins).
 
 # Final output contract
 
@@ -198,20 +275,94 @@ read the whole file. Prefer ending with a clarifying question in your
 final message over spelunking the log.
 ```
 
+### Fork detection decision tree (reference)
+
+This is the same algorithm the brief's prose describes — kept here as a
+diagram for the spec reader. The brief itself can't embed this fenced
+block because a nested fence would terminate the outer markdown fence.
+
+```
+                       +------------------+
+                       | How many remotes |
+                       |  (origin + other)|
+                       +--------+---------+
+                                |
+              +-----------------+----------------+
+              |                                  |
+          2 remotes                          1 remote
+              |                                  |
+   +----------+----------+            +----------+----------+
+   | upstream = canonical|            | gh repo view origin |
+   | origin   = fork?    |            |   --json isFork,    |
+   +----------+----------+            |       parent        |
+              |                       +----------+----------+
+      +-------+--------+                         |
+     yes              no             +-----------+-----------+
+      |                |             |                       |
+      v                v         isFork=true            isFork=false
+  CASE A:         Remotes are        |                       |
+  TWO-REMOTE      swapped; STOP      v                       v
+  FORK WORKFLOW   and report     +-------+              +---------+
+  push origin     (don't guess)  | owner | == auth?     | owner   | == auth?
+  PR --repo                      +---+---+              +----+----+
+  canonical                          |                       |
+                              +------+-----+          +------+------+
+                              |            |          |             |
+                             yes           no        yes            no
+                              |            |          |             |
+                              v            v          v             v
+                          CASE C:      Look for   CASE B:       CASE D:
+                          FORK-ORIGIN  any other  DIRECT-PUSH   CANONICAL-
+                          push origin  remote     WORKFLOW      ORIGIN, NO
+                          PR --repo    matching   push origin   FORK WIRED
+                          parent       auth org;  PR (no        Look for any
+                          (slug from   if found,  --repo)       remote matching
+                          .parent in   push there,               auth org. If
+                          gh JSON)     PR --repo                 found, push
+                                       <canonical>               there, PR
+                                       Else STOP:                --repo origin.
+                                       "set up                   Else STOP:
+                                       fork first"               same fail msg.
+```
+
+`diagnose.py`'s `classify_remotes` covers Case A and the simple Case B
+(single canonical origin matching auth) but **misses Cases C and D
+entirely** — it has no concept of `gh auth status`, no `gh repo view
+--json parent` lookup, and only does URL-vs-FORK_ORGS string matching.
+The subagent must therefore not trust `is_fork_workflow: false` blindly;
+for the single-remote case, it must run both the auth-account comparison
+and the `gh repo view --json isFork,parent` lookup itself.
+
 ### Session log resolution
 
 Parent resolves the session jsonl path with:
 
 ```bash
-toplevel=$(git rev-parse --show-toplevel)
-hash=$(echo "$toplevel" | sed 's|/|-|g')
-newest=$(/bin/ls -t "$HOME/.claude/projects/$hash"/*.jsonl 2>/dev/null | head -1)
+# Claude Code hashes the session's *cwd* at launch, not the repo root.
+# If the parent is running inside a worktree (e.g. .worktrees/foo),
+# the hash encodes that worktree path, not the main checkout.
+cwd_hash=$(pwd | sed 's|/|-|g')
+newest=$(/bin/ls -t "$HOME/.claude/projects/$cwd_hash"/*.jsonl 2>/dev/null | head -1)
+
+# Fallback: if nothing found under cwd hash, try the repo toplevel hash.
+if [ -z "$newest" ]; then
+  toplevel=$(git rev-parse --show-toplevel)
+  toplevel_hash=$(echo "$toplevel" | sed 's|/|-|g')
+  newest=$(/bin/ls -t "$HOME/.claude/projects/$toplevel_hash"/*.jsonl 2>/dev/null | head -1)
+fi
 ```
 
-Caveat: "newest jsonl" is only reliably the current session when there's
-one active Claude session per repo. If the user runs parallel sessions in
-the same repo, this may resolve to the wrong log. Acceptable for v1 — the
-log is an escape hatch, not a required input.
+Caveats, all acceptable for v1 since the log is an escape hatch, not a
+required input:
+
+- **Parallel sessions in the same cwd** resolve to "whichever jsonl was
+  most recently written to," which may be a sibling session.
+- **Hash scheme may drift.** Claude Code's project-hash format is not a
+  stable public API. If `$HOME/.claude/projects/$hash` doesn't exist on
+  the running machine, the parent warns and omits the escape hatch
+  entirely rather than pointing at a wrong file.
+- **Worktree vs main checkout** is handled by trying cwd first, toplevel
+  second.
 
 ## Target Resolution Algorithm
 
@@ -226,28 +377,182 @@ not code):
 2. **Inferred from conversation.**
    - Scan recent turns for phrases like "the blog", "chop-conventions",
      "that other repo" and match against `~/gits/` entries
-   - If exactly one match → use it, tell the user
+   - If exactly one high-confidence match → propose it to the user and
+     **wait for confirmation** before dispatching. Inference is never
+     final — cross-repo work is too easy to get wrong silently.
    - If multiple or zero matches → fall through to step 3
 3. **Ask.**
    - `/bin/ls ~/gits/` and present candidates; user picks
 
-**Validation after resolution:**
+**Validation after resolution** (all use `git -C <path>` — parent never `cd`s):
 
 - Path exists
 - Is a git repo (`git -C <path> rev-parse --is-inside-work-tree`)
-- NOT required to be clean — worktrees off `origin/main` are safe even
-  when the parent working tree is dirty
+- Has a remote named `origin` that resolves (`git -C <path> remote get-url origin`)
+- Default branch resolves via the helper below (Worktree Creation defines
+  it once; reuse it here). The chain is: after `git fetch origin`, run
+  `git -C <path> remote set-head origin --auto` to refresh the cached
+  `refs/remotes/origin/HEAD` (plain fetch does not do this), then read
+  `git -C <path> symbolic-ref --short refs/remotes/origin/HEAD` (strip
+  the `origin/` prefix). If that fails, fall back to
+  `gh repo view <owner/repo> --json defaultBranchRef -q .defaultBranchRef.name`
+  where `<owner/repo>` is parsed from `git -C <path> remote get-url origin`.
+  Final fallback: literal `main`. Note: there is no top-level `gh -R` flag,
+  and `gh repo view` does not accept a filesystem path — it only accepts
+  an `OWNER/REPO` slug positional or auto-detects from cwd.
+- After `git -C <path> fetch origin`, `origin/<default-branch>` is
+  reachable (`git -C <path> rev-parse --verify origin/<default>`)
+- NOT required to be clean — worktrees off `origin/<default>` are safe
+  even when the parent working tree is dirty. (The target's HEAD branch
+  matters only for the gitignore-commit safety check in Worktree Creation.)
 
 ## Worktree Creation
 
-Delegated to `superpowers:using-git-worktrees`:
+Done directly by the parent, not via `using-git-worktrees`. The parent
+runs these commands against the target via `git -C <target>` — it does
+**not** `cd` into the target repo.
 
-- Directory: `.worktrees/delegated-<slug>` (the skill's default)
-- Branch: `delegated/<slug>` where `<slug>` is derived from the task
-  description (kebab-case, truncated to 40 chars)
-- Base: `origin/main` (explicit, not current branch) — always fresh
-- Pre-check: `using-git-worktrees` verifies `.worktrees/` is gitignored;
-  if not, it fixes and commits per its own rules
+```bash
+T=<absolute path to target repo>
+
+git -C "$T" fetch origin
+
+# Refresh the cached `refs/remotes/origin/HEAD`. Plain `git fetch origin`
+# does NOT update this ref — it's set at clone time and only refreshed
+# by an explicit `set-head --auto`. Without this call, a target whose
+# default branch was renamed (e.g. master → main) since it was cloned
+# would yield a stale value below. `--auto` is a no-op if origin/HEAD
+# already matches the remote's HEAD.
+git -C "$T" remote set-head origin --auto >/dev/null 2>&1 || true
+
+# Determine default branch (may not be "main"). Step-by-step rather than
+# a single `||`-chain because piping through `sed` swallows the upstream
+# exit code, so a chained `|| echo main` never fires when symbolic-ref
+# fails — the empty pipe output wins instead.
+default_branch=""
+ref=$(git -C "$T" symbolic-ref --short refs/remotes/origin/HEAD 2>/dev/null) && \
+  default_branch="${ref#origin/}"
+if [ -z "$default_branch" ]; then
+  # `gh repo view` takes an OWNER/REPO slug positional, NOT a path, and
+  # there is no top-level `gh -R` flag. Parse the slug from origin URL.
+  origin_url=$(git -C "$T" remote get-url origin 2>/dev/null)
+  slug_repo=$(printf '%s\n' "$origin_url" | sed -E 's#(\.git)?$##; s#^.*[/:]([^/:]+/[^/:]+)$#\1#')
+  default_branch=$(gh repo view "$slug_repo" --json defaultBranchRef -q .defaultBranchRef.name 2>/dev/null)
+fi
+default_branch="${default_branch:-main}"
+
+# Derive slug from the task description. Reproducible rule:
+#   1. Lowercase
+#   2. Replace every char outside [a-z0-9] with `-`
+#   3. Collapse repeated `-`, strip leading/trailing `-`
+#   4. Truncate to 40 chars; re-strip trailing `-`
+#   5. If the result is empty (task was non-ASCII or pure punctuation),
+#      fall back to "task-$(date +%Y%m%d-%H%M%S)"
+#   6. If a branch named `delegated/<slug>` already exists in $T, append
+#      `-2`, `-3`, ... until unique (cap at -9; beyond that, fall through
+#      to the timestamp form from step 5).
+slug=$(printf '%s' "$task_description" \
+  | tr '[:upper:]' '[:lower:]' \
+  | sed -E 's/[^a-z0-9]+/-/g; s/^-+//; s/-+$//' \
+  | cut -c1-40 \
+  | sed -E 's/-+$//')
+[ -z "$slug" ] && slug="task-$(date +%Y%m%d-%H%M%S)"
+i=1
+candidate="$slug"
+while git -C "$T" show-ref --verify --quiet "refs/heads/delegated/$candidate"; do
+  i=$((i + 1))
+  if [ "$i" -gt 9 ]; then
+    candidate="task-$(date +%Y%m%d-%H%M%S)"
+    break
+  fi
+  candidate="$slug-$i"
+done
+slug="$candidate"
+branch="delegated/$slug"
+path="$T/.worktrees/delegated-$slug"
+
+# Safety: ensure .worktrees/ is gitignored before we touch it.
+# git check-ignore needs to run with the target as cwd because it resolves
+# against the index of the repo containing cwd; `git -C` handles this.
+# Note: check-ignore returns 0 if the path WOULD be ignored, 1 if not.
+if ! git -C "$T" check-ignore -q .worktrees; then
+  # .worktrees/ must be ignored by a commit on the default branch,
+  # otherwise the ignore entry lives on a feature branch and disappears
+  # the moment the target checks out anything else. Refuse to land the
+  # gitignore edit on the wrong branch (this also catches detached HEAD,
+  # where `git branch --show-current` prints empty).
+  current=$(git -C "$T" branch --show-current)
+  if [ "$current" != "$default_branch" ]; then
+    echo "STOP: target HEAD is '${current:-<detached>}', not '$default_branch'."
+    echo "The .worktrees/ gitignore entry must land on the default branch."
+    echo "Ask the user to either (a) check out $default_branch in $T and"
+    echo "retry, or (b) land the ignore via their normal PR flow first."
+    exit 1
+  fi
+
+  # On the default branch. If the repo is PR-only for the default branch,
+  # we still cannot commit-and-push directly. Run the protection probe
+  # BEFORE mutating the working tree. Two complementary checks; either
+  # tripping STOPs us:
+  #   (a) gh api branch-protection — works if the auth account has admin
+  #       read on the repo; on 404 (no protection or no permission) it
+  #       still exits 0 with `{"message":"Not Found",...}`, so check the
+  #       JSON shape, not the exit code.
+  #   (b) git push --dry-run — server-side advisory; protection rules
+  #       that gate the actual push (not dry-run) won't show here, but
+  #       a wrong-credential 403 will. Use it only as a sanity check.
+  origin_url=$(git -C "$T" remote get-url origin)
+  slug_repo=$(printf '%s\n' "$origin_url" | sed -E 's#(\.git)?$##; s#^.*[/:]([^/:]+/[^/:]+)$#\1#')
+  protection_json=$(gh api "repos/$slug_repo/branches/$default_branch/protection" 2>/dev/null || true)
+  if printf '%s' "$protection_json" | grep -q '"required_pull_request_reviews"\|"required_status_checks"'; then
+    echo "STOP: $slug_repo's $default_branch is branch-protected. The"
+    echo ".worktrees/ gitignore entry needs to land via the target repo's"
+    echo "normal PR flow first; this skill will not bypass branch protection."
+    exit 1
+  fi
+
+  echo ".worktrees/" >> "$T/.gitignore"
+  git -C "$T" add .gitignore
+  git -C "$T" commit -m "chore: gitignore .worktrees/"
+  # Note: this commit is local-only. Whether to push it is the target
+  # repo's workflow concern, NOT this skill's. The subagent's PR branch
+  # will contain this commit as part of its base.
+fi
+
+# Create the worktree with a new branch rooted at origin/<default>.
+# `worktree add` is the only step that mutates the working set; if it
+# fails (path collision, ref missing), parent stops and reports — no
+# cleanup of the gitignore commit, since that commit is independently
+# valuable.
+git -C "$T" worktree add "$path" -b "$branch" "origin/$default_branch"
+```
+
+Why not call `using-git-worktrees`:
+
+- That skill branches off current HEAD (no way to pass a base ref)
+- It auto-runs `npm install` / `cargo build` / `pip install` — noisy and
+  wrong for doc-only or tiny changes
+- It runs the target repo's test suite as a baseline check — slow, and
+  unnecessary before the subagent has done anything
+
+Naming:
+
+- Directory: `.worktrees/delegated-<slug>`
+- Branch: `delegated/<slug>` where `<slug>` follows the precise derivation
+  rule in the recipe above (lowercase, non-alnum → `-`, collapse, trim,
+  ≤40 chars; empty/non-ASCII falls back to `task-<timestamp>`; collisions
+  with existing branches get `-2`...`-9` then a timestamp).
+- Base: `origin/<default-branch>` — always fresh, never current HEAD
+
+**v1 limitation — worktree location preference:** `using-git-worktrees`
+honors a target repo's CLAUDE.md `worktree.*director` preference (and an
+existing `worktrees/` dir as a fallback). This skill **does not** — it
+hardcodes `.worktrees/delegated-<slug>`. If a target repo specifies a
+different worktree location in its CLAUDE.md (e.g.
+`~/.config/superpowers/worktrees/`), this skill silently ignores it. If
+this becomes a real problem in practice, lift the directory-selection
+logic out of `using-git-worktrees` into a shared snippet or accept the
+worktree location as a parent argument. v1 punts.
 
 ## Dispatch
 
@@ -267,8 +572,27 @@ the parent can't do parallel work while waiting — that's fine for v1.
 ### Parent-side failures
 
 - **Target not found / not a git repo** → stop, report, ask user
-- **Worktree creation fails** → stop, report the `using-git-worktrees`
-  error, don't dispatch
+- **`git fetch origin` fails** (network, auth, missing remote) → stop,
+  surface the error, don't dispatch
+- **`.worktrees/` not gitignored and the target is checked out on a
+  non-default branch (or detached HEAD)** → stop, explain: the gitignore
+  entry must land on the default branch; ask the user to check out the
+  default branch in the target repo (or land the ignore via their normal
+  PR flow) and retry. The recipe's `current=$(git branch --show-current)`
+  returns empty string on detached HEAD, which compares unequal to the
+  default branch and triggers this same path with a `<detached>`
+  placeholder in the message.
+- **`.worktrees/` not gitignored, target is on the default branch, and
+  `gh api repos/.../branches/<default>/protection` reports
+  `required_pull_request_reviews` or `required_status_checks`** → stop,
+  explain: user needs to land the gitignore change via their normal PR
+  flow first; this skill will not bypass branch protection. (If the auth
+  account lacks admin read on the repo, the api returns Not Found and
+  the probe is silently a no-op — false negatives are accepted because
+  the worst case is the subsequent direct commit succeeds locally and
+  the eventual `git push` of the worktree branch is unaffected.)
+- **`git worktree add` fails** (path already exists, branch already
+  exists, base ref missing) → stop, surface the error, don't dispatch
 - **Session log unresolvable** → warn, proceed without the escape-hatch
   reference; don't block dispatch
 
@@ -308,6 +632,19 @@ work, not code work. This mirrors how `learn-from-session` is structured
 because it parallelizes subprocess calls and needs unit-testable
 classification logic).
 
+### Frontmatter
+
+```yaml
+---
+name: delegate-to-other-repo
+description: Delegate a task in a different git repo to a subagent in an isolated context. Use when the user asks to make a change in another repo without polluting the current session's context. Parent sets up a worktree off the target's default branch and dispatches a subagent that opens a PR back to the canonical remote.
+allowed-tools: Bash, Read, Grep, Glob, Agent
+---
+```
+
+Note `Agent` in `allowed-tools` — the skill dispatches a subagent via the
+Agent tool, which must be explicitly allowed.
+
 ## Installation
 
 After the skill file lands:
@@ -325,10 +662,26 @@ None load-bearing. Defaults chosen:
 
 - **Branch naming:** `delegated/<slug>` — traceable back to the skill
 - **Worktree cleanup:** manual, via reported command
+- **Worktree location:** hardcoded `.worktrees/delegated-<slug>`; target
+  repo's CLAUDE.md `worktree.*director` preference is intentionally
+  ignored in v1 (see Worktree Creation note)
 - **No-CLAUDE.md target:** subagent proceeds, flags the absence in final summary
 - **Background dispatch:** only if user explicitly asks
 - **URL cloning:** not supported in v1; errors with `gh repo clone` hint
 - **Parallel session log ambiguity:** accepted v1 limitation, documented
+- **Fork detection:** subagent uses `up-to-date/diagnose.py` as a
+  shortcut for the URL-based classification (Case A and the simple
+  Case B), then runs `gh auth status` plus
+  `gh repo view --json isFork,parent` itself for the single-remote
+  cases (C and D), which the script does not cover
+- **Slug derivation:** precise rule pinned in Worktree Creation —
+  lowercase, non-alnum collapsed to `-`, trimmed to 40 chars; empty
+  input falls back to `task-<timestamp>`; branch collisions get a
+  `-2`...`-9` suffix then a timestamp
+- **Branch-protection detection:** `gh api .../branches/<default>/protection`
+  with a JSON-shape check (looking for `required_pull_request_reviews`
+  or `required_status_checks`). Accepts false negatives when the auth
+  account lacks admin read
 
 ## Success Criteria
 
@@ -341,5 +694,7 @@ the blog` and end up with a clickable PR URL without touching another
    and summary — not the target repo's `CLAUDE.md`, file reads, or diff
 3. If the subagent fails, the parent surfaces actionable error info and
    preserves the worktree for takeover
-4. The skill composes cleanly with `superpowers:using-git-worktrees`
-   rather than reimplementing worktree logic
+4. Parent-side state pollution is minimal: no changes to the parent's
+   working repo, and the target repo's only modification (if any) is a
+   one-line `.gitignore` entry for `.worktrees/` — committed in the
+   target, never in the parent's checkout
