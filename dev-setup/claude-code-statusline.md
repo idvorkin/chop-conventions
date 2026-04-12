@@ -8,7 +8,7 @@ Claude Code's `statusLine` setting accepts an inline command, but inline JSON-qu
 
 ## What It Shows
 
-```
+```text
 user@host ~/path/to/repo [branch] | Opus 4.6 ctx:12% 125k/1000k $0.42
 ```
 

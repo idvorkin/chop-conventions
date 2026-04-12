@@ -33,12 +33,14 @@ prompt="${user}@${host} ${YELLOW}${short_dir}${RESET}"
 if [ -n "$used" ] && [ -n "$ctx_size" ]; then
   pct=$(printf '%.0f' "$used")
   total_k=$((ctx_size / 1000))
-  # Bucket used tokens to nearest 10k
-  used_k=$(awk "BEGIN {printf \"%d\", ($used * $total_k / 100 / 10) * 10}")
+  # Bucket used tokens to nearest 10k (round half up)
+  used_k=$(awk "BEGIN {printf \"%d\", int(($used * $total_k / 100 + 5) / 10) * 10}")
   # Color: green <20%, blue <50%, red >=50%
-  if [ "$pct" -lt 20 ]; then
+  # Floor of raw used (not the rounded pct) so 19.6% stays green, not blue
+  used_int=$(awk "BEGIN {printf \"%d\", int($used)}")
+  if [ "$used_int" -lt 20 ]; then
     ctx_color=$GREEN
-  elif [ "$pct" -lt 50 ]; then
+  elif [ "$used_int" -lt 50 ]; then
     ctx_color=$BLUE
   else
     ctx_color=$RED
