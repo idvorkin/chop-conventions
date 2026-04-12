@@ -27,6 +27,8 @@ gh pr create --repo idvorkin/chop-conventions
 
 Scripts that signal processes by pattern (cpulimit, pkill, kill by comm match) MUST exclude lifeline processes or risk wedging the VM / locking out the SSH session: `tailscaled`, `etserver`, **`etterminal`**, `tmux` (bare + `"tmux:"*`), `sshd`, init-like (`sh`, `init`, `systemd`), and kernel threads (`kthreadd`, `kworker*`, `ksoftirqd*`, `migration*`, `rcu_*`). Test the exclude list with a unit test before deploying — see `skills/machine-doctor/doctor-guards.md` for an example.
 
+**Tests for these signalling functions MUST mock their subprocess/OS calls.** An unmocked "smoke test" that invokes the real `pkill`/`os.kill`/`create_subprocess_exec` against the dev box's real process table will match legitimate running processes and SIGTERM them — this nuked a live Telegram MCP bridge mid-session on 2026-04-12. Patch `asyncio.create_subprocess_exec` / `subprocess.run` / `os.kill` via `monkeypatch` before invoking the target. The test verifies return-type and error-handling, never the real kill path.
+
 ## Scripting Language Defaults
 
 **Default to Python for any non-trivial script, not shell.** Shell is for one-liners and the occasional `just` target. Anything with branching, data structures, or more than ~20 lines should be Python.
@@ -35,6 +37,10 @@ Scripts that signal processes by pattern (cpulimit, pkill, kill by comm match) M
 - Stdlib is enough for most helpers. Only add dependencies when they earn their keep (Typer + Rich for user-facing CLIs; plain stdlib for programmatic JSON-emitting helpers).
 - Put pure logic behind functions that can be unit-tested without subprocess mocking. Shell out to external tools (`git`, `gh`, etc.) through a thin wrapper so the business logic stays testable.
 - Working example: [`skills/up-to-date/diagnose.py`](skills/up-to-date/diagnose.py) — stdlib-only, `uv run` shebang, parallelized subprocess calls, unit-tested pure functions.
+
+## Diagnostics: Code Over Prose
+
+**Diagnostic checks belong in scripts, not in skill/doc prose.** Skills describe WHEN to diagnose and HOW to recover; code describes WHAT to check. Paths move — code errors loudly, prose rots silently. Follow the pattern in `~/gits/igor2/telegram-server/telegram_debug.py`: `--doctor` with `ok`/`warn`/`fail`/`note` accumulators, `--paths` that prints a file-map inventory with exists/missing marks, inline log tails so operators don't have to cat a second file. If you catch yourself writing a "check X at path Y" step in a skill, stop and move it to the doctor.
 
 ## Structure
 
