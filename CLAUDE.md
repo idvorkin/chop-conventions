@@ -42,6 +42,10 @@ Scripts that signal processes by pattern (cpulimit, pkill, kill by comm match) M
 
 **Diagnostic checks belong in scripts, not in skill/doc prose.** Skills describe WHEN to diagnose and HOW to recover; code describes WHAT to check. Paths move — code errors loudly, prose rots silently. Follow the pattern in `~/gits/igor2/telegram-server/telegram_debug.py`: `--doctor` with `ok`/`warn`/`fail`/`note` accumulators, `--paths` that prints a file-map inventory with exists/missing marks, inline log tails so operators don't have to cat a second file. If you catch yourself writing a "check X at path Y" step in a skill, stop and move it to the doctor.
 
+## GitHub Actions + Claude Code SDK
+
+Before modifying any workflow that uses `anthropics/claude-code-action@v1`, read [`dev-inner-loop/github-action-claude-code-action-gotcha.md`](dev-inner-loop/github-action-claude-code-action-gotcha.md). Critical traps: the YAML must byte-match the default branch or token exchange 401s, `show_full_output` defaults to `false` (hiding Claude's activity), fork PRs can't get OIDC tokens (use `pull_request_target`), and Node 20 forced to Node 24 on June 2, 2026.
+
 ## Structure
 
 - `dev-setup/` - Development environment configuration (beads, hooks, gitignore, justfile, tailscale)
