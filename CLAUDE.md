@@ -10,6 +10,10 @@ just fast-test    # Quick test pass
 just test         # Full test suite
 ```
 
+Pre-commit hooks (biome, prettier, ruff, dasel, fast tests) run on `git commit`
+and **will reformat staged files in place**. If a commit fails with "files were
+modified by this hook", re-stage and re-commit — don't fight the formatter.
+
 ## Git Workflow
 
 This repo uses fork workflow via `idvorkin-ai-tools`. Check `gh auth status` — if running as `idvorkin-ai-tools`, push to the fork:
