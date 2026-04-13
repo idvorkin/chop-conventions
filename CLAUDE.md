@@ -29,6 +29,7 @@ gh pr create --repo idvorkin/chop-conventions
 
 - **`.git/info/exclude` for local-only ignores.** Ephemeral or per-machine ignore entries (worktree dirs, caches, editor state) that must NOT touch branch history go in `.git/info/exclude`, not `.gitignore`. Untracked, branch-independent, shared across linked worktrees via `git rev-parse --git-common-dir`. `git check-ignore` respects it the same as `.gitignore`.
 - **`git fetch origin` does NOT refresh `refs/remotes/origin/HEAD`.** Run `git remote set-head origin --auto` before reading `git symbolic-ref --short refs/remotes/origin/HEAD` or you'll get stale values when the default branch was renamed (e.g. master → main) since clone. Idempotent no-op if origin/HEAD already matches.
+- **Fix-style PR rebases: grep after resolving.** Conflict markers only cover regions both sides touched — a concurrent refactor can introduce new instances of the anti-pattern the fix PR was replacing in non-conflicting code the PR author never saw. After clearing `<<<<<<<` markers, grep the whole file for the pattern and fix every hit before `rebase --continue`.
 
 ## Process-Signaling Safety
 
