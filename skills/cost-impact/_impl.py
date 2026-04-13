@@ -339,7 +339,7 @@ def build_report(entries, bucket_meta, days_back, start_date, today, titles):
         f"| **Total turns** (main / sub / total) | **{tot_main_turns:,} / {tot_sub_turns:,} / {tot_main_turns + tot_sub_turns:,}** |"
     )
     L.append(f"| Sessions in window | {len(entries)} |")
-    L.append(f"| — Input (uncached) | ${tot_comps['inp']:,.2f} |")
+    L.append(f"| — Input | ${tot_comps['inp']:,.2f} |")
     L.append(f"| — Output | ${tot_comps['out']:,.2f} |")
     L.append(f"| — Cache writes (1h TTL) | ${tot_comps['c1h']:,.2f} |")
     L.append(f"| — Cache writes (5m TTL) | ${tot_comps['c5m']:,.2f} |")
@@ -375,11 +375,11 @@ def build_report(entries, bucket_meta, days_back, start_date, today, titles):
     L.append("### Daily cost details")
     L.append("")
     L.append(
-        "*Actual = fresh input + output + 1h cache writes + 5m cache writes + cache reads.*"
+        "*Actual = input + output + 1h cache writes + 5m cache writes + cache reads.*"
     )
     L.append("")
     L.append(
-        "| Day | Fresh input $ | Output $ | 1h cache write $ | 5m cache write $ | Cache read $ |"
+        "| Day | Input $ | Output $ | 1h cache write $ | 5m cache write $ | Cache read $ |"
     )
     L.append("|---|---:|---:|---:|---:|---:|")
     for day in sorted(per_day):
@@ -459,7 +459,7 @@ def build_report(entries, bucket_meta, days_back, start_date, today, titles):
         "- **Per-model pricing**: each turn is billed at its model's listed rate (Opus 4.6/4.5 $5/$25, Sonnet 4.6/4.5 $3/$15, Haiku 4.5 $1/$5, older Opus tiers at their higher historic rates). Opus 4.6 and Sonnet 4.6 are flat-priced across the full 1M context window — no 200k threshold."
     )
     L.append(
-        "- **Without-cache reference** = `input + cache_read + cache_create` all billed as fresh input at that model's base input rate, plus output. Shows what you'd pay if caching were disabled entirely. Not a prediction — a reference point."
+        "- **Without-cache reference** = `input + cache_read + cache_create` all billed at that model's base input rate, plus output. Shows what you'd pay if caching were disabled entirely. Not a prediction — a reference point."
     )
     L.append(
         "- **Cache savings** = reference − actual. Represents the value your session got from prompt caching."

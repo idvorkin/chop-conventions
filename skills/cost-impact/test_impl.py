@@ -355,7 +355,7 @@ class TestBuildReportWithData(unittest.TestCase):
         )
         self.assertIn("### Daily cost details", report)
         self.assertIn(
-            "| Day | Fresh input $ | Output $ | 1h cache write $ | 5m cache write $ | Cache read $ |",
+            "| Day | Input $ | Output $ | 1h cache write $ | 5m cache write $ | Cache read $ |",
             report,
         )
         self.assertIn(
