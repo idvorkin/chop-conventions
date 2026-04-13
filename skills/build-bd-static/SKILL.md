@@ -1,11 +1,26 @@
-# Build bd (Beads CLI)
+---
+name: build-bd-static
+description: Build a static `bd` binary when Homebrew is unavailable or its dynamically-linked package is not portable enough for the machine.
+allowed-tools: Bash, Read
+---
 
-Install or upgrade the `bd` CLI tool with a fully static build to avoid shared library issues (e.g., ICU version mismatches across machines).
+# Build bd Static
+
+Use Homebrew as the default install path:
+
+```bash
+brew install beads
+brew upgrade beads
+```
+
+Use this skill only when Homebrew is unavailable, or when the packaged `bd` is not enough because you need a self-contained binary that avoids shared-library issues (for example ICU version mismatches across machines).
+
+`bd upgrade` is not the installer path here; it reviews version changes but does not replace the binary.
 
 ## Usage
 
 ```text
-/build-bd
+/build-bd-static
 ```
 
 ## Steps
@@ -22,7 +37,7 @@ Install or upgrade the `bd` CLI tool with a fully static build to avoid shared l
    go list -m -json github.com/steveyegge/beads@latest 2>&1 | grep '"Version"'
    ```
 
-3. If already on the latest version, report that and stop. Otherwise, proceed to build.
+3. If already on the latest version, report that and stop. Otherwise, proceed to build the static fallback binary.
 
 4. Build the latest version statically with CGO disabled (use the version from step 2):
 
