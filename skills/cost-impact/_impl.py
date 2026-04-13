@@ -46,7 +46,10 @@ root = Path.home() / ".claude" / "projects"
 main_files = sorted(root.glob("*/*.jsonl"))
 sub_files = sorted(root.glob("*/*/subagents/agent-*.jsonl"))
 
-pr_create_re = re.compile(r"^\s*gh pr create\b")
+# Match `gh pr create` anywhere in a command, including compound commands
+# like `cd ~/gits/foo && gh pr create ...` or `git push && gh pr create ...`.
+# Word boundary guards against false matches inside identifiers.
+pr_create_re = re.compile(r"\bgh pr create\b")
 title_re = re.compile(r'--title\s+"([^"]+)"')
 url_re = re.compile(r'https?://github\.com/([^/\s]+)/([^/\s)\'"]+)/pull/(\d+)')
 
@@ -150,7 +153,7 @@ def ingest(f, is_sub):
                 btype = block.get("type")
                 if btype == "tool_use" and block.get("name") == "Bash":
                     cmd = block.get("input", {}).get("command", "")
-                    if pr_create_re.match(cmd.lstrip()):
+                    if pr_create_re.search(cmd):
                         t = title_re.search(cmd)
                         pending[block.get("id")] = (
                             day_local,
@@ -456,7 +459,7 @@ L.append(
     "- **Cache savings** = reference − actual. Represents the value your session got from prompt caching."
 )
 L.append(
-    f"- **Max plan context (reference only)**: 7-day prorate of ${MAX_PLAN_MONTHLY:.0f}/mo = ${window_baseline:.2f}. Actual cost ${tot_actual:,.2f} implies an effective subsidy of ${subsidy:,.2f} — i.e. Anthropic is absorbing that much at list pricing. Edit `MAX_PLAN_MONTHLY` in the script if your plan is different."
+    f"- **Max plan context (reference only)**: {DAYS_BACK}-day prorate of ${MAX_PLAN_MONTHLY:.0f}/mo = ${window_baseline:.2f}. Actual cost ${tot_actual:,.2f} implies an effective subsidy of ${subsidy:,.2f} — i.e. Anthropic is absorbing that much at list pricing. Edit `MAX_PLAN_MONTHLY` in the script if your plan is different."
 )
 L.append(
     "- **TTL-bug delta ([#45381](https://github.com/anthropics/claude-code/issues/45381))**: you aren't hit by it (0 `ephemeral_5m_input_tokens` observed). Not modeling hypothetical cost here — we have real data."
