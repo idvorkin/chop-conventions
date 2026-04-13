@@ -8,6 +8,7 @@ import json
 import sys
 import tempfile
 import unittest
+from unittest import mock
 from collections import defaultdict
 from datetime import date, datetime, timezone
 from pathlib import Path
@@ -23,6 +24,7 @@ from _impl import (  # noqa: E402
     build_report,
     cost_breakdown,
     empty_stats,
+    fetch_pr_titles,
     fmt_duration,
     humanize_project,
     ingest,
@@ -232,6 +234,38 @@ class TestRegexes(unittest.TestCase):
         self.assertEqual(m.group(1), "owner")
         self.assertEqual(m.group(2), "repo")
         self.assertEqual(m.group(3), "42")
+
+
+class TestFetchPrTitles(unittest.TestCase):
+    def test_returns_titles_and_states(self):
+        def fake_run(args, capture_output, text, timeout):
+            self.assertEqual(args[:3], ["gh", "pr", "view"])
+            self.assertEqual(capture_output, True)
+            self.assertEqual(text, True)
+            self.assertEqual(timeout, 15)
+            payload = {
+                "1": {"title": "One", "state": "OPEN"},
+                "2": {"title": "Two", "state": "MERGED"},
+            }[args[3]]
+            return mock.Mock(returncode=0, stdout=json.dumps(payload))
+
+        with mock.patch("_impl.subprocess.run", side_effect=fake_run):
+            got = fetch_pr_titles({("o", "r", 2), ("o", "r", 1)})
+
+        self.assertEqual(got[("o", "r", 1)], ("One", "OPEN"))
+        self.assertEqual(got[("o", "r", 2)], ("Two", "MERGED"))
+
+    def test_falls_back_to_none_on_error(self):
+        def fake_run(args, capture_output, text, timeout):
+            if args[3] == "1":
+                raise RuntimeError("boom")
+            return mock.Mock(returncode=1, stdout="")
+
+        with mock.patch("_impl.subprocess.run", side_effect=fake_run):
+            got = fetch_pr_titles({("o", "r", 1), ("o", "r", 2)})
+
+        self.assertEqual(got[("o", "r", 1)], (None, None))
+        self.assertEqual(got[("o", "r", 2)], (None, None))
 
 
 class TestAggregateEmpty(unittest.TestCase):

@@ -7,6 +7,7 @@ https://platform.claude.com/docs/en/about-claude/pricing
 """
 
 import argparse
+import concurrent.futures
 import json
 import re
 import subprocess
@@ -29,6 +30,7 @@ PRICING = {
 }
 
 MAX_PLAN_MONTHLY = 200.00
+MAX_PR_TITLE_FETCH_WORKERS = 8
 
 # Match `gh pr create` anywhere in a command, including compound commands
 # like `cd ~/gits/foo && gh pr create ...` or `git push && gh pr create ...`.
@@ -246,36 +248,39 @@ def ingest(f, is_sub, root, start_date, today, bucket, unknown_models):
                             s["prs_referenced"].add(k)
 
 
+def _fetch_one_pr_title(pr_key):
+    owner, repo, num = pr_key
+    try:
+        r = subprocess.run(
+            [
+                "gh",
+                "pr",
+                "view",
+                str(num),
+                "--repo",
+                f"{owner}/{repo}",
+                "--json",
+                "title,state",
+            ],
+            capture_output=True,
+            text=True,
+            timeout=15,
+        )
+        if r.returncode == 0:
+            data = json.loads(r.stdout)
+            return pr_key, (data.get("title", ""), data.get("state", ""))
+    except Exception:
+        pass
+    return pr_key, (None, None)
+
+
 def fetch_pr_titles(all_prs):
-    titles = {}
-    for owner, repo, num in sorted(all_prs):
-        try:
-            r = subprocess.run(
-                [
-                    "gh",
-                    "pr",
-                    "view",
-                    str(num),
-                    "--repo",
-                    f"{owner}/{repo}",
-                    "--json",
-                    "title,state",
-                ],
-                capture_output=True,
-                text=True,
-                timeout=15,
-            )
-            if r.returncode == 0:
-                data = json.loads(r.stdout)
-                titles[(owner, repo, num)] = (
-                    data.get("title", ""),
-                    data.get("state", ""),
-                )
-            else:
-                titles[(owner, repo, num)] = (None, None)
-        except Exception:
-            titles[(owner, repo, num)] = (None, None)
-    return titles
+    prs = sorted(all_prs)
+    if not prs:
+        return {}
+    max_workers = min(MAX_PR_TITLE_FETCH_WORKERS, len(prs))
+    with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as pool:
+        return dict(pool.map(_fetch_one_pr_title, prs))
 
 
 # ---------- Report builder ----------
