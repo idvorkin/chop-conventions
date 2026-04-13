@@ -77,12 +77,13 @@ Skills are Claude Code slash commands that live in `skills/<name>/SKILL.md`.
 
 - Each skill is a directory containing at minimum a `SKILL.md` with YAML frontmatter (`name`, `description`, `allowed-tools`)
 - Skill names must not collide with Claude Code built-in commands (e.g., use `machine-doctor` not `doctor`)
+- Related skills are grouped into subdirectories (e.g., `skills/image/gen-image`). See [MIGRATION.md](MIGRATION.md) for the migration pattern.
 - **Pure markdown is the default.** Helpers (Python, shell) only earn their place when they (a) parallelize subprocess calls AND (b) need unit-tested classification logic. For "figure out which thing the user means" reasoning, use the markdown prompt. Reference: `up-to-date` earned its `diagnose.py`; `learn-from-session` and most others stay pure markdown.
-- Skills are installed by **symlinking** into Claude Code's skill directories:
-  - Machine-level (all projects): `~/.claude/skills/<name>` -> `<chop-conventions>/skills/<name>`
-  - Project-level (one project): `<project>/.claude/skills/<name>` -> `<chop-conventions>/skills/<name>`
+- Skills are installed by **symlinking** into Claude Code's skill directories using the **flat skill name** (the group nesting is source-repo-only):
+  - Machine-level (all projects): `~/.claude/skills/<name>` -> `<chop-conventions>/skills[/<group>]/<name>`
+  - Project-level (one project): `<project>/.claude/skills/<name>` -> `<chop-conventions>/skills[/<group>]/<name>`
 - After adding a skill, create the symlink and document it in the README skills table
-- After `/up-to-date` pulls new commits, check the pull delta for newly-added `skills/<name>/` dirs and offer to symlink them into `~/.claude/skills/`. If the delta added no skills, say nothing. Never link automatically.
+- After `/up-to-date` pulls new commits, check the pull delta for newly-added `skills/<name>/` or `skills/<group>/<name>/` dirs and offer to symlink them into `~/.claude/skills/`. If the delta added no skills, say nothing. Never link automatically.
 
 ### Size Guideline
 

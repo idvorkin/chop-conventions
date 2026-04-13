@@ -27,7 +27,7 @@ Parse the user's input for:
 - **Default style**: Read from `raccoon-style.txt` (in this skill's directory) by `generate.py`
 - **Reference image**: Auto-resolved by `generate.py` (searches `~/gits/blog*/images/raccoon-nerd.webp`)
 - **Low-level script**: `gemini-image.sh` handles single API calls (used internally by `generate.py`)
-- **Generation wrapper**: `../image-explore/generate.py` handles env loading, style, ref image, and parallel batch execution
+- **Generation wrapper**: `../image-explore/generate.py` (sibling skill in `skills/image/`) handles env loading, style, ref image, and parallel batch execution
 
 When `--style` is provided, it **replaces** the default raccoon style entirely (it is not appended).
 
@@ -79,7 +79,7 @@ Use `generate.py` from the `image-explore` skill. It handles env loading (`~/.en
 
    ```bash
    CHOP_ROOT="$(cd "$(dirname "$(readlink -f ~/.claude/skills/gen-image/SKILL.md)")" && git rev-parse --show-toplevel)"
-   GEN="$CHOP_ROOT/skills/image-explore/generate.py"
+   GEN="$CHOP_ROOT/skills/image/image-explore/generate.py"
    ```
 
 2. **Single image:**

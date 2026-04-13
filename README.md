@@ -62,14 +62,22 @@ The goal is to create a feedback loop where:
 ## Skills
 
 Reusable Claude Code skills live in `skills/`. Each skill is a directory with a `SKILL.md` file.
+Related skills are grouped into subdirectories (e.g., `skills/image/`). See [MIGRATION.md](MIGRATION.md)
+for the grouping rationale and symlink update instructions.
 
 ### Installing Skills
 
-Skills are installed by symlinking into Claude Code's skill directories:
+Skills are installed by symlinking into Claude Code's skill directories. The symlink uses the
+**flat skill name** regardless of any group nesting in this repo:
 
 ```bash
 # Machine-level (available in ALL projects):
 ln -s /path/to/chop-conventions/skills/<skill-name> ~/.claude/skills/<skill-name>
+
+# Skills in a group (e.g., image/):
+ln -s /path/to/chop-conventions/skills/image/gen-image     ~/.claude/skills/gen-image
+ln -s /path/to/chop-conventions/skills/image/gist-image    ~/.claude/skills/gist-image
+ln -s /path/to/chop-conventions/skills/image/image-explore ~/.claude/skills/image-explore
 
 # Project-level (available in one project):
 ln -s /path/to/chop-conventions/skills/<skill-name> <project>/.claude/skills/<skill-name>
@@ -88,13 +96,18 @@ Machine-level skills go in `~/.claude/skills/` and are available everywhere. Pro
 | `clock`                  | machine | Schedule recurring session tasks (time checks, reminders)                       |
 | `delegate-to-other-repo` | machine | Delegate cross-repo work to a subagent with an isolated context; ends with a PR |
 | `docs`                   | machine | Fetch fresh library/framework docs via Context7 (`ctx7`)                        |
-| `gen-image`              | machine | Generate illustrations via Gemini image API                                     |
-| `gist-image`             | machine | Host images on GitHub gists for PRs/issues                                      |
-| `image-explore`          | machine | Brainstorm and compare visual directions                                        |
 | `learn-from-session`     | machine | Extract durable lessons from a session into the right CLAUDE.md files           |
 | `machine-doctor`         | machine | Diagnose system health, kill rogue processes                                    |
 | `showboat`               | machine | Create executable demo documents with screenshots                               |
 | `up-to-date`             | machine | Sync git repo with upstream                                                     |
+
+**`image/` group** — image lifecycle (create / host / explore):
+
+| Skill                    | Scope   | Description                                                                     |
+| ------------------------ | ------- | ------------------------------------------------------------------------------- |
+| `gen-image`              | machine | Generate illustrations via Gemini image API                                     |
+| `gist-image`             | machine | Host images on GitHub gists for PRs/issues                                      |
+| `image-explore`          | machine | Brainstorm and compare visual directions                                        |
 
 ## Usage
 

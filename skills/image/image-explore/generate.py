@@ -104,7 +104,7 @@ def resolve_ref_image():
 
 def read_default_style(chop_root):
     """Read raccoon style from gen-image/raccoon-style.txt."""
-    style_file = chop_root / "skills" / "gen-image" / "raccoon-style.txt"
+    style_file = chop_root / "skills" / "image" / "gen-image" / "raccoon-style.txt"
     if style_file.exists():
         return style_file.read_text().strip()
     return (
@@ -296,7 +296,7 @@ def main():
         sys.exit(1)
 
     config = GenerateConfig(
-        gemini_script=str(chop_root / "skills" / "gen-image" / "gemini-image.sh"),
+        gemini_script=str(chop_root / "skills" / "image" / "gen-image" / "gemini-image.sh"),
         style=args.style or read_default_style(chop_root),
         ref_image=args.ref or resolve_ref_image(),
         aspect=args.aspect,

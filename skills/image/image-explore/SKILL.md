@@ -73,7 +73,7 @@ Confirm with user via `AskUserQuestion` before generating. User may add, remove,
 
    ```bash
    CHOP_ROOT="$(cd "$(dirname "$(readlink -f ~/.claude/skills/image-explore/SKILL.md)")" && git rev-parse --show-toplevel)"
-   GEN="$CHOP_ROOT/skills/image-explore/generate.py"
+   GEN="$CHOP_ROOT/skills/image/image-explore/generate.py"
    ```
 
 2. Write a `directions.json` file with all directions (used by both Phase 3 and Phase 4).
@@ -198,7 +198,7 @@ Build and serve the comparison page (reuses the same `directions.json` —
 `build-page.py` reads `name`/`section`/`vibe`/`shirt` and accepts either `image` or `output` for the file path):
 
 ```bash
-uv run "$CHOP_ROOT/skills/image-explore/build-page.py" \
+uv run "$CHOP_ROOT/skills/image/image-explore/build-page.py" \
   --title "Image Explore: Topic Name" \
   --dir docs/image-explore-topic/ \
   --images-dir images/ \
@@ -240,7 +240,7 @@ surge "$SURGE_DIR" <descriptive-name>.surge.sh
 Uses the **gist-image** skill technique (create gist, clone, push binary files via git) plus gisthost-specific URL rewriting. The helper script automates this:
 
 ```bash
-uv run "$CHOP_ROOT/skills/image-explore/publish-gist.py" demo.html --title "Description"
+uv run "$CHOP_ROOT/skills/image/image-explore/publish-gist.py" demo.html --title "Description"
 ```
 
 This handles: gist creation, image conversion to JPEG, URL rewriting, git push. It prints the gisthost URL.
