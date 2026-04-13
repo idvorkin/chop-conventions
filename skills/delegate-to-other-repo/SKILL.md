@@ -166,13 +166,24 @@ parameter to the Agent tool.
 # Claude Code hashes the session's *cwd* at launch, not the repo root.
 # If you're running inside a worktree, the hash encodes the worktree
 # path, not the main checkout.
-cwd_hash=$(pwd | sed 's|/|-|g')
+#
+# Two gotchas in the hash rule — both bite in practice:
+#   1. The project-dir hash converts BOTH `/` AND `.` to `-`. A repo
+#      at `/home/foo/gits/bar.github.io` hashes to
+#      `-home-foo-gits-bar-github-io`, NOT `-home-foo-gits-bar.github.io`.
+#      The sed below uses `[/.]` to catch both.
+#   2. `pwd` returns the LOGICAL cwd (may be a symlink like
+#      `/home/foo/blog → /home/foo/gits/bar.github.io`). Claude Code
+#      hashes the physical path, so use `pwd -P` to resolve symlinks
+#      before hashing. Without `-P`, a session launched from a
+#      symlinked shortcut produces a bogus hash matching no project dir.
+cwd_hash=$(pwd -P | sed 's|[/.]|-|g')
 newest=$(/bin/ls -t "$HOME/.claude/projects/$cwd_hash"/*.jsonl 2>/dev/null | head -1)
 
-# Fallback: try the repo toplevel hash.
+# Fallback: try the repo toplevel hash (same two gotchas apply).
 if [ -z "$newest" ]; then
   toplevel=$(git rev-parse --show-toplevel)
-  toplevel_hash=$(echo "$toplevel" | sed 's|/|-|g')
+  toplevel_hash=$(echo "$toplevel" | sed 's|[/.]|-|g')
   newest=$(/bin/ls -t "$HOME/.claude/projects/$toplevel_hash"/*.jsonl 2>/dev/null | head -1)
 fi
 ```
@@ -189,16 +200,54 @@ Agent tool:
   description: "Delegated work in <target-repo>"
   subagent_type: "general-purpose"
   prompt: <the substituted brief from Phase 3>
-  run_in_background: false
+  run_in_background: true
 ```
 
-**Foreground by default.** Only pass `run_in_background: true` if the
-user explicitly asked ("dispatch in background", "I want to keep
-working while this runs"). Foreground means you wait for the result
-message before continuing — that's fine.
+**Async by default.** Delegated work is usually long-running
+(minutes). Blocking the parent on it wastes the user's time and
+burns the parent's context budget while it sits idle. The harness
+sends a `<task-notification>` when the subagent completes — that
+notification is your trigger for Phase 5. No polling required.
 
-**Never retry automatically.** If the subagent fails, escalate to the
-user (see Phase 5).
+### After dispatch
+
+1. **Summarize what you dispatched** to the user in one short
+   message — worktree path, branch, key checkpoints from the brief.
+   This gives the user a chance to course-correct before the
+   subagent burns minutes in the wrong direction.
+2. **End the turn.** The parent is now free to accept other
+   unrelated work while the subagent runs.
+3. **When the `<task-notification>` arrives**, resume at Phase 5
+   automatically (relay the result, offer follow-ups).
+
+### Monitoring
+
+- **Default**: trust the completion notification. Simple, reliable,
+  no overhead. Do NOT poll, do NOT sleep, do NOT `Read` the agent's
+  output JSONL — the tool explicitly warns that reading the
+  transcript will overflow the parent's context.
+- **Heartbeat (opt-in)**: for long-running or risky delegations
+  where the user wants progress checks, run
+  `/loop 2m "status check on delegation to <target-repo>"`. The
+  loop wakes the parent every 2 minutes to summarize state from
+  memory (what was dispatched, how long ago, what's expected).
+  The parent answers from its recollection of the brief — NOT by
+  reading the output file. When the completion notification
+  arrives, the parent processes the real result and the loop
+  self-terminates on the next tick.
+- **Never**: tail the output file, sleep in a bash loop, call the
+  Agent tool again with the same prompt, or claim "done" before
+  the notification arrives.
+
+### If the user explicitly asked for sync
+
+If the user said "wait for it" or "block until done", pass
+`run_in_background: false` instead — but note that the harness may
+still dispatch async regardless. Either way, the parent's Phase 5
+trigger is the final message, wherever it arrives from.
+
+**Never retry automatically.** If the subagent fails, escalate to
+the user (see Phase 5).
 
 ## Phase 5: Relay the result and offer follow-ups
 
