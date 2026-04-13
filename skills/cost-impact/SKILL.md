@@ -152,7 +152,12 @@ Update the table if Anthropic changes published rates.
 - **TTL bug ([anthropics/claude-code#45381](https://github.com/anthropics/claude-code/issues/45381))**:
   if `DISABLE_TELEMETRY` or `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC`
   is set, sessions silently fall from 1h to 5m cache tier, costing
-  more. Check `ephemeral_5m_input_tokens` in the report's cache lines.
+  more. The report footnote measures `ephemeral_5m_input_tokens`
+  directly and reports whether you were hit.
+- **Unknown / unpriced models**: turns with a model ID not in
+  `PRICING` are excluded from totals and surfaced as a stderr warning
+  at run time + an `⚠ Unpriced models` line in the report's footnotes.
+  Update the `PRICING` table in `_impl.py` when a new model ships.
 
 ## Related
 
