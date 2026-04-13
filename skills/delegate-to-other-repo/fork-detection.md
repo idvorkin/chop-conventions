@@ -74,7 +74,7 @@ empty and falls to the STOP path. This is correct behavior.
 
 ## Decision tree diagram
 
-```
+```text
                        +------------------+
                        | How many remotes |
                        |  (origin + other)|
@@ -122,7 +122,7 @@ empty and falls to the STOP path. This is correct behavior.
 
 The subagent is told to run `diagnose.py` as a shortcut if it exists:
 
-```
+```bash
 ~/.claude/skills/up-to-date/diagnose.py --pretty | jq .remotes
 ```
 

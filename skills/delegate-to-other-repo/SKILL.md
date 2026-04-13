@@ -39,7 +39,7 @@ a subagent for cross-repo work in `<target>`."
 
 ## Flow at a glance
 
-```
+```text
 Parent (you)                             Subagent (fresh context)
 ──────────────────                       ─────────────────────────
 1. Resolve target repo
@@ -184,12 +184,12 @@ the log is an escape hatch, not a required input.
 
 ## Phase 4: Dispatch the subagent
 
-```
+```yaml
 Agent tool:
-  description:        "Delegated work in <target-repo>"
-  subagent_type:      "general-purpose"
-  prompt:             <the substituted brief from Phase 3>
-  run_in_background:  false
+  description: "Delegated work in <target-repo>"
+  subagent_type: "general-purpose"
+  prompt: <the substituted brief from Phase 3>
+  run_in_background: false
 ```
 
 **Foreground by default.** Only pass `run_in_background: true` if the
