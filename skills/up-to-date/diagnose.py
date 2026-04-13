@@ -56,6 +56,12 @@ class RemoteAnalysis:
     issues: list[RemoteIssue] = field(default_factory=list)
 
 
+@dataclass(frozen=True)
+class CherryAnalysis:
+    unique_commits: list[str]
+    equivalent_commits: list[str]
+
+
 # ---------- Pure functions (tested) ----------
 
 
@@ -159,14 +165,30 @@ def classify_remotes(remotes: list[Remote], fork_orgs: list[str]) -> RemoteAnaly
     )
 
 
-def parse_cherry_leftovers(raw: str) -> list[str]:
-    """Return only patch-unique commits from `git cherry -v` output."""
-    leftovers: list[str] = []
+def parse_cherry_status(raw: str) -> CherryAnalysis:
+    """Split `git cherry -v` output into unique and patch-equivalent commits."""
+    unique_commits: list[str] = []
+    equivalent_commits: list[str] = []
     for line in raw.splitlines():
-        if not line.startswith("+ "):
-            continue
-        leftovers.append(line[2:])
-    return leftovers
+        if line.startswith("+ "):
+            unique_commits.append(line[2:])
+        elif line.startswith("- "):
+            equivalent_commits.append(line[2:])
+    return CherryAnalysis(
+        unique_commits=unique_commits,
+        equivalent_commits=equivalent_commits,
+    )
+
+
+def parse_left_right_count(raw: str) -> tuple[int, int]:
+    """Parse `git rev-list --left-right --count A...B` output."""
+    parts = raw.split()
+    if len(parts) != 2:
+        return (0, 0)
+    try:
+        return (int(parts[0]), int(parts[1]))
+    except ValueError:
+        return (0, 0)
 
 
 # ---------- Subprocess helpers ----------
@@ -221,27 +243,47 @@ def run_diagnose() -> dict[str, Any]:
     if fetch_proc.returncode != 0:
         errors.append(f"git fetch failed: {fetch_proc.stderr.strip()}")
 
-    # Branch state
-    branch_name = git("branch", "--show-current", check=False)
+    # Post-fetch git queries are independent; run them in parallel.
+    with ThreadPoolExecutor(max_workers=5) as pool:
+        branch_name_fut = pool.submit(git, "branch", "--show-current", check=False)
+        divergence_fut = pool.submit(
+            git,
+            "rev-list",
+            "--left-right",
+            "--count",
+            f"{src}/main...HEAD",
+            check=False,
+        )
+        behind_commits_fut = pool.submit(
+            git, "log", "--oneline", f"HEAD..{src}/main", check=False
+        )
+        uncommitted_fut = pool.submit(git, "status", "--porcelain", check=False)
+        stashes_fut = pool.submit(git, "stash", "list", check=False)
+
+        branch_name = branch_name_fut.result()
+        behind, ahead = parse_left_right_count(divergence_fut.result())
+        behind_commits_raw = behind_commits_fut.result()
+        uncommitted_raw = uncommitted_fut.result()
+        stash_raw = stashes_fut.result()
+
     is_main = branch_name == "main"
-
-    behind = int(git("rev-list", "--count", f"HEAD..{src}/main", check=False) or "0")
-    ahead = int(git("rev-list", "--count", f"{src}/main..HEAD", check=False) or "0")
-
-    behind_commits_raw = git("log", "--oneline", f"HEAD..{src}/main", check=False)
     behind_commits = [ln for ln in behind_commits_raw.splitlines() if ln][:10]
 
-    leftover_commits: list[str] = []
-    if not is_main and branch_name:
+    cherry = CherryAnalysis(unique_commits=[], equivalent_commits=[])
+    if ahead > 0 and branch_name:
         # Use patch equivalence, not commit reachability, so rebased/cherry-picked
-        # commits already present upstream do not show up as leftover work.
-        leftover_raw = git("cherry", "-v", f"{src}/main", branch_name, check=False)
-        leftover_commits = parse_cherry_leftovers(leftover_raw)[:10]
+        # commits already present upstream do not show up as unique work.
+        cherry_raw = git("cherry", "-v", f"{src}/main", branch_name, check=False)
+        cherry = parse_cherry_status(cherry_raw)
+
+    ahead_patch_unique_commits = cherry.unique_commits[:10]
+    ahead_patch_equivalent_commits = cherry.equivalent_commits[:10]
+    can_force_align = is_main and ahead > 0 and not cherry.unique_commits
+
+    leftover_commits = [] if is_main else ahead_patch_unique_commits
 
     # Worktree state
-    uncommitted_raw = git("status", "--porcelain", check=False)
     uncommitted = [ln for ln in uncommitted_raw.splitlines() if ln]
-    stash_raw = git("stash", "list", check=False)
     stashes = [ln for ln in stash_raw.splitlines() if ln]
 
     # PR state — only on feature branches, and only if we got data
@@ -272,6 +314,9 @@ def run_diagnose() -> dict[str, Any]:
             "behind": behind,
             "ahead": ahead,
             "behind_commits": behind_commits,
+            "ahead_patch_unique_commits": ahead_patch_unique_commits,
+            "ahead_patch_equivalent_commits": ahead_patch_equivalent_commits,
+            "can_force_align": can_force_align,
             "leftover_commits": leftover_commits,
         },
         "worktree": {

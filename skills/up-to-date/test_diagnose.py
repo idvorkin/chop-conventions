@@ -12,10 +12,12 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent))
 
 from diagnose import (  # noqa: E402
+    CherryAnalysis,
     Remote,
     classify_remotes,
     is_fork_url,
-    parse_cherry_leftovers,
+    parse_cherry_status,
+    parse_left_right_count,
     parse_remotes,
 )
 
@@ -128,19 +130,33 @@ class TestClassifyRemotes(unittest.TestCase):
             self.assertTrue(issue.fix, f"issue {issue.kind} missing fix command")
 
 
-class TestParseCherryLeftovers(unittest.TestCase):
-    def test_keeps_only_patch_unique_commits(self):
+class TestParseCherryStatus(unittest.TestCase):
+    def test_splits_unique_and_equivalent_commits(self):
         raw = (
             "- 1234567 already upstream under different sha\n"
             "+ 89abcde follow-up work still missing upstream\n"
         )
         self.assertEqual(
-            parse_cherry_leftovers(raw),
-            ["89abcde follow-up work still missing upstream"],
+            parse_cherry_status(raw),
+            CherryAnalysis(
+                unique_commits=["89abcde follow-up work still missing upstream"],
+                equivalent_commits=["1234567 already upstream under different sha"],
+            ),
         )
 
     def test_empty_output(self):
-        self.assertEqual(parse_cherry_leftovers(""), [])
+        self.assertEqual(
+            parse_cherry_status(""),
+            CherryAnalysis(unique_commits=[], equivalent_commits=[]),
+        )
+
+
+class TestParseLeftRightCount(unittest.TestCase):
+    def test_parses_tab_separated_counts(self):
+        self.assertEqual(parse_left_right_count("3\t7"), (3, 7))
+
+    def test_invalid_output_defaults_to_zeroes(self):
+        self.assertEqual(parse_left_right_count("nonsense"), (0, 0))
 
 
 if __name__ == "__main__":

@@ -10,13 +10,17 @@ Diagnose and sync the current git repo with upstream.
 
 ## Step 1: Diagnose
 
-Run the helper — it fetches, queries `gh pr view`, and checks remote hygiene in parallel, then prints JSON:
+Run the versioned helper that lives with this skill — it fetches, queries
+`gh pr view`, and checks remote hygiene in parallel, then prints JSON. In this
+source repo that path is:
 
 ```bash
-~/.claude/skills/up-to-date/diagnose.py
+skills/up-to-date/diagnose.py
 ```
 
-(Project-level installs: the script lives alongside this SKILL.md at `<project>/.claude/skills/up-to-date/diagnose.py`. If `~/.claude/skills/up-to-date/diagnose.py` is missing, use the project-local path instead.)
+When the skill is installed into `~/.claude/skills/` or `<project>/.claude/skills/`,
+that installed path is typically a symlink to this same file. Prefer the
+versioned repo copy when you are editing this repository.
 
 The JSON output has this shape:
 
@@ -34,6 +38,9 @@ The JSON output has this shape:
     "behind": 0,
     "ahead": 0,
     "behind_commits": ["abc123 subject", ...],
+    "ahead_patch_unique_commits": ["def456 subject", ...],
+    "ahead_patch_equivalent_commits": ["ghi789 subject", ...],
+    "can_force_align": false,
     "leftover_commits": [...]
   },
   "worktree": {
@@ -57,6 +64,8 @@ Conventions:
 
 - `remotes.source` is either `"upstream"` (fork workflow) or `"origin"` (single-remote). Use this as `SRC` for all subsequent git commands.
 - `pr` is `null` on main or when no PR exists for the current branch.
+- `branch.ahead_patch_unique_commits` and `branch.ahead_patch_equivalent_commits` come from `git cherry -v source/main HEAD`, so the script tells you whether ahead commits are unique work or already present upstream under different SHAs.
+- `branch.can_force_align` is `true` only on `main` when every ahead commit is patch-equivalent to `source/main`; in that case, re-aligning the fork's `main` loses no unique work.
 - `branch.leftover_commits` lists patch-unique commits on a feature branch that are still missing from `source/main`. Commits already applied upstream under a different SHA are filtered out.
 - `errors` contains any subprocess failures the script wants surfaced (empty on the happy path).
 
@@ -77,6 +86,15 @@ git branch --merged main | grep -v '^\*\|main' | xargs -r git branch -d
 ```
 
 ### On main (`branch.is_main` true)
+
+If `branch.can_force_align` is true, prefer:
+
+```bash
+git pull --rebase $SRC main
+[ "$SRC" = "upstream" ] && git push --force-with-lease origin main
+```
+
+Otherwise:
 
 ```bash
 git pull $SRC main
@@ -158,11 +176,11 @@ git fetch --all --prune
 git branch --show-current
 git status --porcelain
 git stash list
-git rev-list --count HEAD..$SRC/main   # behind
-git rev-list --count $SRC/main..HEAD   # ahead
+git rev-list --left-right --count $SRC/main...HEAD
+git cherry -v $SRC/main HEAD
 gh pr view --json state,number,title,mergeable,reviewDecision 2>/dev/null
 ```
 
 ## Implementation
 
-The `diagnose.py` script is ~150 lines of stdlib Python with a `#!/usr/bin/env -S uv run --script` shebang, so it runs without manual env setup wherever `uv` is installed. Pure classification logic (`parse_remotes`, `is_fork_url`, `classify_remotes`) is unit-tested in `test_diagnose.py` — run `python3 -m unittest test_diagnose.py` from this directory.
+The `diagnose.py` script is stdlib-only Python with a `#!/usr/bin/env -S uv run --script` shebang, so it runs without manual env setup wherever `uv` is installed. Pure classification logic (`parse_remotes`, `is_fork_url`, `classify_remotes`, cherry parsing) is unit-tested in `test_diagnose.py` — run `python3 -m unittest test_diagnose.py` from this directory.
