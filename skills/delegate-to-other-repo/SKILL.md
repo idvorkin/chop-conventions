@@ -398,6 +398,25 @@ requires branch-switching (destructive) and breaks on protected
 defaults. Fix: write to `.git/info/exclude` instead — local-only,
 untracked, branch-independent, per-repo (shared across worktrees).
 
+### Editing this skill through the `~/.claude/skills/` symlink
+
+`~/.claude/skills/delegate-to-other-repo/` is usually a symlink into
+the chop-conventions primary checkout at
+`~/gits/chop-conventions/skills/delegate-to-other-repo/`. Editing
+`SKILL.md` or any supporting file directly through the symlink
+mutates whatever branch the primary checkout is currently on —
+silently mixing skill-fix edits with whatever unrelated work is
+checked out there. Verified this session: the primary checkout was
+on a different feature branch with uncommitted Python edits when a
+well-intentioned edit would have polluted both.
+
+**Fix**: when modifying this skill (or any skill in the chop-conventions
+`skills/` tree), **always create a worktree off `upstream/main` first**
+and edit there. Same recipe as the worktrees this skill creates for
+its own delegations — the self-referential case doesn't get a free
+pass. Double-check with `realpath` before editing any file under
+`~/.claude/skills/` to confirm where it actually lives.
+
 ### Trusting `diagnose.py`'s `is_fork_workflow: false`
 
 It misclassifies chop-conventions' real pattern (single fork-as-origin
