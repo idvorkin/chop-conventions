@@ -43,13 +43,22 @@ Scripts that signal processes by pattern (cpulimit, pkill, kill by comm match) M
 - Put pure logic behind functions that can be unit-tested without subprocess mocking. Shell out to external tools (`git`, `gh`, etc.) through a thin wrapper so the business logic stays testable.
 - Working example: [`skills/up-to-date/diagnose.py`](skills/up-to-date/diagnose.py) — stdlib-only, `uv run` shebang, parallelized subprocess calls, unit-tested pure functions.
 
+## Parsing Claude Session Data
+
+- **Subagents live at `~/.claude/projects/<proj>/<session-uuid>/subagents/agent-*.jsonl`**, NOT inside the main session JSONL. Scripts scanning session data must glob `**/subagents/*.jsonl` or undercount tokens by ~18% (measured against ~40k assistant messages).
+- **Bash `tool_use.input.command` is frequently compound** (`cd ~/gits/foo && gh pr create …`, `git push && …`). Use `re.search(r"\bcmd\b", command)`, not `re.match(r"^\s*cmd", command.lstrip())` — anchored match drops ~25% of real invocations. Word boundary handles both standalone and chained forms.
+
 ## Diagnostics: Code Over Prose
 
-**Diagnostic checks belong in scripts, not in skill/doc prose.** Skills describe WHEN to diagnose and HOW to recover; code describes WHAT to check. Paths move — code errors loudly, prose rots silently. Reference implementation: `skills/harden-telegram/tools/telegram_debug.py` (`--doctor` with `ok`/`warn`/`fail`/`note` accumulators, `--paths` file-map inventory, inline log tails). **Vendor the doctor *into* the skill** (`skills/<name>/tools/`), never into a source repo it diagnoses — source-repo coupling kills portability on any machine without that repo checked out. Parameterize runtime/source paths via env vars (e.g. `LARRY_TELEGRAM_DIR`, `TELEGRAM_SOURCE_DIR`), not constants. If you catch yourself writing "check X at path Y" prose in a skill, stop and move it to the doctor.
+**Diagnostic checks belong in scripts, not in skill/doc prose.** Skills describe WHEN to diagnose and HOW to recover; code describes WHAT to check. Paths move — code errors loudly, prose rots silently. Reference implementation: `skills/harden-telegram/tools/telegram_debug.py` (`--doctor` with `ok`/`warn`/`fail`/`note` accumulators, `--paths` file-map inventory, inline log tails). **Vendor the doctor _into_ the skill** (`skills/<name>/tools/`), never into a source repo it diagnoses — source-repo coupling kills portability on any machine without that repo checked out. Parameterize runtime/source paths via env vars (e.g. `LARRY_TELEGRAM_DIR`, `TELEGRAM_SOURCE_DIR`), not constants. If you catch yourself writing "check X at path Y" prose in a skill, stop and move it to the doctor.
+
+## Compiled-Tool Staleness Check
+
+**When a user reports "I don't see the new feature" after code changes to a compiled tool, first check the installed binary's mtime, not the source.** `ls -la $(which <tool>)` or `stat` — compare against commit time. `cargo test` / `cargo build` validates fresh source but does NOT replace `~/.cargo/bin/<tool>`; use `cargo install --path . --force`. Don't open the debugger until you've confirmed the binary you're running contains the change.
 
 ## Abstractions: Wait for N=2
 
-**Don't generalize a pattern into templates or a framework until you have at least two concrete instances.** One-instance abstractions are copy-paste bait — they fork on day one, rot, and rediscover the same bugs on every downstream consumer. When a single instance is all you've got, write it directly and point at it as a *reference implementation*, not a template to clone. Extract at N=2 minimum.
+**Don't generalize a pattern into templates or a framework until you have at least two concrete instances.** One-instance abstractions are copy-paste bait — they fork on day one, rot, and rediscover the same bugs on every downstream consumer. When a single instance is all you've got, write it directly and point at it as a _reference implementation_, not a template to clone. Extract at N=2 minimum.
 
 ## GitHub Actions + Claude Code SDK
 
