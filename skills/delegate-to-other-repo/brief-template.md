@@ -82,7 +82,11 @@ Run these checks in order:
 4. For the single-remote case, check whether `origin` is itself a
    fork. Parse the owner/repo from origin URL, then run:
 
-   gh repo view <owner>/<repo> --json isFork,parent -q '{isFork, parent: (.parent.owner.login + "/" + .parent.name)}'
+   gh repo view <owner>/<repo> --json isFork,parent -q '{isFork, parent: (if .parent then (.parent.owner.login + "/" + .parent.name) else null end)}'
+
+   Note: the `if .parent then ... else null end` guard is required —
+   a plain `.parent.owner.login` errors on non-forks where `.parent`
+   is null (jq "Cannot index null with string").
 
 5. Classify using the decision tree:
 

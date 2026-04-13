@@ -458,8 +458,10 @@ not code):
 - After `git -C <path> fetch origin`, `origin/<default-branch>` is
   reachable (`git -C <path> rev-parse --verify origin/<default>`)
 - NOT required to be clean — worktrees off `origin/<default>` are safe
-  even when the parent working tree is dirty. (The target's HEAD branch
-  matters only for the gitignore-commit safety check in Worktree Creation.)
+  even when the parent working tree is dirty. The target's HEAD branch
+  is irrelevant: the `.worktrees/` exclusion is written to
+  `.git/info/exclude` rather than committed to any branch, so the
+  target's current checkout does not constrain the skill.
 
 ## Worktree Creation
 
@@ -488,8 +490,11 @@ default_branch=""
 ref=$(git -C "$T" symbolic-ref --short refs/remotes/origin/HEAD 2>/dev/null) && \
   default_branch="${ref#origin/}"
 if [ -z "$default_branch" ]; then
-  # `gh repo view` takes an OWNER/REPO slug positional, NOT a path, and
-  # there is no top-level `gh -R` flag. Parse the slug from origin URL.
+  # `gh repo view` accepts OWNER/REPO as a positional argument only;
+  # it has no `-R`/`--repo` flag on this subcommand (verified via
+  # `gh repo view --help` — INHERITED FLAGS section shows only
+  # `--help`). `gh repo view` also does not accept a filesystem path,
+  # so we parse the slug from origin URL and pass it positionally.
   origin_url=$(git -C "$T" remote get-url origin 2>/dev/null)
   slug_repo=$(printf '%s\n' "$origin_url" | sed -E 's#(\.git)?$##; s#^.*[/:]([^/:]+/[^/:]+)$#\1#')
   default_branch=$(gh repo view "$slug_repo" --json defaultBranchRef -q .defaultBranchRef.name 2>/dev/null)
@@ -512,9 +517,16 @@ slug=$(printf '%s' "$task_description" \
   | cut -c1-40 \
   | sed -E 's/-+$//')
 [ -z "$slug" ] && slug="task-$(date +%Y%m%d-%H%M%S)"
+# Collision check covers BOTH local branches and remote-tracking
+# refs. Checking only refs/heads/ misses the case where the same
+# name exists on the remote — worktree add would succeed locally, but
+# the subagent's eventual push would be rejected as non-fast-forward
+# (force-push is prohibited). We already fetched origin above, so
+# refs/remotes/origin/ is up-to-date.
 i=1
 candidate="$slug"
-while git -C "$T" show-ref --verify --quiet "refs/heads/delegated/$candidate"; do
+while git -C "$T" show-ref --verify --quiet "refs/heads/delegated/$candidate" \
+   || git -C "$T" show-ref --verify --quiet "refs/remotes/origin/delegated/$candidate"; do
   i=$((i + 1))
   if [ "$i" -gt 9 ]; then
     candidate="task-$(date +%Y%m%d-%H%M%S)"
@@ -526,59 +538,43 @@ slug="$candidate"
 branch="delegated/$slug"
 path="$T/.worktrees/delegated-$slug"
 
-# Safety: ensure .worktrees/ is gitignored before we touch it.
-# git check-ignore needs to run with the target as cwd because it resolves
-# against the index of the repo containing cwd; `git -C` handles this.
-# Note: check-ignore returns 0 if the path WOULD be ignored, 1 if not.
+# Safety: ensure .worktrees/ is excluded from the parent repo's git
+# status. Linked worktrees nested inside the parent show up as
+# untracked (verified: `git worktree add .worktrees/wt1` leaves
+# `?? .worktrees/` in parent's status) — we need an ignore entry.
+#
+# But we deliberately DO NOT commit `.gitignore` on any branch:
+#   - The delegated branch is created from `origin/$default_branch`
+#     (a clean remote ref), so a local-only commit on the default
+#     branch wouldn't be in the delegated branch's base anyway.
+#   - Committing on the target's *current* branch would silently
+#     pollute whatever happens to be checked out, disappearing on
+#     next checkout.
+#   - Switching branches is destructive and requires clean state we
+#     don't enforce.
+#   - Branch-protected default branches block direct commits entirely.
+#
+# Instead: use `.git/info/exclude`, the local-only, untracked,
+# branch-independent, per-repo exclude list (gitignore(5)). It lives
+# in the shared git dir, applies to all worktrees, survives branch
+# switches, and never touches any branch's history. Idempotent via
+# the grep guard.
+git_common=$(git -C "$T" rev-parse --git-common-dir 2>/dev/null)
+exclude_file="$git_common/info/exclude"
+if ! grep -qxF '.worktrees/' "$exclude_file" 2>/dev/null; then
+  mkdir -p "$git_common/info"
+  printf '\n# Added by delegate-to-other-repo skill\n.worktrees/\n' >> "$exclude_file"
+fi
+# Sanity check — check-ignore respects .git/info/exclude as well as
+# .gitignore, so the path must now be ignored.
 if ! git -C "$T" check-ignore -q .worktrees; then
-  # .worktrees/ must be ignored by a commit on the default branch,
-  # otherwise the ignore entry lives on a feature branch and disappears
-  # the moment the target checks out anything else. Refuse to land the
-  # gitignore edit on the wrong branch (this also catches detached HEAD,
-  # where `git branch --show-current` prints empty).
-  current=$(git -C "$T" branch --show-current)
-  if [ "$current" != "$default_branch" ]; then
-    echo "STOP: target HEAD is '${current:-<detached>}', not '$default_branch'."
-    echo "The .worktrees/ gitignore entry must land on the default branch."
-    echo "Ask the user to either (a) check out $default_branch in $T and"
-    echo "retry, or (b) land the ignore via their normal PR flow first."
-    exit 1
-  fi
-
-  # On the default branch. If the repo is PR-only for the default branch,
-  # we still cannot commit-and-push directly. Run the protection probe
-  # BEFORE mutating the working tree. Two complementary checks; either
-  # tripping STOPs us:
-  #   (a) gh api branch-protection — works if the auth account has admin
-  #       read on the repo; on 404 (no protection or no permission) it
-  #       still exits 0 with `{"message":"Not Found",...}`, so check the
-  #       JSON shape, not the exit code.
-  #   (b) git push --dry-run — server-side advisory; protection rules
-  #       that gate the actual push (not dry-run) won't show here, but
-  #       a wrong-credential 403 will. Use it only as a sanity check.
-  origin_url=$(git -C "$T" remote get-url origin)
-  slug_repo=$(printf '%s\n' "$origin_url" | sed -E 's#(\.git)?$##; s#^.*[/:]([^/:]+/[^/:]+)$#\1#')
-  protection_json=$(gh api "repos/$slug_repo/branches/$default_branch/protection" 2>/dev/null || true)
-  if printf '%s' "$protection_json" | grep -q '"required_pull_request_reviews"\|"required_status_checks"'; then
-    echo "STOP: $slug_repo's $default_branch is branch-protected. The"
-    echo ".worktrees/ gitignore entry needs to land via the target repo's"
-    echo "normal PR flow first; this skill will not bypass branch protection."
-    exit 1
-  fi
-
-  echo ".worktrees/" >> "$T/.gitignore"
-  git -C "$T" add .gitignore
-  git -C "$T" commit -m "chore: gitignore .worktrees/"
-  # Note: this commit is local-only. Whether to push it is the target
-  # repo's workflow concern, NOT this skill's. The subagent's PR branch
-  # will contain this commit as part of its base.
+  echo "STOP: failed to exclude .worktrees/ via $exclude_file."
+  exit 1
 fi
 
 # Create the worktree with a new branch rooted at origin/<default>.
 # `worktree add` is the only step that mutates the working set; if it
-# fails (path collision, ref missing), parent stops and reports — no
-# cleanup of the gitignore commit, since that commit is independently
-# valuable.
+# fails (path collision, ref missing), parent stops and reports.
 git -C "$T" worktree add "$path" -b "$branch" "origin/$default_branch"
 ```
 
@@ -629,23 +625,13 @@ the parent can't do parallel work while waiting — that's fine for v1.
 - **Target not found / not a git repo** → stop, report, ask user
 - **`git fetch origin` fails** (network, auth, missing remote) → stop,
   surface the error, don't dispatch
-- **`.worktrees/` not gitignored and the target is checked out on a
-  non-default branch (or detached HEAD)** → stop, explain: the gitignore
-  entry must land on the default branch; ask the user to check out the
-  default branch in the target repo (or land the ignore via their normal
-  PR flow) and retry. The recipe's `current=$(git branch --show-current)`
-  returns empty string on detached HEAD, which compares unequal to the
-  default branch and triggers this same path with a `<detached>`
-  placeholder in the message.
-- **`.worktrees/` not gitignored, target is on the default branch, and
-  `gh api repos/.../branches/<default>/protection` reports
-  `required_pull_request_reviews` or `required_status_checks`** → stop,
-  explain: user needs to land the gitignore change via their normal PR
-  flow first; this skill will not bypass branch protection. (If the auth
-  account lacks admin read on the repo, the api returns Not Found and
-  the probe is silently a no-op — false negatives are accepted because
-  the worst case is the subsequent direct commit succeeds locally and
-  the eventual `git push` of the worktree branch is unaffected.)
+- **`.git/info/exclude` write fails** (permission denied on shared git
+  dir) → stop, surface the error. This should not happen on a
+  user-owned repo; if it does, something is misconfigured.
+- **`.worktrees/` still not ignored after writing to
+  `.git/info/exclude`** → stop, fail with diagnostic. Should be
+  impossible (check-ignore respects `.git/info/exclude` per
+  gitignore(5)) but the sanity check exists as insurance.
 - **`git worktree add` fails** (path already exists, branch already
   exists, base ref missing) → stop, surface the error, don't dispatch
 - **Session log unresolvable** → warn, proceed without the escape-hatch
@@ -800,9 +786,11 @@ the blog` and end up with a clickable PR URL without touching another
 3. If the subagent fails, the parent surfaces actionable error info and
    preserves the worktree for takeover
 4. Parent-side state pollution is minimal: no changes to the parent's
-   working repo, and the target repo's only modification (if any) is a
-   one-line `.gitignore` entry for `.worktrees/` — committed in the
-   target, never in the parent's checkout
+   working repo, and the target repo is never committed to by this
+   skill — the `.worktrees/` exclusion is written to
+   `.git/info/exclude` (local-only, untracked, branch-independent).
+   No branches are created or modified beyond the delegated branch
+   itself.
 5. If the subagent's work surfaced durable lessons about the target
    repo, they are returned in a structured `Lessons:` block that the
    parent relays verbatim to the user. Lessons are never
