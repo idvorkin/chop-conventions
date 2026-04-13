@@ -23,6 +23,11 @@ git push -u origin <branch>
 gh pr create --repo idvorkin/chop-conventions
 ```
 
+## Git Inner-Loop
+
+- **`.git/info/exclude` for local-only ignores.** Ephemeral or per-machine ignore entries (worktree dirs, caches, editor state) that must NOT touch branch history go in `.git/info/exclude`, not `.gitignore`. Untracked, branch-independent, shared across linked worktrees via `git rev-parse --git-common-dir`. `git check-ignore` respects it the same as `.gitignore`.
+- **`git fetch origin` does NOT refresh `refs/remotes/origin/HEAD`.** Run `git remote set-head origin --auto` before reading `git symbolic-ref --short refs/remotes/origin/HEAD` or you'll get stale values when the default branch was renamed (e.g. master → main) since clone. Idempotent no-op if origin/HEAD already matches.
+
 ## Process-Signaling Safety
 
 Scripts that signal processes by pattern (cpulimit, pkill, kill by comm match) MUST exclude lifeline processes or risk wedging the VM / locking out the SSH session: `tailscaled`, `etserver`, **`etterminal`**, `tmux` (bare + `"tmux:"*`), `sshd`, init-like (`sh`, `init`, `systemd`), and kernel threads (`kthreadd`, `kworker*`, `ksoftirqd*`, `migration*`, `rcu_*`). Test the exclude list with a unit test before deploying — see `skills/machine-doctor/doctor-guards.md` for an example.
@@ -68,6 +73,7 @@ Skills are Claude Code slash commands that live in `skills/<name>/SKILL.md`.
 
 - Each skill is a directory containing at minimum a `SKILL.md` with YAML frontmatter (`name`, `description`, `allowed-tools`)
 - Skill names must not collide with Claude Code built-in commands (e.g., use `machine-doctor` not `doctor`)
+- **Pure markdown is the default.** Helpers (Python, shell) only earn their place when they (a) parallelize subprocess calls AND (b) need unit-tested classification logic. For "figure out which thing the user means" reasoning, use the markdown prompt. Reference: `up-to-date` earned its `diagnose.py`; `learn-from-session` and most others stay pure markdown.
 - Skills are installed by **symlinking** into Claude Code's skill directories:
   - Machine-level (all projects): `~/.claude/skills/<name>` -> `<chop-conventions>/skills/<name>`
   - Project-level (one project): `<project>/.claude/skills/<name>` -> `<chop-conventions>/skills/<name>`
