@@ -125,14 +125,12 @@ Read that file and follow it verbatim. Key points:
 - Derives a slug from the task description with a reproducible rule
   (lowercase → non-alnum collapsed to `-` → ≤40 chars; empty/non-ASCII
   falls back to `task-<timestamp>`; collisions get `-2`..`-9` suffixes
-  then a timestamp)
-- Checks `.worktrees/` is gitignored; if not, commits the ignore entry
-  on the target's **default branch only** (refuses on feature branches
-  and detached HEAD — the ignore entry must land on default or it
-  vanishes on next checkout)
-- Runs the branch-protection probe via
-  `gh api repos/$slug/branches/$default/protection` (JSON shape check,
-  not exit code — `gh api` returns 0 even on 404)
+  then a timestamp). Collision check covers BOTH `refs/heads/` and
+  `refs/remotes/origin/` to avoid non-fast-forward push rejection
+- Writes `.worktrees/` to `.git/info/exclude` (local-only, untracked,
+  branch-independent) — NOT a `.gitignore` commit. This avoids
+  mutating any branch's history, works regardless of target's
+  current branch, and survives branch-protected defaults
 - Creates the worktree at `.worktrees/delegated-<slug>` on branch
   `delegated/<slug>` rooted at `origin/<default>`
 
@@ -289,7 +287,11 @@ These apply to both parent and subagent:
 
 - **No `git push --force`** on any branch
 - **No `--no-verify`** on commits
-- **No commits directly to `main`** of the target repo
+- **No commits on any branch of the target's primary checkout** —
+  the parent never mutates the target's branches. The only thing
+  the parent writes is `.git/info/exclude` (local-only, untracked).
+  All subagent work happens on the delegated branch inside the
+  worktree and is pushed via normal PR flow.
 - **No `rm -rf`** or destructive ops without explicit user confirmation
 - **No `gh pr merge`** — opening the PR is the terminal action
 - **No committing CLAUDE.md edits derived from lessons reflection**
@@ -302,14 +304,13 @@ These apply to both parent and subagent:
 
 ### Parent-side
 
-| Failure                                                            | Response                                                       |
-| ------------------------------------------------------------------ | -------------------------------------------------------------- |
-| Target not found / not a git repo                                  | Stop, report, ask user                                         |
-| `git fetch origin` fails                                           | Stop, surface error, don't dispatch                            |
-| `.worktrees/` ignored on wrong branch or detached HEAD             | Stop, ask user to check out default branch in target and retry |
-| `.worktrees/` ignore blocked by branch protection on default       | Stop, ask user to land the ignore via normal PR flow first     |
-| `git worktree add` fails (path/branch collision, base ref missing) | Stop, surface error                                            |
-| Session log unresolvable                                           | Warn, omit historical-context section, continue                |
+| Failure                                                            | Response                                                   |
+| ------------------------------------------------------------------ | ---------------------------------------------------------- |
+| Target not found / not a git repo                                  | Stop, report, ask user                                     |
+| `git fetch origin` fails                                           | Stop, surface error, don't dispatch                        |
+| `.git/info/exclude` write fails (permission denied)                | Stop, surface error — should not happen on user-owned repo |
+| `git worktree add` fails (path/branch collision, base ref missing) | Stop, surface error                                        |
+| Session log unresolvable                                           | Warn, omit historical-context section, continue            |
 
 ### Subagent-side
 
@@ -340,11 +341,13 @@ clone yields a stale value from `symbolic-ref`. Fix: always run
 `git -C "$T" remote set-head origin --auto` between fetch and the
 symbolic-ref lookup.
 
-### Committing the `.worktrees/` gitignore entry on a feature branch
+### Committing `.worktrees/` to a branch's `.gitignore`
 
-The entry vanishes the moment the target checks out any other branch.
-Fix: refuse unless the target is on its default branch; STOP with an
-actionable message otherwise.
+Committing on the target's current branch pollutes arbitrary branches
+and vanishes on next checkout. Committing on the default branch
+requires branch-switching (destructive) and breaks on protected
+defaults. Fix: write to `.git/info/exclude` instead — local-only,
+untracked, branch-independent, per-repo (shared across worktrees).
 
 ### Trusting `diagnose.py`'s `is_fork_workflow: false`
 

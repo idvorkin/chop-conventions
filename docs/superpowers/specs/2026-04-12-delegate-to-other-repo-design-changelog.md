@@ -1,6 +1,6 @@
 # /delegate-to-other-repo Skill — Design Changelog
 
-Spec: /home/developer/gits/chop-conventions/.worktrees/change-other-repo/docs/superpowers/specs/2026-04-12-delegate-to-other-repo-design.md
+Spec: docs/superpowers/specs/2026-04-12-delegate-to-other-repo-design.md
 
 ## Architect Review — 2026-04-12 23:28
 
