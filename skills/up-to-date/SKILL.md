@@ -143,7 +143,7 @@ Ask: "Want to `/clear` context for a fresh start?"
 
 ## Safety
 
-- NEVER force push — **except** when syncing a fork's main and the only divergence is automated backlink commits (`chore: update backlinks [skip ci]`). In that case, force push to the fork is safe and expected.
+- NEVER force push — **except** when syncing a fork's main and either (a) the only divergence is automated backlink commits (`chore: update backlinks [skip ci]`) or (b) the fork-only commits are already present upstream by patch equivalence (`git cherry -v upstream/main main` shows only `-` entries), so resetting local `main` to `upstream/main` and force-pushing `origin/main` loses no unique work. In those cases, force push to the fork is safe and expected.
 - NEVER delete unmerged branches without asking
 - NEVER commit/discard uncommitted changes without user approval
 
