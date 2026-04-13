@@ -52,6 +52,10 @@ Scripts that signal processes by pattern (cpulimit, pkill, kill by comm match) M
 
 **Diagnostic checks belong in scripts, not in skill/doc prose.** Skills describe WHEN to diagnose and HOW to recover; code describes WHAT to check. Paths move — code errors loudly, prose rots silently. Reference implementation: `skills/harden-telegram/tools/telegram_debug.py` (`--doctor` with `ok`/`warn`/`fail`/`note` accumulators, `--paths` file-map inventory, inline log tails). **Vendor the doctor _into_ the skill** (`skills/<name>/tools/`), never into a source repo it diagnoses — source-repo coupling kills portability on any machine without that repo checked out. Parameterize runtime/source paths via env vars (e.g. `LARRY_TELEGRAM_DIR`, `TELEGRAM_SOURCE_DIR`), not constants. If you catch yourself writing "check X at path Y" prose in a skill, stop and move it to the doctor.
 
+## Report Generators: Measure, Don't Hardcode
+
+**Factual claims in generated output must be computed from the actual data, not hardcoded as constants.** LLM-written report code naturally reaches for narrative footnotes that _sound_ measured ("0 X observed", "no errors found") but are string literals that rot silently and can flip from true to false without anyone noticing. A TTL-bug footnote in `skills/cost-impact/_impl.py` unconditionally claimed `0 ephemeral_5m_input_tokens observed` — real data was 10.5M / $57.70. If a report asserts a number or category, derive it from the input; if you can't derive it, drop the assertion or phrase it as a question the reader must answer, not a fact.
+
 ## Compiled-Tool Staleness Check
 
 **When a user reports "I don't see the new feature" after code changes to a compiled tool, first check the installed binary's mtime, not the source.** `ls -la $(which <tool>)` or `stat` — compare against commit time. `cargo test` / `cargo build` validates fresh source but does NOT replace `~/.cargo/bin/<tool>`; use `cargo install --path . --force`. Don't open the debugger until you've confirmed the binary you're running contains the change.
