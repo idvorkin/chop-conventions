@@ -247,12 +247,9 @@ def run_diagnose() -> dict[str, Any]:
     with ThreadPoolExecutor(max_workers=5) as pool:
         branch_name_fut = pool.submit(git, "branch", "--show-current", check=False)
         divergence_fut = pool.submit(
-            git,
-            "rev-list",
-            "--left-right",
-            "--count",
-            f"{src}/main...HEAD",
-            check=False,
+            _run,
+            ["git", "rev-list", "--left-right", "--count", f"{src}/main...HEAD"],
+            False,
         )
         behind_commits_fut = pool.submit(
             git, "log", "--oneline", f"HEAD..{src}/main", check=False
@@ -261,7 +258,22 @@ def run_diagnose() -> dict[str, Any]:
         stashes_fut = pool.submit(git, "stash", "list", check=False)
 
         branch_name = branch_name_fut.result()
-        behind, ahead = parse_left_right_count(divergence_fut.result())
+        divergence_proc = divergence_fut.result()
+        if divergence_proc.returncode != 0:
+            errors.append(
+                f"git rev-list --left-right --count failed: {divergence_proc.stderr.strip()}"
+            )
+            behind, ahead = 0, 0
+        else:
+            divergence_raw = divergence_proc.stdout.strip()
+            if re.fullmatch(r"\d+\s+\d+", divergence_raw):
+                behind, ahead = parse_left_right_count(divergence_raw)
+            else:
+                errors.append(
+                    "git rev-list --left-right --count returned unexpected output: "
+                    f"{divergence_raw!r}"
+                )
+                behind, ahead = 0, 0
         behind_commits_raw = behind_commits_fut.result()
         uncommitted_raw = uncommitted_fut.result()
         stash_raw = stashes_fut.result()
