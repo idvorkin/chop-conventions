@@ -62,6 +62,20 @@ class CherryAnalysis:
     equivalent_commits: list[str]
 
 
+@dataclass(frozen=True)
+class WorktreeRef:
+    """One `(path, branch)` pair parsed from `git worktree list --porcelain`.
+
+    Detached and bare worktrees are omitted at parse time — they have no
+    branch to prune, so they're not cleanup candidates. Primary-vs-linked
+    status is decided by the caller (primary is always first in the
+    porcelain output).
+    """
+
+    path: str
+    branch: str
+
+
 # ---------- Pure functions (tested) ----------
 
 
@@ -180,6 +194,47 @@ def parse_cherry_status(raw: str) -> CherryAnalysis:
     )
 
 
+def parse_worktree_list(raw: str) -> list[WorktreeRef]:
+    """Parse `git worktree list --porcelain` output into branch-bearing entries.
+
+    Porcelain format is blank-line-separated blocks like:
+
+        worktree /path/to/repo
+        HEAD <sha>
+        branch refs/heads/main
+
+        worktree /path/to/repo/.worktrees/feature
+        HEAD <sha>
+        branch refs/heads/feature
+
+        worktree /path/to/repo/.worktrees/detached
+        HEAD <sha>
+        detached
+
+    Branchless worktrees (detached HEAD, bare) are skipped — they have no
+    branch to prune. Preserves input order so the caller can flag the first
+    entry as the primary checkout.
+
+    Path may contain spaces; the parser preserves everything after the
+    `worktree ` prefix literally.
+    """
+    entries: list[WorktreeRef] = []
+    current_path: str | None = None
+    for line in raw.splitlines():
+        if line.startswith("worktree "):
+            current_path = line[len("worktree ") :]
+        elif line.startswith("branch ") and current_path is not None:
+            branch = line[len("branch ") :]
+            if branch.startswith("refs/heads/"):
+                branch = branch[len("refs/heads/") :]
+            entries.append(WorktreeRef(path=current_path, branch=branch))
+            current_path = None
+        elif line == "" and current_path is not None:
+            # Blank line ends a block without a `branch` line — skip.
+            current_path = None
+    return entries
+
+
 def parse_left_right_count(raw: str) -> tuple[int, int] | None:
     """Parse `git rev-list --left-right --count A...B` output."""
     parts = raw.split()
@@ -249,7 +304,7 @@ def run_diagnose() -> dict[str, Any]:
         errors.append(f"git fetch failed: {fetch_proc.stderr.strip()}")
 
     # Post-fetch git queries are independent; run them in parallel.
-    with ThreadPoolExecutor(max_workers=5) as pool:
+    with ThreadPoolExecutor(max_workers=7) as pool:
         branch_name_fut = pool.submit(git_proc, "branch", "--show-current", check=False)
         divergence_fut = pool.submit(
             git_proc,
@@ -264,11 +319,19 @@ def run_diagnose() -> dict[str, Any]:
         )
         uncommitted_fut = pool.submit(git_proc, "status", "--porcelain", check=False)
         stashes_fut = pool.submit(git_proc, "stash", "list", check=False)
+        worktree_fut = pool.submit(
+            git_proc, "worktree", "list", "--porcelain", check=False
+        )
+        local_branches_fut = pool.submit(
+            git_proc, "branch", "--format=%(refname:short)", check=False
+        )
         branch_name_proc = branch_name_fut.result()
         divergence_proc = divergence_fut.result()
         behind_commits_proc = behind_commits_fut.result()
         uncommitted_proc = uncommitted_fut.result()
         stash_proc = stashes_fut.result()
+        worktree_proc = worktree_fut.result()
+        local_branches_proc = local_branches_fut.result()
 
     if branch_name_proc.returncode != 0:
         errors.append(
@@ -312,23 +375,110 @@ def run_diagnose() -> dict[str, Any]:
     is_main = branch_name == "main"
     behind_commits = [ln for ln in behind_commits_raw.splitlines() if ln][:10]
 
-    cherry = CherryAnalysis(unique_commits=[], equivalent_commits=[])
-    if branch_name:
-        # Use patch equivalence, not commit reachability, so rebased/cherry-picked
-        # commits already present upstream do not show up as unique work.
-        cherry_proc = git_proc("cherry", "-v", f"{src}/main", branch_name, check=False)
-        if cherry_proc.returncode != 0:
-            errors.append(
-                f"git cherry -v {src}/main {branch_name} failed: {cherry_proc.stderr.strip()}"
-            )
-        else:
-            cherry = parse_cherry_status(cherry_proc.stdout.strip())
+    # Local branches to check for absorption (skip main, skip empty).
+    if local_branches_proc.returncode != 0:
+        errors.append(
+            f"git branch --format failed: {local_branches_proc.stderr.strip()}"
+        )
+        local_branch_names: list[str] = []
+    else:
+        local_branch_names = [
+            ln for ln in local_branches_proc.stdout.splitlines() if ln
+        ]
 
+    # Parse worktree porcelain output. Primary is the first entry.
+    if worktree_proc.returncode != 0:
+        errors.append(f"git worktree list failed: {worktree_proc.stderr.strip()}")
+        worktree_entries: list[WorktreeRef] = []
+    else:
+        worktree_entries = parse_worktree_list(worktree_proc.stdout)
+
+    # Run per-branch `git cherry` in parallel. This subsumes the old
+    # single-HEAD cherry call — HEAD is in local_branch_names if it's not
+    # detached, so we get its result from the same batch.
+    #
+    # Include any worktree branch not already in local_branch_names (e.g.
+    # a worktree branch from a different remote context). De-dupe via set.
+    cherry_targets = set(local_branch_names)
+    for wt in worktree_entries:
+        if wt.branch:
+            cherry_targets.add(wt.branch)
+    # Skip `main` and `master` — we never audit the default branch against
+    # itself for absorption (it IS the absorption target).
+    cherry_targets.discard("main")
+    cherry_targets.discard("master")
+
+    cherry_by_branch: dict[str, CherryAnalysis] = {}
+    if cherry_targets:
+        with ThreadPoolExecutor(max_workers=min(10, len(cherry_targets))) as pool:
+            cherry_futs = {
+                b: pool.submit(git_proc, "cherry", "-v", f"{src}/main", b, check=False)
+                for b in cherry_targets
+            }
+            for b, fut in cherry_futs.items():
+                proc = fut.result()
+                if proc.returncode != 0:
+                    errors.append(
+                        f"git cherry -v {src}/main {b} failed: {proc.stderr.strip()}"
+                    )
+                    continue
+                cherry_by_branch[b] = parse_cherry_status(proc.stdout.strip())
+
+    # HEAD's cherry result flows into the existing branch block.
+    cherry = cherry_by_branch.get(
+        branch_name, CherryAnalysis(unique_commits=[], equivalent_commits=[])
+    )
     ahead_patch_unique_commits = cherry.unique_commits[:10]
     ahead_patch_equivalent_commits = cherry.equivalent_commits[:10]
     can_force_align = is_main and ahead > 0 and not cherry.unique_commits
 
     leftover_commits = [] if is_main else ahead_patch_unique_commits
+
+    # Absorbable branches: local branches whose work is fully in $src/main
+    # (zero unique patch-ids). Excludes the currently checked-out branch
+    # since deleting it requires switching away first — callers should
+    # surface it separately if they want that.
+    absorbable_branches: list[str] = []
+    for b in sorted(local_branch_names):
+        if b in ("main", "master"):
+            continue
+        if b == branch_name:
+            continue  # never auto-prune the checked-out branch
+        analysis_for_b = cherry_by_branch.get(b)
+        if analysis_for_b is not None and not analysis_for_b.unique_commits:
+            absorbable_branches.append(b)
+
+    # Worktree classification: first entry is primary, rest are linked.
+    # For each linked worktree, flag "absorbed" if its branch has zero
+    # patch-unique commits vs $src/main.
+    worktrees_out: list[dict[str, Any]] = []
+    for idx, wt in enumerate(worktree_entries):
+        is_primary = idx == 0
+        analysis_for_wt = cherry_by_branch.get(wt.branch)
+        if is_primary:
+            # Primary checkout is never a deletion candidate regardless of
+            # absorption state. Expose absorbed=False so any consumer that
+            # only checks `absorbed` still treats it safely.
+            absorbed = False
+            unmerged_count: int | None = None
+        elif analysis_for_wt is None:
+            # No cherry result (branch skipped because it's main, or errored).
+            # Conservative: treat as not-absorbed so we never suggest pruning.
+            absorbed = False
+            unmerged_count = None
+        else:
+            unique = analysis_for_wt.unique_commits
+            absorbed = len(unique) == 0
+            unmerged_count = len(unique)
+        worktrees_out.append(
+            {
+                "path": wt.path,
+                "branch": wt.branch,
+                "is_primary": is_primary,
+                "absorbed": absorbed,
+                "unmerged_count": unmerged_count,
+            }
+        )
 
     # Worktree state
     uncommitted = [ln for ln in uncommitted_raw.splitlines() if ln]
@@ -371,6 +521,8 @@ def run_diagnose() -> dict[str, Any]:
             "uncommitted": uncommitted,
             "stashes": stashes,
         },
+        "worktrees": worktrees_out,
+        "absorbable_branches": absorbable_branches,
         "pr": pr_block,
         "errors": errors,
     }

@@ -79,73 +79,32 @@ If `remotes.issues` is non-empty, show them in the output table and offer the `f
 
 ## Step 3: Act
 
-Use `SRC = remotes.source`. After any action on main, clean up branches and worktrees whose work is fully represented in `$SRC/main`.
+Use `SRC = remotes.source`. After any action on main, surface absorbed branches and prunable worktrees from the diagnose JSON — both are pre-computed via `git cherry` (patch-id), so squash/rebase/cherry-pick merges are all detected uniformly.
 
-### Patch-id based absorption check
+**Do not use `git branch --merged` for cleanup.** It only catches branches whose tip is an ancestor of main, missing squash and rebase merges — the most common paths for PRs to land. Use `diagnose.py`'s `absorbable_branches` field instead.
 
-**Do not trust `git branch --merged` for this.** It only catches branches whose tip is an ancestor of main, which **misses squash merges, rebase merges, and cherry-picked work** — the three most common paths for PRs to land upstream. A branch squashed into main looks unmerged to `--merged`, so the cleanup silently skips it and leaves dead branches behind.
+### Absorbable branches (`absorbable_branches` in the JSON)
 
-Use `git cherry` instead. It compares by **patch-id** (diff content, not SHA), so squash/rebase/manual-apply all get detected uniformly:
+Local branches (excluding `main`, `master`, and the currently checked-out branch) whose every commit is patch-id-equivalent to something already in `$SRC/main`. Safe to delete.
 
-```bash
-# Returns empty output if $branch's changes are fully in $SRC/main.
-# Non-empty output lists patch-id-unique commits still missing upstream.
-git cherry "$SRC/main" "$branch" | grep '^+'
-```
-
-### Clean up local branches
+Surface the list to the user and offer deletion. Use `-d` first (safe), fall back to `-D` only after the patch-id check already verified:
 
 ```bash
-for b in $(git branch --format='%(refname:short)' | grep -Ev '^(main|master|trunk)$'); do
-  [ "$b" = "$(git branch --show-current)" ] && continue
-  if [ -z "$(git cherry "$SRC/main" "$b" 2>/dev/null | grep '^+')" ]; then
-    # All changes absorbed; try safe delete first, fall back to force
-    # (force is safe here because we already verified by patch-id).
-    git branch -d "$b" 2>/dev/null || git branch -D "$b"
-  fi
-done
+git branch -d <branch> 2>/dev/null || git branch -D <branch>
 ```
 
-### Worktree hygiene
+### Prunable worktrees (`worktrees` in the JSON)
 
-Worktrees created by `delegate-to-other-repo` or ad-hoc feature work accumulate under `.worktrees/`. Each one pins a branch, and when the branch's work lands upstream the worktree is dead weight on disk.
+Each entry has `{path, branch, is_primary, absorbed, unmerged_count}`. **A worktree is prunable iff `is_primary == false AND absorbed == true`.** The primary checkout is flagged separately and is never a deletion candidate, regardless of its branch's absorption state — removing the primary is destructive.
 
-List prunable worktrees using the same patch-id check. Uses `|` as the field separator (never `\t` — the `$'\t'` syntax is easy to mistype as `$"\t"` which is the "localized string" form, not a tab):
-
-```bash
-# Print each linked worktree with its branch's unmerged-by-patch-id count.
-# "prunable" = 0 unmerged commits = work fully in $SRC/main.
-primary=$(git worktree list --porcelain | grep '^worktree ' | head -1 | awk '{print $2}')
-
-git worktree list --porcelain | awk '
-  /^worktree / {path=$2; next}
-  /^branch / {
-    sub("refs/heads/", "", $2)
-    print path"|"$2
-  }
-' | while IFS="|" read -r wt_path wt_branch; do
-  if [ "$wt_path" = "$primary" ]; then
-    # Primary checkout — never prune, even if branch is "merged"
-    echo "primary:  $wt_path [$wt_branch]"
-    continue
-  fi
-  unmerged=$(git cherry "$SRC/main" "$wt_branch" 2>/dev/null | grep -c '^+' || true)
-  if [ "$unmerged" -eq 0 ]; then
-    echo "prunable: $wt_path [$wt_branch]"
-  else
-    echo "keep:     $wt_path [$wt_branch] — $unmerged unmerged commits"
-  fi
-done
-```
-
-For each **prunable** worktree, surface it to the user and offer to remove it. **Do not auto-remove** — a stale worktree on disk is cheap, a lost in-progress change is expensive:
+Surface prunable worktrees to the user and offer removal. **Do not auto-remove** — a stale worktree on disk is cheap, a lost in-progress change is expensive:
 
 ```bash
 git worktree remove <path>
-git branch -D <branch>  # branch left behind by worktree remove; safe after patch-id check
+git branch -D <branch>   # branch left behind by worktree remove; safe after patch-id check
 ```
 
-The primary checkout is listed separately and **never pruned** — even if its current branch's work is fully in main, removing the primary is destructive. Only linked worktrees (those under `.worktrees/` or wherever `git worktree add` placed them) are candidates.
+Non-primary worktrees with `absorbed == false` (`unmerged_count > 0`) should be **kept** — their branch still has work not yet in `$SRC/main`.
 
 ### On main (`branch.is_main` true)
 
