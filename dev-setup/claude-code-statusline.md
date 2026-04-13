@@ -12,14 +12,14 @@ Claude Code's `statusLine` setting accepts an inline command, but inline JSON-qu
 user@host ~/path/to/repo [branch] | Opus 4.6 ctx:12% 125k/1000k $0.42
 ```
 
-| Segment            | Source                                                       | Color                              |
-| ------------------ | ------------------------------------------------------------ | ---------------------------------- |
-| `user@host`        | `whoami` / `hostname -s`                                     | default                            |
-| `~/path`           | `cwd` (or `workspace.current_dir`), home shortened           | yellow                             |
-| `[branch]`         | `git symbolic-ref --short HEAD` (skipped if not a repo)      | yellow                             |
-| `Opus 4.6`         | `model.display_name`                                         | default                            |
-| `ctx:NN% Xk/Yk`    | `context_window.{used_percentage, context_window_size}`      | green <20%, blue <50%, red ≥50%    |
-| `$X.XX`            | `cost.total_cost_usd`                                        | default                            |
+| Segment         | Source                                                  | Color                                            |
+| --------------- | ------------------------------------------------------- | ------------------------------------------------ |
+| `user@host`     | `whoami` / `hostname -s`                                | default                                          |
+| `~/path`        | `cwd` (or `workspace.current_dir`), home shortened      | yellow                                           |
+| `[branch]`      | `git symbolic-ref --short HEAD` (skipped if not a repo) | yellow                                           |
+| `Opus 4.6`      | `model.display_name`                                    | default                                          |
+| `ctx:NN% Xk/Yk` | `context_window.{used_percentage, context_window_size}` | green <200k, yellow <400k, pink <600k, red ≥600k |
+| `$X.XX`         | `cost.total_cost_usd`                                   | default                                          |
 
 The token bucket (`Xk`) snaps to the nearest 10k so the number doesn't jitter on every tick. The total (`Yk`) comes from `context_window.context_window_size` directly — no model-string heuristics, so Sonnet (200k) and Opus `[1m]` render correctly without code changes.
 
@@ -60,23 +60,26 @@ echo '{
 }' | sh dev-setup/statusline-command.sh
 ```
 
-Vary `used_percentage` across `5`, `30`, `75` to see all three color tiers.
+Vary `used_percentage` across `15`, `25`, `45`, `65` (on a 1M context window) to see all four color tiers.
 
 ## Customizing the Color Tiers
 
-The thresholds live near the bottom of the script:
+The thresholds live near the bottom of the script and are expressed in **absolute used tokens**, not percentages — so a 400k cutoff means "400k tokens" regardless of whether the model has a 200k or 1M window:
 
 ```sh
-if [ "$pct" -lt 20 ]; then
+used_tokens=$(awk "BEGIN {printf \"%d\", $used * $ctx_size / 100}")
+if [ "$used_tokens" -lt 200000 ]; then
   ctx_color=$GREEN
-elif [ "$pct" -lt 50 ]; then
-  ctx_color=$BLUE
+elif [ "$used_tokens" -lt 400000 ]; then
+  ctx_color=$YELLOW
+elif [ "$used_tokens" -lt 600000 ]; then
+  ctx_color=$PINK
 else
   ctx_color=$RED
 fi
 ```
 
-Adjust the `20` / `50` boundaries to taste. The defaults are tuned so you notice the color change well before `/compact` becomes necessary.
+Adjust the `200000` / `400000` / `600000` boundaries to taste. Absolute thresholds are tuned for the 1M Opus window — on a 200k-context model (Sonnet/Haiku) you'll sit at yellow almost immediately, which is intentional: 200k is actually tight. Switch to percentage-based tiers if you spend most of your time on narrower-context models.
 
 ## Available Fields (Reference)
 
