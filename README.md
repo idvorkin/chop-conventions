@@ -79,21 +79,22 @@ Machine-level skills go in `~/.claude/skills/` and are available everywhere. Pro
 
 ### Available Skills
 
-| Skill | Scope | Description |
-|---|---|---|
-| `ammon` | machine | Look up the current time in Denmark for Ammon |
-| `architect-review` | machine | Iterative architect review passes on design specs, tracking convergence |
-| `background-usage` | machine | Check Claude Code plan usage without blocking the session |
-| `build-bd` | machine | Build and install the `bd` (Beads) CLI with a static build |
-| `clock` | machine | Schedule recurring session tasks (time checks, reminders) |
-| `docs` | machine | Fetch fresh library/framework docs via Context7 (`ctx7`) |
-| `gen-image` | machine | Generate illustrations via Gemini image API |
-| `gist-image` | machine | Host images on GitHub gists for PRs/issues |
-| `image-explore` | machine | Brainstorm and compare visual directions |
-| `learn-from-session` | machine | Extract durable lessons from a session into the right CLAUDE.md files |
-| `machine-doctor` | machine | Diagnose system health, kill rogue processes |
-| `showboat` | machine | Create executable demo documents with screenshots |
-| `up-to-date` | machine | Sync git repo with upstream |
+| Skill                    | Scope   | Description                                                                     |
+| ------------------------ | ------- | ------------------------------------------------------------------------------- |
+| `ammon`                  | machine | Look up the current time in Denmark for Ammon                                   |
+| `architect-review`       | machine | Iterative architect review passes on design specs, tracking convergence         |
+| `background-usage`       | machine | Check Claude Code plan usage without blocking the session                       |
+| `build-bd`               | machine | Build and install the `bd` (Beads) CLI with a static build                      |
+| `clock`                  | machine | Schedule recurring session tasks (time checks, reminders)                       |
+| `delegate-to-other-repo` | machine | Delegate cross-repo work to a subagent with an isolated context; ends with a PR |
+| `docs`                   | machine | Fetch fresh library/framework docs via Context7 (`ctx7`)                        |
+| `gen-image`              | machine | Generate illustrations via Gemini image API                                     |
+| `gist-image`             | machine | Host images on GitHub gists for PRs/issues                                      |
+| `image-explore`          | machine | Brainstorm and compare visual directions                                        |
+| `learn-from-session`     | machine | Extract durable lessons from a session into the right CLAUDE.md files           |
+| `machine-doctor`         | machine | Diagnose system health, kill rogue processes                                    |
+| `showboat`               | machine | Create executable demo documents with screenshots                               |
+| `up-to-date`             | machine | Sync git repo with upstream                                                     |
 
 ## Usage
 
