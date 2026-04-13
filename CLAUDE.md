@@ -40,7 +40,11 @@ Scripts that signal processes by pattern (cpulimit, pkill, kill by comm match) M
 
 ## Diagnostics: Code Over Prose
 
-**Diagnostic checks belong in scripts, not in skill/doc prose.** Skills describe WHEN to diagnose and HOW to recover; code describes WHAT to check. Paths move — code errors loudly, prose rots silently. Follow the pattern in `~/gits/igor2/telegram-server/telegram_debug.py`: `--doctor` with `ok`/`warn`/`fail`/`note` accumulators, `--paths` that prints a file-map inventory with exists/missing marks, inline log tails so operators don't have to cat a second file. If you catch yourself writing a "check X at path Y" step in a skill, stop and move it to the doctor.
+**Diagnostic checks belong in scripts, not in skill/doc prose.** Skills describe WHEN to diagnose and HOW to recover; code describes WHAT to check. Paths move — code errors loudly, prose rots silently. Reference implementation: `skills/harden-telegram/tools/telegram_debug.py` (`--doctor` with `ok`/`warn`/`fail`/`note` accumulators, `--paths` file-map inventory, inline log tails). **Vendor the doctor *into* the skill** (`skills/<name>/tools/`), never into a source repo it diagnoses — source-repo coupling kills portability on any machine without that repo checked out. Parameterize runtime/source paths via env vars (e.g. `LARRY_TELEGRAM_DIR`, `TELEGRAM_SOURCE_DIR`), not constants. If you catch yourself writing "check X at path Y" prose in a skill, stop and move it to the doctor.
+
+## Abstractions: Wait for N=2
+
+**Don't generalize a pattern into templates or a framework until you have at least two concrete instances.** One-instance abstractions are copy-paste bait — they fork on day one, rot, and rediscover the same bugs on every downstream consumer. When a single instance is all you've got, write it directly and point at it as a *reference implementation*, not a template to clone. Extract at N=2 minimum.
 
 ## GitHub Actions + Claude Code SDK
 
