@@ -1,7 +1,7 @@
 ---
 name: cost-impact
 description: Compute a Claude Code cost-impact report across a time window, grouped by repo with per-session detail. Prices per-turn per-model at Opus 4.6 / Sonnet 4.6 / Haiku 4.5 list rates, includes subagent tokens, outputs markdown with clickable PR links and collapsible per-repo sections. Use when user asks "how much did I spend on Claude this week", "cost report", "/cost-impact", or wants a weekly retrospective on Claude usage.
-allowed-tools: Bash, Read, Edit
+allowed-tools: Bash, Read
 ---
 
 # Cost Impact
