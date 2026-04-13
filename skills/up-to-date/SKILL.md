@@ -84,6 +84,12 @@ git pull $SRC main
 [ "$SRC" = "upstream" ] && git push origin main
 ```
 
+If a PR is needed after syncing `main`, derive it from the remotes:
+
+- Fork workflow (`origin` = fork, `upstream` = canonical): if commits are already on fork `main` but not canonical `main`, open a recovery PR from `origin:main` to `upstream:main` with `gh pr create --repo <upstream-owner>/<repo> --head <origin-owner>:main --base main`.
+- No fork (`origin` is canonical): do **not** use the recovery flow. Create a feature branch from the current commit and open a branch PR instead.
+- Remote hygiene issues present: fix remotes first; do not guess the PR command from a miswired setup.
+
 ### Feature branch + PR merged (`pr.state == "MERGED"`)
 
 Check `branch.leftover_commits` first:
