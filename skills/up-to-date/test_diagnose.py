@@ -14,11 +14,13 @@ sys.path.insert(0, str(Path(__file__).parent))
 from diagnose import (  # noqa: E402
     CherryAnalysis,
     Remote,
+    WorktreeRef,
     classify_remotes,
     is_fork_url,
     parse_cherry_status,
     parse_left_right_count,
     parse_remotes,
+    parse_worktree_list,
 )
 
 FORK_ORGS = ["idvorkin-ai-tools"]
@@ -157,6 +159,110 @@ class TestParseLeftRightCount(unittest.TestCase):
 
     def test_invalid_output_returns_none(self):
         self.assertIsNone(parse_left_right_count("nonsense"))
+
+
+class TestParseWorktreeList(unittest.TestCase):
+    def test_empty_input(self):
+        self.assertEqual(parse_worktree_list(""), [])
+
+    def test_primary_only(self):
+        raw = "worktree /home/user/repo\nHEAD abc123def456\nbranch refs/heads/main\n"
+        self.assertEqual(
+            parse_worktree_list(raw),
+            [WorktreeRef(path="/home/user/repo", branch="main")],
+        )
+
+    def test_primary_plus_linked(self):
+        raw = (
+            "worktree /home/user/repo\n"
+            "HEAD abc123\n"
+            "branch refs/heads/main\n"
+            "\n"
+            "worktree /home/user/repo/.worktrees/feature-1\n"
+            "HEAD def456\n"
+            "branch refs/heads/delegated/feature-1\n"
+            "\n"
+            "worktree /home/user/repo/.worktrees/feature-2\n"
+            "HEAD ghi789\n"
+            "branch refs/heads/delegated/feature-2\n"
+        )
+        self.assertEqual(
+            parse_worktree_list(raw),
+            [
+                WorktreeRef(path="/home/user/repo", branch="main"),
+                WorktreeRef(
+                    path="/home/user/repo/.worktrees/feature-1",
+                    branch="delegated/feature-1",
+                ),
+                WorktreeRef(
+                    path="/home/user/repo/.worktrees/feature-2",
+                    branch="delegated/feature-2",
+                ),
+            ],
+        )
+
+    def test_skips_detached_worktree(self):
+        # Detached worktrees have no `branch` line — they should not appear
+        # in the output since there's nothing to prune.
+        raw = (
+            "worktree /home/user/repo\n"
+            "HEAD abc123\n"
+            "branch refs/heads/main\n"
+            "\n"
+            "worktree /home/user/repo/.worktrees/detached\n"
+            "HEAD def456\n"
+            "detached\n"
+        )
+        self.assertEqual(
+            parse_worktree_list(raw),
+            [WorktreeRef(path="/home/user/repo", branch="main")],
+        )
+
+    def test_skips_bare_worktree(self):
+        # Bare worktrees have a `bare` marker instead of `HEAD`/`branch`.
+        raw = (
+            "worktree /home/user/repo.git\n"
+            "bare\n"
+            "\n"
+            "worktree /home/user/repo\n"
+            "HEAD abc123\n"
+            "branch refs/heads/main\n"
+        )
+        self.assertEqual(
+            parse_worktree_list(raw),
+            [WorktreeRef(path="/home/user/repo", branch="main")],
+        )
+
+    def test_preserves_order(self):
+        # Primary-first ordering matters — caller relies on index 0 being primary.
+        raw = (
+            "worktree /primary\n"
+            "HEAD aaa\n"
+            "branch refs/heads/main\n"
+            "\n"
+            "worktree /linked\n"
+            "HEAD bbb\n"
+            "branch refs/heads/feature\n"
+        )
+        result = parse_worktree_list(raw)
+        self.assertEqual(result[0].path, "/primary")
+        self.assertEqual(result[1].path, "/linked")
+
+    def test_path_with_spaces_preserved(self):
+        # `git worktree list --porcelain` doesn't quote paths — spaces are
+        # preserved literally. Parser must take everything after "worktree ".
+        raw = "worktree /home/user/my project\nHEAD abc123\nbranch refs/heads/main\n"
+        self.assertEqual(
+            parse_worktree_list(raw),
+            [WorktreeRef(path="/home/user/my project", branch="main")],
+        )
+
+    def test_branch_refs_heads_prefix_stripped(self):
+        raw = "worktree /repo\nHEAD abc\nbranch refs/heads/nested/feature-name\n"
+        self.assertEqual(
+            parse_worktree_list(raw)[0].branch,
+            "nested/feature-name",
+        )
 
 
 if __name__ == "__main__":
