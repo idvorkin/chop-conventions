@@ -15,6 +15,7 @@ from diagnose import (  # noqa: E402
     Remote,
     classify_remotes,
     is_fork_url,
+    parse_cherry_leftovers,
     parse_remotes,
 )
 
@@ -41,7 +42,9 @@ class TestParseRemotes(unittest.TestCase):
         )
         result = parse_remotes(raw)
         self.assertEqual(len(result), 2)
-        self.assertIn(Remote("origin", "git@github.com:idvorkin-ai-tools/chop.git"), result)
+        self.assertIn(
+            Remote("origin", "git@github.com:idvorkin-ai-tools/chop.git"), result
+        )
         self.assertIn(Remote("upstream", "git@github.com:idvorkin/chop.git"), result)
 
     def test_empty_output(self):
@@ -50,17 +53,25 @@ class TestParseRemotes(unittest.TestCase):
 
 class TestIsForkUrl(unittest.TestCase):
     def test_ssh_url_matches(self):
-        self.assertTrue(is_fork_url("git@github.com:idvorkin-ai-tools/foo.git", FORK_ORGS))
+        self.assertTrue(
+            is_fork_url("git@github.com:idvorkin-ai-tools/foo.git", FORK_ORGS)
+        )
 
     def test_https_url_matches(self):
-        self.assertTrue(is_fork_url("https://github.com/idvorkin-ai-tools/foo", FORK_ORGS))
+        self.assertTrue(
+            is_fork_url("https://github.com/idvorkin-ai-tools/foo", FORK_ORGS)
+        )
 
     def test_non_fork_does_not_match(self):
         self.assertFalse(is_fork_url("git@github.com:idvorkin/foo.git", FORK_ORGS))
 
     def test_substring_does_not_false_match(self):
         # A user org named "idvorkin" should NOT match fork org "idvorkin-ai-tools"
-        self.assertFalse(is_fork_url("git@github.com:idvorkin/idvorkin-ai-tools-plugin.git", FORK_ORGS))
+        self.assertFalse(
+            is_fork_url(
+                "git@github.com:idvorkin/idvorkin-ai-tools-plugin.git", FORK_ORGS
+            )
+        )
 
 
 class TestClassifyRemotes(unittest.TestCase):
@@ -115,6 +126,21 @@ class TestClassifyRemotes(unittest.TestCase):
         result = classify_remotes(remotes, FORK_ORGS)
         for issue in result.issues:
             self.assertTrue(issue.fix, f"issue {issue.kind} missing fix command")
+
+
+class TestParseCherryLeftovers(unittest.TestCase):
+    def test_keeps_only_patch_unique_commits(self):
+        raw = (
+            "- 1234567 already upstream under different sha\n"
+            "+ 89abcde follow-up work still missing upstream\n"
+        )
+        self.assertEqual(
+            parse_cherry_leftovers(raw),
+            ["89abcde follow-up work still missing upstream"],
+        )
+
+    def test_empty_output(self):
+        self.assertEqual(parse_cherry_leftovers(""), [])
 
 
 if __name__ == "__main__":

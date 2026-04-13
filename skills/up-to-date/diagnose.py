@@ -123,7 +123,9 @@ def classify_remotes(remotes: list[Remote], fork_orgs: list[str]) -> RemoteAnaly
     if fork_remotes and canonical_remotes:
         origin = by_name.get("origin")
         upstream = by_name.get("upstream")
-        origin_is_canonical = origin is not None and not is_fork_url(origin.url, fork_orgs)
+        origin_is_canonical = origin is not None and not is_fork_url(
+            origin.url, fork_orgs
+        )
         upstream_is_fork = upstream is not None and is_fork_url(upstream.url, fork_orgs)
         if origin_is_canonical or upstream_is_fork:
             issues.append(
@@ -155,6 +157,16 @@ def classify_remotes(remotes: list[Remote], fork_orgs: list[str]) -> RemoteAnaly
         is_fork_workflow=is_fork_workflow,
         issues=issues,
     )
+
+
+def parse_cherry_leftovers(raw: str) -> list[str]:
+    """Return only patch-unique commits from `git cherry -v` output."""
+    leftovers: list[str] = []
+    for line in raw.splitlines():
+        if not line.startswith("+ "):
+            continue
+        leftovers.append(line[2:])
+    return leftovers
 
 
 # ---------- Subprocess helpers ----------
@@ -198,9 +210,7 @@ def run_diagnose() -> dict[str, Any]:
     # Run fetch and PR lookup in parallel — they don't depend on each other.
     # gh pr view reads local branch state, not the remote fetch result.
     with ThreadPoolExecutor(max_workers=2) as pool:
-        fetch_fut = pool.submit(
-            _run, ["git", "fetch", "--all", "--prune"], False
-        )
+        fetch_fut = pool.submit(_run, ["git", "fetch", "--all", "--prune"], False)
         pr_fut = pool.submit(
             gh_pr_view_json,
             "state,number,title,mergeable,reviewDecision,reviews,comments",
@@ -223,10 +233,10 @@ def run_diagnose() -> dict[str, Any]:
 
     leftover_commits: list[str] = []
     if not is_main and branch_name:
-        leftover_raw = git(
-            "log", "--oneline", f"{src}/main..{branch_name}", check=False
-        )
-        leftover_commits = [ln for ln in leftover_raw.splitlines() if ln][:10]
+        # Use patch equivalence, not commit reachability, so rebased/cherry-picked
+        # commits already present upstream do not show up as leftover work.
+        leftover_raw = git("cherry", "-v", f"{src}/main", branch_name, check=False)
+        leftover_commits = parse_cherry_leftovers(leftover_raw)[:10]
 
     # Worktree state
     uncommitted_raw = git("status", "--porcelain", check=False)
@@ -274,7 +284,9 @@ def run_diagnose() -> dict[str, Any]:
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Diagnose git repo state for up-to-date skill")
+    parser = argparse.ArgumentParser(
+        description="Diagnose git repo state for up-to-date skill"
+    )
     parser.add_argument("--pretty", action="store_true", help="pretty-print JSON")
     args = parser.parse_args()
 
