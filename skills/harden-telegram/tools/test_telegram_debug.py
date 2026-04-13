@@ -4,15 +4,23 @@
 Run with: python3 -m unittest test_telegram_debug.py
 """
 
+import os
+import sqlite3
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
 
 from telegram_debug import (  # noqa: E402
+    _default_chat_id,
     _find_owning_claude,
+    _read_bot_token,
+    _redact,
+    build_direct_request,
     classify_bridges,
+    parse_env_token,
     parse_proc_stat,
     session_subscribed_to_telegram,
 )
@@ -303,6 +311,182 @@ class TestSessionSubscribedToTelegram(unittest.TestCase):
 
     def test_empty_argv(self):
         self.assertFalse(session_subscribed_to_telegram([]))
+
+
+class TestParseEnvToken(unittest.TestCase):
+    def test_plain_assignment(self):
+        self.assertEqual(parse_env_token("TELEGRAM_BOT_TOKEN=123:abc\n"), "123:abc")
+
+    def test_double_quoted(self):
+        self.assertEqual(
+            parse_env_token('TELEGRAM_BOT_TOKEN="123:abc"\n'), "123:abc"
+        )
+
+    def test_single_quoted(self):
+        self.assertEqual(
+            parse_env_token("TELEGRAM_BOT_TOKEN='123:abc'\n"), "123:abc"
+        )
+
+    def test_export_prefix(self):
+        # `.env` files copied from shell profiles often carry `export`.
+        self.assertEqual(
+            parse_env_token("export TELEGRAM_BOT_TOKEN=123:abc\n"), "123:abc"
+        )
+
+    def test_trailing_whitespace(self):
+        self.assertEqual(
+            parse_env_token("TELEGRAM_BOT_TOKEN=123:abc   \n"), "123:abc"
+        )
+
+    def test_inline_comment_unquoted(self):
+        # Unquoted values take a `#` as an inline comment boundary.
+        self.assertEqual(
+            parse_env_token("TELEGRAM_BOT_TOKEN=123:abc # prod token\n"),
+            "123:abc",
+        )
+
+    def test_hash_inside_quoted_value_kept(self):
+        # Quoted values are literal — no comment stripping.
+        self.assertEqual(
+            parse_env_token('TELEGRAM_BOT_TOKEN="abc#def"\n'), "abc#def"
+        )
+
+    def test_ignores_comment_lines_before_match(self):
+        text = "# leading comment\nOTHER_VAR=foo\nTELEGRAM_BOT_TOKEN=123:abc\n"
+        self.assertEqual(parse_env_token(text), "123:abc")
+
+    def test_substring_collision_rejected(self):
+        # A different var whose name *contains* TELEGRAM_BOT_TOKEN must not match.
+        self.assertIsNone(
+            parse_env_token("OLD_TELEGRAM_BOT_TOKEN=stale\n")
+        )
+
+    def test_missing_returns_none(self):
+        self.assertIsNone(parse_env_token("OTHER=x\n"))
+
+    def test_empty_input(self):
+        self.assertIsNone(parse_env_token(""))
+
+
+class TestReadBotToken(unittest.TestCase):
+    def test_missing_file_raises(self):
+        with tempfile.TemporaryDirectory() as d:
+            with self.assertRaises(RuntimeError) as ctx:
+                _read_bot_token(Path(d) / "nonexistent.env")
+            self.assertIn("token file missing", str(ctx.exception))
+
+    def test_present_but_no_token_key_raises(self):
+        with tempfile.TemporaryDirectory() as d:
+            env = Path(d) / ".env"
+            env.write_text("OTHER=foo\n")
+            with self.assertRaises(RuntimeError) as ctx:
+                _read_bot_token(env)
+            self.assertIn("TELEGRAM_BOT_TOKEN=", str(ctx.exception))
+
+    def test_reads_plain_value(self):
+        with tempfile.TemporaryDirectory() as d:
+            env = Path(d) / ".env"
+            env.write_text("TELEGRAM_BOT_TOKEN=999:xyz\n")
+            self.assertEqual(_read_bot_token(env), "999:xyz")
+
+
+class TestDefaultChatId(unittest.TestCase):
+    """Drive _default_chat_id via the LARRY_TELEGRAM_DIR env var it honors."""
+
+    def _with_db(self, rows):
+        tmp = tempfile.TemporaryDirectory()
+        db = Path(tmp.name) / "inbound.db"
+        con = sqlite3.connect(db)
+        con.execute(
+            "CREATE TABLE inbound (id INTEGER PRIMARY KEY, chat_id INTEGER)"
+        )
+        con.executemany("INSERT INTO inbound (chat_id) VALUES (?)", rows)
+        con.commit()
+        con.close()
+        return tmp  # caller keeps reference alive
+
+    def test_missing_db_returns_none(self):
+        with tempfile.TemporaryDirectory() as d:
+            old = os.environ.get("LARRY_TELEGRAM_DIR")
+            os.environ["LARRY_TELEGRAM_DIR"] = d
+            try:
+                self.assertIsNone(_default_chat_id())
+            finally:
+                if old is None:
+                    del os.environ["LARRY_TELEGRAM_DIR"]
+                else:
+                    os.environ["LARRY_TELEGRAM_DIR"] = old
+
+    def test_returns_latest_chat_id_as_string(self):
+        tmp = self._with_db([(111,), (222,), (333,)])
+        old = os.environ.get("LARRY_TELEGRAM_DIR")
+        os.environ["LARRY_TELEGRAM_DIR"] = tmp.name
+        try:
+            result = _default_chat_id()
+            self.assertEqual(result, "333")
+            self.assertIsInstance(result, str)  # int → str coercion
+        finally:
+            tmp.cleanup()
+            if old is None:
+                del os.environ["LARRY_TELEGRAM_DIR"]
+            else:
+                os.environ["LARRY_TELEGRAM_DIR"] = old
+
+    def test_empty_table_returns_none(self):
+        tmp = self._with_db([])
+        old = os.environ.get("LARRY_TELEGRAM_DIR")
+        os.environ["LARRY_TELEGRAM_DIR"] = tmp.name
+        try:
+            self.assertIsNone(_default_chat_id())
+        finally:
+            tmp.cleanup()
+            if old is None:
+                del os.environ["LARRY_TELEGRAM_DIR"]
+            else:
+                os.environ["LARRY_TELEGRAM_DIR"] = old
+
+
+class TestBuildDirectRequest(unittest.TestCase):
+    def test_url_shape(self):
+        url, _ = build_direct_request("T0KEN", "123", "hi")
+        self.assertEqual(url, "https://api.telegram.org/botT0KEN/sendMessage")
+
+    def test_tag_prefix(self):
+        _, body = build_direct_request("T", "123", "hello")
+        self.assertIn(b"text=%5Bdirect-send%5D+hello", body)
+
+    def test_chat_id_int_coerced_to_str(self):
+        # urlencode accepts ints, but pin the coercion contract.
+        _, body = build_direct_request("T", 456, "x")  # type: ignore[arg-type]
+        self.assertIn(b"chat_id=456", body)
+
+    def test_unicode_text_roundtrips(self):
+        _, body = build_direct_request("T", "1", "héllo 🚨")
+        # Body must decode back to the same string after urldecode.
+        import urllib.parse
+        decoded = dict(urllib.parse.parse_qsl(body.decode()))
+        self.assertEqual(decoded["text"], "[direct-send] héllo 🚨")
+
+    def test_double_tagging_allowed(self):
+        # Passing an already-tagged message produces a doubled tag. This is
+        # the documented behavior — don't silently strip.
+        _, body = build_direct_request("T", "1", "[direct-send] already")
+        decoded_body = body.decode()
+        self.assertIn("%5Bdirect-send%5D+%5Bdirect-send%5D+already", decoded_body)
+
+
+class TestRedact(unittest.TestCase):
+    def test_replaces_token(self):
+        self.assertEqual(
+            _redact("error: got 401 for bot12345:abc/sendMessage", "12345:abc"),
+            "error: got 401 for bot<redacted>/sendMessage",
+        )
+
+    def test_noop_when_token_absent(self):
+        self.assertEqual(_redact("network timeout", "12345:abc"), "network timeout")
+
+    def test_empty_token_is_noop(self):
+        self.assertEqual(_redact("anything", ""), "anything")
 
 
 if __name__ == "__main__":

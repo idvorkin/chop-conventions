@@ -1283,6 +1283,145 @@ def run_paths() -> int:
     return 0
 
 
+def parse_env_token(data: str) -> str | None:
+    """Extract TELEGRAM_BOT_TOKEN from .env-style text.
+
+    Handles `export ` prefix, surrounding quotes, inline `# comments` on
+    unquoted values, and leading whitespace. Returns None if no match.
+    Pure — no filesystem access, so it can be unit-tested directly.
+    """
+    for line in data.splitlines():
+        stripped = line.strip()
+        if stripped.startswith("export "):
+            stripped = stripped[len("export ") :].lstrip()
+        if not stripped.startswith("TELEGRAM_BOT_TOKEN="):
+            continue
+        value = stripped.split("=", 1)[1].strip()
+        if (value.startswith('"') and value.endswith('"')) or (
+            value.startswith("'") and value.endswith("'")
+        ):
+            # Quoted: take the content as-is (no comment stripping).
+            return value[1:-1]
+        # Unquoted: a `#` starts an inline comment.
+        if "#" in value:
+            value = value.split("#", 1)[0].rstrip()
+        return value or None
+    return None
+
+
+def _read_bot_token(token_file: Path | None = None) -> str:
+    """Read TELEGRAM_BOT_TOKEN from ~/.claude/channels/telegram/.env.
+
+    `token_file` is injected for tests; defaults to the canonical path.
+    """
+    if token_file is None:
+        token_file = Path.home() / ".claude" / "channels" / "telegram" / ".env"
+    if not token_file.exists():
+        raise RuntimeError(f"token file missing: {token_file}")
+    token = parse_env_token(token_file.read_text())
+    if not token:
+        raise RuntimeError(f"TELEGRAM_BOT_TOKEN= not found in {token_file}")
+    return token
+
+
+def _default_chat_id() -> str | None:
+    """Pull the most recent inbound chat_id from inbound.db as a sensible default."""
+    db = (
+        Path(os.environ.get("LARRY_TELEGRAM_DIR", Path.home() / "larry-telegram"))
+        / "inbound.db"
+    )
+    if not db.exists():
+        return None
+    try:
+        con = sqlite3.connect(f"file:{db}?mode=ro", uri=True, timeout=1)
+        row = con.execute(
+            "SELECT chat_id FROM inbound ORDER BY id DESC LIMIT 1"
+        ).fetchone()
+        con.close()
+        return str(row[0]) if row else None
+    except Exception as e:
+        # Don't swallow silently — the caller's "no chat_id" error is
+        # confusing if the real failure was a corrupt DB or locked file.
+        print(f"default chat_id lookup failed: {e}", file=sys.stderr)
+        return None
+
+
+TELEGRAM_API_BASE = "https://api.telegram.org"
+DIRECT_SEND_TAG = "[direct-send]"
+
+
+def build_direct_request(
+    token: str,
+    chat_id: str,
+    text: str,
+) -> tuple[str, bytes]:
+    """Build the (url, body) for a Bot API sendMessage request.
+
+    Pure — no network, no token leak risk in tests. Auto-prefixes the
+    `[direct-send]` tag so the operator can see on their phone that MCP
+    was down when the message landed.
+    """
+    import urllib.parse
+
+    url = f"{TELEGRAM_API_BASE}/bot{token}/sendMessage"
+    tagged = f"{DIRECT_SEND_TAG} {text}"
+    body = urllib.parse.urlencode({"chat_id": str(chat_id), "text": tagged}).encode()
+    return url, body
+
+
+def _redact(s: str, token: str) -> str:
+    """Replace every occurrence of `token` in `s` with `<redacted>`.
+
+    Defense in depth — CPython's urllib error strings currently don't
+    embed the URL, but that's not a contract. Scrub before printing to
+    stderr so the token can never appear in operator bug reports.
+    """
+    if token and token in s:
+        return s.replace(token, "<redacted>")
+    return s
+
+
+def send_direct(text: str, chat_id: str | None = None) -> int:
+    """Emergency direct-send: POST to Telegram Bot API, bypassing MCP entirely.
+
+    Use when server.ts (the MCP bridge) might be down — depends only on the bot
+    token and Telegram's HTTPS endpoint, nothing on the local two-process chain.
+    """
+    import urllib.request
+
+    try:
+        token = _read_bot_token()
+    except RuntimeError as e:
+        print(f"direct send failed: {e}", file=sys.stderr)
+        return 1
+
+    if chat_id is None:
+        chat_id = _default_chat_id()
+    if not chat_id:
+        print(
+            "direct send failed: no chat_id (pass --chat-id or have an inbound message on record)",
+            file=sys.stderr,
+        )
+        return 1
+
+    url, data = build_direct_request(token, chat_id, text)
+    try:
+        with urllib.request.urlopen(url, data=data, timeout=10) as resp:
+            body = resp.read().decode()
+            if resp.status != 200:
+                print(
+                    f"direct send HTTP {resp.status}: {_redact(body, token)}",
+                    file=sys.stderr,
+                )
+                return 1
+    except Exception as e:
+        print(f"direct send failed: {_redact(str(e), token)}", file=sys.stderr)
+        return 1
+
+    print(f"sent to chat_id={chat_id}")
+    return 0
+
+
 def main():
     parser = argparse.ArgumentParser(description="Telegram MCP diagnostic tool")
     parser.add_argument("--json", action="store_true", help="JSON output (pipe to jq)")
@@ -1302,7 +1441,21 @@ def main():
         action="store_true",
         help="Print every file the two-process chain cares about, with existence check",
     )
+    parser.add_argument(
+        "--direct-send",
+        "--send",
+        dest="direct_send",
+        metavar="TEXT",
+        help="EMERGENCY DIRECT-SEND via Telegram Bot API — bypasses MCP entirely. Use when server.ts is down and you still need to reach Igor. Message is auto-tagged with [direct-send] so it's visually distinct in Telegram. Runs alone; ignores --doctor/--paths if combined.",
+    )
+    parser.add_argument(
+        "--chat-id",
+        help="Target chat_id for --direct-send (defaults to last inbound chat_id from inbound.db)",
+    )
     args = parser.parse_args()
+
+    if args.direct_send is not None:
+        sys.exit(send_direct(args.direct_send, chat_id=args.chat_id))
 
     if args.doctor:
         sys.exit(run_doctor())

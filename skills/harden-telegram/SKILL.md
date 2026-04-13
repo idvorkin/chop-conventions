@@ -13,6 +13,7 @@ Diagnose and repair the two-process Telegram MCP channel. Three tiers:
 | `/harden-telegram doctor` | Quick health check via `telegram_debug.py --doctor` |
 | `/harden-telegram reload` | Hot redeploy + reload plugins without dropping MCP |
 | `/harden-telegram deep` | Walk known failure modes if the doctor is clean but the channel is still broken |
+| **`--direct-send "..."`** | **Emergency escape hatch** — POST straight to Telegram Bot API, bypass MCP entirely. Use when `server.ts` is dead and you still need to reach Igor. Message is auto-prefixed with `[direct-send]` so it's visually distinct. See §Emergency Direct-Send below. |
 
 ## 🧭 Principle: diagnostics live in code, not here
 
@@ -57,6 +58,31 @@ Read the output top-to-bottom. If everything is green, say so and stop. If anyth
 Two processes share the Telegram MCP responsibility. `telegram_bot.py` is the persistent Python poller — owns `getUpdates`, writes every event to `~/larry-telegram/inbound.db` (SQLite WAL), survives Claude restarts, singleton via `flock`. `server.ts` is the ephemeral bun MCP bridge — reads undelivered rows, emits MCP notifications, dies with the Claude session. Flow: `Telegram → telegram_bot.py → inbound.db → bot.sock wakeup → server.ts catchup → MCP → Claude`. Dual-reaction liveness: 👀 (inner, bot.py) + 🫡 (outer, server.ts). Both glyphs on a message means both halves of the pipeline ran.
 
 **For the full design rationale** — durability contract, why SQLite WAL + Unix socket, flock semantics, 409 retry logic, invariants across crashes — read [`design.md`](./design.md) in this skill directory. That's the architectural reference, loaded on demand; this file is the operator runbook.
+
+### Emergency Direct-Send (bypass MCP)
+
+When the doctor is red, the MCP `reply` tool may be unavailable — you can't use the thing you're trying to fix. Use the escape hatch:
+
+```bash
+python3 ~/.claude/skills/harden-telegram/tools/telegram_debug.py --direct-send "your message here"
+# --send is accepted as a shorter alias
+python3 ~/.claude/skills/harden-telegram/tools/telegram_debug.py --send "short form"
+# Override the default chat_id:
+python3 ~/.claude/skills/harden-telegram/tools/telegram_debug.py --direct-send "..." --chat-id 12345
+```
+
+How it works:
+- Reads `TELEGRAM_BOT_TOKEN` from `~/.claude/channels/telegram/.env` (the same file the doctor checks).
+- POSTs straight to `https://api.telegram.org/bot<TOKEN>/sendMessage` via stdlib `urllib` — no MCP, no `server.ts`, no `bot.sock`, no inbound.db. The only moving parts are the token file and Telegram's HTTPS endpoint.
+- Chat id defaults to the most recent `inbound.chat_id` in `inbound.db`. Override with `--chat-id` if you need a specific target.
+- Every outgoing message is auto-prefixed with `[direct-send] ` so Igor can tell on his phone that MCP was down when it landed. **Do not remove the tag** — the visual signal is the whole point.
+
+Use it when:
+- The hourly watchdog cron detects a red doctor and needs to notify Igor.
+- You're walking Tier 2 recovery and need to send status updates that don't depend on `server.ts` being alive.
+- You restart `telegram_bot.py` or redeploy `server.ts` and want to confirm the fix landed — the next message Igor sees without a `[direct-send]` tag proves MCP is back.
+
+The watchdog cron scheduled by `/startup-larry` step 3 item 4 uses this exclusively — that's the design principle: **the thing watching Telegram must not depend on Telegram's MCP bridge.**
 
 ---
 
