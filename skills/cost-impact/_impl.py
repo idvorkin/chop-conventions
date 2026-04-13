@@ -421,9 +421,9 @@ def build_report(entries, bucket_meta, days_back, start_date, today, titles):
         )
         L.append("")
         L.append(
-            "| Day | Dur | Session | Turns (main/sub) | Actual $ | 1h $ | Read $ | Out $ | PRs shipped |"
+            "| Day | Dur | Session | Turns (main/sub) | Input $ | Output $ | 1h cache write $ | 5m cache write $ | Cache read $ | Actual $ | PRs shipped |"
         )
-        L.append("|---|---:|---|---:|---:|---:|---:|---:|---|")
+        L.append("|---|---:|---|---:|---:|---:|---:|---:|---:|---:|---|")
         for e in es:
             sess = e["puuid"][:8]
             pr_links = []
@@ -438,8 +438,9 @@ def build_report(entries, bucket_meta, days_back, start_date, today, titles):
             L.append(
                 f"| {e['day']} | {e['dur']:.0f}m | {sess} | "
                 f"{e['main_turns']}/{e['sub_turns']} | "
-                f"${e['total']:.2f} | ${e['comps']['c1h']:.2f} | "
-                f"${e['comps']['cread']:.2f} | ${e['comps']['out']:.2f} | {pr_str} |"
+                f"${e['comps']['inp']:.2f} | ${e['comps']['out']:.2f} | "
+                f"${e['comps']['c1h']:.2f} | ${e['comps']['c5m']:.2f} | "
+                f"${e['comps']['cread']:.2f} | ${e['total']:.2f} | {pr_str} |"
             )
         L.append("")
         L.append("</details>")
