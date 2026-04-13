@@ -4,6 +4,13 @@
 
 input=$(cat)
 
+# Debug tap: overwrite the most-recent statusline input each turn so it can be
+# inspected with `jq . ~/.claude/statusline_last_input.json` to see the real
+# JSON shape Claude Code sends. Cheap (one short write per turn). Future
+# sessions can read context_window.used_percentage / context_window_size /
+# cost.total_cost_usd from here when the user asks "how many tokens am I using".
+printf '%s' "$input" > ~/.claude/statusline_last_input.json 2>/dev/null
+
 cwd=$(echo "$input" | jq -r '.cwd // .workspace.current_dir // ""')
 model=$(echo "$input" | jq -r '.model.display_name // ""')
 used=$(echo "$input" | jq -r '.context_window.used_percentage // empty')
