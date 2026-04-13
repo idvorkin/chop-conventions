@@ -92,6 +92,7 @@ Skills are Claude Code slash commands that live in `skills/<name>/SKILL.md`.
   - Project-level (one project): `<project>/.claude/skills/<name>` -> `<chop-conventions>/skills/<name>`
 - After adding a skill, create the symlink and document it in the README skills table
 - After `/up-to-date` pulls new commits, check the pull delta for newly-added `skills/<name>/` dirs and offer to symlink them into `~/.claude/skills/`. If the delta added no skills, say nothing. Never link automatically.
+- **Editing an installed skill: always use a worktree, never the symlink.** Because `~/.claude/skills/<name>` points directly into the primary `chop-conventions` checkout, editing through that path mutates whichever branch is currently checked out — silently mixing skill-fix work with any unrelated in-flight branch. Before touching any file under `~/.claude/skills/`, run `realpath` to confirm where it resolves, then create a worktree off `upstream/main` (`git -C ~/gits/chop-conventions worktree add .worktrees/<slug> -b delegated/<slug> upstream/main`) and edit there. The self-referential case (editing `delegate-to-other-repo` while using it) does NOT get a free pass.
 
 ### Size Guideline
 
