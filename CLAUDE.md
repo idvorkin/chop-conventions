@@ -2,6 +2,8 @@
 
 Reusable development conventions, skills, and agent definitions designed to be pulled into multiple projects.
 
+**Scope.** Claude Code workflow tooling and shared dev conventions: git workflows, telegram MCP, image lifecycle, host doctors, scripting defaults, skill packaging. **NOT for**: personal/body/health content for one human, project-specific data, or anything another developer pulling these conventions into their own machine wouldn't get value from. When in doubt, file an issue with the proposal rather than a PR. See open issues #77 (skill grouping) and #83 (back-care wrong-repo proposal) for prior scope discussions.
+
 ## Commands
 
 ```bash
@@ -59,6 +61,10 @@ Scripts that signal processes by pattern (cpulimit, pkill, kill by comm match) M
 ## Compiled-Tool Staleness Check
 
 **When a user reports "I don't see the new feature" after code changes to a compiled tool, first check the installed binary's mtime, not the source.** `ls -la $(which <tool>)` or `stat` — compare against commit time. `cargo test` / `cargo build` validates fresh source but does NOT replace `~/.cargo/bin/<tool>`; use `cargo install --path . --force`. Don't open the debugger until you've confirmed the binary you're running contains the change.
+
+## Diagnostics: Out-of-Band Notification
+
+**A diagnostic tool must not depend on the thing it's diagnosing.** A watchdog that notifies via the MCP bridge it's watching, a healthcheck running inside the process it's checking, backup verification using the backup system itself — all foot-guns that go silent at exactly the moment they need to scream. Notify out-of-band. Reference: `skills/harden-telegram` watchdog uses `telegram_debug.py --direct-send` (POSTs straight to Telegram Bot API) for alerts, never the MCP `reply` tool, so it works even when `server.ts` is dead.
 
 ## Abstractions: Wait for N=2
 
