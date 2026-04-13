@@ -311,6 +311,23 @@ class TestBuildReportWithData(unittest.TestCase):
         # Non-crashing rendering
         self.assertIn("$30.50", report)
         self.assertIn("example", report)  # humanized project name
+        self.assertIn(
+            "| Day | Actual $ | Sessions | Main turns | Sub turns | No-cache ref $ |",
+            report,
+        )
+        self.assertIn(
+            "| **Total** | **$30.50** | **1** | **5** | **0** | **$35.00** |",
+            report,
+        )
+        self.assertIn("### Daily cost details", report)
+        self.assertIn(
+            "| Day | Fresh input $ | Output $ | 1h cache write $ | 5m cache write $ | Cache read $ |",
+            report,
+        )
+        self.assertIn(
+            "| **Total** | **$5.00** | **$25.00** | **$0.00** | **$0.00** | **$0.50** |",
+            report,
+        )
         # Cache savings: (35 - 30.50) / 35 = 12.857% -> "13%"
         self.assertIn("13%", report)
         # TTL footnote: zero c5m tokens -> "not hit by the bug"
