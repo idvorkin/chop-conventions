@@ -103,7 +103,7 @@ don't know the ID.
    without-cache reference, cache savings %
 2. **Cost by model** — each model's share of the total
 3. **Per day** — actual $, sessions, main+sub turns, no-cache reference, plus
-   a separate daily details table splitting fresh input, output, 1h cache
+   a separate daily details table splitting input, output, 1h cache
    writes, 5m cache writes, and cache reads
 4. **Per repo summary table** — sessions, actual $, share %
 5. **Sessions grouped by repo** — collapsible `<details>` sections, one per
