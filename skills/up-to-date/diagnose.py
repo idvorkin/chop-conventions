@@ -246,6 +246,21 @@ def parse_left_right_count(raw: str) -> tuple[int, int] | None:
         return None
 
 
+def parse_symbolic_ref_output(raw: str, src: str) -> str | None:
+    """Parse `git symbolic-ref refs/remotes/<src>/HEAD` output.
+
+    Input looks like `refs/remotes/origin/main` or `refs/remotes/upstream/master`.
+    Returns the branch name (last segment) or None if the ref doesn't match
+    the expected `refs/remotes/<src>/<branch>` shape.
+    """
+    prefix = f"refs/remotes/{src}/"
+    stripped = raw.strip()
+    if stripped.startswith(prefix):
+        branch = stripped[len(prefix) :]
+        return branch or None
+    return None
+
+
 # ---------- Subprocess helpers ----------
 
 
@@ -276,6 +291,33 @@ def gh_pr_view_json(fields: str) -> dict[str, Any] | None:
         return None
 
 
+def detect_default_branch(src: str) -> str:
+    """Detect the default branch of a remote. Returns 'main' as last-resort fallback.
+
+    Handles repos using 'main', 'master', or any other default branch name.
+    Order of checks:
+    1. `git symbolic-ref refs/remotes/<src>/HEAD` — what `git clone` sets up.
+    2. Probe for `<src>/main` and `<src>/master` via `git show-ref`.
+    3. Fall back to 'main' so callers always get a string.
+    """
+    sym = git_proc("symbolic-ref", f"refs/remotes/{src}/HEAD", check=False)
+    if sym.returncode == 0:
+        parsed = parse_symbolic_ref_output(sym.stdout, src)
+        if parsed:
+            return parsed
+    for candidate in ("main", "master"):
+        probe = git_proc(
+            "show-ref",
+            "--verify",
+            "--quiet",
+            f"refs/remotes/{src}/{candidate}",
+            check=False,
+        )
+        if probe.returncode == 0:
+            return candidate
+    return "main"
+
+
 # ---------- Orchestrator ----------
 
 
@@ -303,6 +345,12 @@ def run_diagnose() -> dict[str, Any]:
     if fetch_proc.returncode != 0:
         errors.append(f"git fetch failed: {fetch_proc.stderr.strip()}")
 
+    # Detect the source's default branch (main, master, or other) AFTER fetch,
+    # so remote refs are up-to-date. Done serially before the parallel block
+    # because every subsequent query depends on it.
+    default_branch = detect_default_branch(src)
+    src_default = f"{src}/{default_branch}"
+
     # Post-fetch git queries are independent; run them in parallel.
     with ThreadPoolExecutor(max_workers=7) as pool:
         branch_name_fut = pool.submit(git_proc, "branch", "--show-current", check=False)
@@ -311,11 +359,11 @@ def run_diagnose() -> dict[str, Any]:
             "rev-list",
             "--left-right",
             "--count",
-            f"{src}/main...HEAD",
+            f"{src_default}...HEAD",
             check=False,
         )
         behind_commits_fut = pool.submit(
-            git_proc, "log", "--oneline", f"HEAD..{src}/main", check=False
+            git_proc, "log", "--oneline", f"HEAD..{src_default}", check=False
         )
         uncommitted_fut = pool.submit(git_proc, "status", "--porcelain", check=False)
         stashes_fut = pool.submit(git_proc, "stash", "list", check=False)
@@ -358,7 +406,7 @@ def run_diagnose() -> dict[str, Any]:
 
     if behind_commits_proc.returncode != 0:
         errors.append(
-            f"git log HEAD..{src}/main failed: {behind_commits_proc.stderr.strip()}"
+            f"git log HEAD..{src_default} failed: {behind_commits_proc.stderr.strip()}"
         )
     behind_commits_raw = behind_commits_proc.stdout.strip()
 
@@ -372,10 +420,14 @@ def run_diagnose() -> dict[str, Any]:
         errors.append(f"git stash list failed: {stash_proc.stderr.strip()}")
     stash_raw = stash_proc.stdout.strip()
 
-    is_main = branch_name == "main"
+    # `is_main` means "on the source's default branch" regardless of whether
+    # that branch is literally named main or master. Kept as `is_main` for
+    # JSON output-field stability; SKILL.md prose treats it as the
+    # "on-default-branch" signal.
+    is_main = branch_name == default_branch
     behind_commits = [ln for ln in behind_commits_raw.splitlines() if ln][:10]
 
-    # Local branches to check for absorption (skip main, skip empty).
+    # Local branches to check for absorption (skip the default branch, skip empty).
     if local_branches_proc.returncode != 0:
         errors.append(
             f"git branch --format failed: {local_branches_proc.stderr.strip()}"
@@ -403,23 +455,22 @@ def run_diagnose() -> dict[str, Any]:
     for wt in worktree_entries:
         if wt.branch:
             cherry_targets.add(wt.branch)
-    # Skip `main` and `master` — we never audit the default branch against
-    # itself for absorption (it IS the absorption target).
-    cherry_targets.discard("main")
-    cherry_targets.discard("master")
+    # Skip the source's default branch — we never audit it against itself
+    # for absorption (it IS the absorption target).
+    cherry_targets.discard(default_branch)
 
     cherry_by_branch: dict[str, CherryAnalysis] = {}
     if cherry_targets:
         with ThreadPoolExecutor(max_workers=min(10, len(cherry_targets))) as pool:
             cherry_futs = {
-                b: pool.submit(git_proc, "cherry", "-v", f"{src}/main", b, check=False)
+                b: pool.submit(git_proc, "cherry", "-v", src_default, b, check=False)
                 for b in cherry_targets
             }
             for b, fut in cherry_futs.items():
                 proc = fut.result()
                 if proc.returncode != 0:
                     errors.append(
-                        f"git cherry -v {src}/main {b} failed: {proc.stderr.strip()}"
+                        f"git cherry -v {src_default} {b} failed: {proc.stderr.strip()}"
                     )
                     continue
                 cherry_by_branch[b] = parse_cherry_status(proc.stdout.strip())
@@ -434,13 +485,13 @@ def run_diagnose() -> dict[str, Any]:
 
     leftover_commits = [] if is_main else ahead_patch_unique_commits
 
-    # Absorbable branches: local branches whose work is fully in $src/main
+    # Absorbable branches: local branches whose work is fully in $src_default
     # (zero unique patch-ids). Excludes the currently checked-out branch
     # since deleting it requires switching away first — callers should
     # surface it separately if they want that.
     absorbable_branches: list[str] = []
     for b in sorted(local_branch_names):
-        if b in ("main", "master"):
+        if b == default_branch:
             continue
         if b == branch_name:
             continue  # never auto-prune the checked-out branch
@@ -509,6 +560,7 @@ def run_diagnose() -> dict[str, Any]:
         "branch": {
             "name": branch_name,
             "is_main": is_main,
+            "default_branch_name": default_branch,
             "behind": behind,
             "ahead": ahead,
             "behind_commits": behind_commits,

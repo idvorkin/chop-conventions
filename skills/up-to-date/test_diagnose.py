@@ -20,6 +20,7 @@ from diagnose import (  # noqa: E402
     parse_cherry_status,
     parse_left_right_count,
     parse_remotes,
+    parse_symbolic_ref_output,
     parse_worktree_list,
 )
 
@@ -263,6 +264,39 @@ class TestParseWorktreeList(unittest.TestCase):
             parse_worktree_list(raw)[0].branch,
             "nested/feature-name",
         )
+
+
+class TestParseSymbolicRefOutput(unittest.TestCase):
+    def test_origin_main(self):
+        self.assertEqual(
+            parse_symbolic_ref_output("refs/remotes/origin/main", "origin"),
+            "main",
+        )
+
+    def test_upstream_master(self):
+        self.assertEqual(
+            parse_symbolic_ref_output("refs/remotes/upstream/master", "upstream"),
+            "master",
+        )
+
+    def test_trailing_newline_stripped(self):
+        self.assertEqual(
+            parse_symbolic_ref_output("refs/remotes/origin/develop\n", "origin"),
+            "develop",
+        )
+
+    def test_wrong_src_returns_none(self):
+        # If the ref belongs to a different remote, parser must not match.
+        self.assertIsNone(
+            parse_symbolic_ref_output("refs/remotes/upstream/main", "origin")
+        )
+
+    def test_missing_prefix_returns_none(self):
+        self.assertIsNone(parse_symbolic_ref_output("refs/heads/main", "origin"))
+
+    def test_empty_branch_returns_none(self):
+        # Defensive: if stripping the prefix leaves an empty string, return None.
+        self.assertIsNone(parse_symbolic_ref_output("refs/remotes/origin/", "origin"))
 
 
 if __name__ == "__main__":
