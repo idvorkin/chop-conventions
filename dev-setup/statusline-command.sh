@@ -18,6 +18,7 @@ YELLOW=$(printf '\033[33m')
 GREEN=$(printf '\033[32m')
 BLUE=$(printf '\033[34m')
 RED=$(printf '\033[31m')
+PINK=$(printf '\033[38;5;213m')
 RESET=$(printf '\033[0m')
 
 # Shorten home directory to ~
@@ -35,13 +36,14 @@ if [ -n "$used" ] && [ -n "$ctx_size" ]; then
   total_k=$((ctx_size / 1000))
   # Bucket used tokens to nearest 10k (round half up)
   used_k=$(awk "BEGIN {printf \"%d\", int(($used * $total_k / 100 + 5) / 10) * 10}")
-  # Color: green <20%, blue <50%, red >=50%
-  # Floor of raw used (not the rounded pct) so 19.6% stays green, not blue
-  used_int=$(awk "BEGIN {printf \"%d\", int($used)}")
-  if [ "$used_int" -lt 20 ]; then
+  # Color by absolute used tokens: <200k green, <400k yellow, <600k pink, else red
+  used_tokens=$(awk "BEGIN {printf \"%d\", $used * $ctx_size / 100}")
+  if [ "$used_tokens" -lt 200000 ]; then
     ctx_color=$GREEN
-  elif [ "$used_int" -lt 50 ]; then
-    ctx_color=$BLUE
+  elif [ "$used_tokens" -lt 400000 ]; then
+    ctx_color=$YELLOW
+  elif [ "$used_tokens" -lt 600000 ]; then
+    ctx_color=$PINK
   else
     ctx_color=$RED
   fi
