@@ -84,12 +84,15 @@ Doctor catches source/plugin drift automatically via sha256 compare when `TELEGR
 
 **Cause:** `/reload-plugins` re-reads skills/hooks/agents/plugin config but leaves running MCP server processes alone. The existing bun process keeps serving the old code.
 
-**Fix:** kill the old bun first, then reload — the next MCP request respawns from the plugin cache:
+**Fix:** kill ONLY this session's bridge, then reload — the next MCP request respawns from the plugin cache. Run the doctor first to find the bridge owned by this session (look for the `SERVER.TS` line that prints `pid=<n> (claude=<your-claude-pid>)`):
 
 ```bash
-pkill -TERM -f 'bun.*server.ts'
+python3 ~/.claude/skills/harden-telegram/tools/telegram_debug.py --doctor
+kill -TERM <pid-from-doctor>
 # Then run /reload-plugins from another context (or via the watchdog below).
 ```
+
+**DO NOT** use `pkill -f 'bun.*server.ts'` — that's a broadcast kill that also nukes bridges owned by *other* Claude sessions on the same machine. Each Claude session spawns its own bun `server.ts` child. The doctor classifies them as `ours` / `other-session` / `orphaned` by walking the `ppid` chain up to the nearest `claude` ancestor; trust that, never age or count. The historical "older bun = zombie" heuristic is wrong — multi-session machines routinely have several legitimate bridges running concurrently.
 
 ### 2c. Watchdog reload (from a background shell — NEVER foreground)
 

@@ -84,6 +84,173 @@ def _proc_cwd(pid: str) -> str | None:
         return None
 
 
+def parse_proc_stat(data: str) -> tuple[str, int] | None:
+    """Parse /proc/<pid>/stat contents into (comm, ppid).
+
+    The comm field is wrapped in parens and can contain spaces or parens
+    itself, so we anchor on the *last* ')' rather than splitting whitespace
+    naively. Returns None on any malformed input.
+    """
+    rparen = data.rfind(")")
+    lparen = data.find("(")
+    if rparen == -1 or lparen == -1 or rparen < lparen:
+        return None
+    comm = data[lparen + 1 : rparen]
+    tail = data[rparen + 1 :].split()
+    # tail[0] is state, tail[1] is ppid
+    if len(tail) < 2:
+        return None
+    try:
+        ppid = int(tail[1])
+    except ValueError:
+        return None
+    return (comm, ppid)
+
+
+def _read_proc_stat(pid: int) -> tuple[str, int] | None:
+    """Return (comm, ppid) for a PID, or None if the process is gone."""
+    try:
+        data = Path(f"/proc/{pid}/stat").read_text()
+    except (OSError, ValueError):
+        return None
+    return parse_proc_stat(data)
+
+
+def _pid_alive(pid: int) -> bool:
+    """Best-effort liveness probe that works across UIDs."""
+    if pid <= 0:
+        return False
+    try:
+        os.kill(pid, 0)
+        return True
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        # Signal denied → the process exists but isn't ours. Still alive.
+        return True
+    except OSError:
+        return False
+
+
+def _find_owning_claude(
+    pid: int,
+    *,
+    stat_reader=_read_proc_stat,
+) -> int | None:
+    """Walk the ppid chain from `pid` until we hit a process whose comm starts with `claude`.
+
+    Returns the PID of the nearest claude ancestor, or None if the chain
+    reaches init without finding one (or breaks because a process went
+    away mid-walk). `stat_reader` is injected for tests.
+
+    Matches `claude`, `claude-code`, `claude-1m`, etc. Linux truncates comm
+    to TASK_COMM_LEN-1 = 15 chars, so any launcher/shim that starts with
+    "claude" fits and still matches here.
+    """
+    seen: set[int] = set()
+    current = pid
+    while current and current > 1:
+        # Guard against self-loops and pid-reuse cycles.
+        if current in seen:
+            return None
+        seen.add(current)
+        info = stat_reader(current)
+        if info is None:
+            return None
+        comm, ppid = info
+        if comm.startswith("claude"):
+            return current
+        current = ppid
+    return None
+
+
+def _read_proc_cmdline(pid: int) -> list[str] | None:
+    """Return argv of a PID from /proc/<pid>/cmdline, or None if unreadable.
+
+    The file is null-separated; a trailing null terminates the final arg.
+    """
+    try:
+        data = Path(f"/proc/{pid}/cmdline").read_bytes()
+    except (OSError, ValueError):
+        return None
+    if not data:
+        return None
+    parts = data.rstrip(b"\x00").split(b"\x00")
+    return [p.decode("utf-8", errors="replace") for p in parts]
+
+
+def session_subscribed_to_telegram(argv: list[str]) -> bool:
+    """Return True iff argv has a `--channels` value mentioning telegram.
+
+    Accepts both `--channels X` and `--channels=X`. A single `--channels`
+    flag may carry a comma-separated list (`a,b,c`) — we split and check
+    each entry. Values are matched case-insensitively against the literal
+    substring 'telegram' to stay tolerant of plugin name variations like
+    `plugin:telegram@claude-plugins-official`.
+    """
+    i = 0
+    while i < len(argv):
+        arg = argv[i]
+        value: str | None = None
+        if arg == "--channels":
+            if i + 1 < len(argv):
+                value = argv[i + 1]
+                i += 2
+            else:
+                i += 1
+                continue
+        elif arg.startswith("--channels="):
+            value = arg[len("--channels=") :]
+            i += 1
+        else:
+            i += 1
+            continue
+        if value is None:
+            continue
+        for entry in value.split(","):
+            if "telegram" in entry.lower():
+                return True
+    return False
+
+
+def classify_bridges(
+    pids: list[int],
+    our_claude_pid: int | None,
+    *,
+    stat_reader=_read_proc_stat,
+    is_alive=_pid_alive,
+) -> list[dict]:
+    """Classify each bun server.ts PID by which Claude session owns it.
+
+    Classifications:
+      - "ours":          owning claude == our_claude_pid
+      - "other-session": owning claude is alive but not ours
+      - "orphaned":      no owning claude found, or it's dead
+
+    Pure function — all I/O is injected via `stat_reader` / `is_alive`
+    so tests can drive it without touching /proc.
+    """
+    bridges: list[dict] = []
+    for pid in pids:
+        owning = _find_owning_claude(pid, stat_reader=stat_reader)
+        if owning is None:
+            classification = "orphaned"
+        elif owning == our_claude_pid:
+            classification = "ours"
+        elif is_alive(owning):
+            classification = "other-session"
+        else:
+            classification = "orphaned"
+        bridges.append(
+            {
+                "pid": pid,
+                "owning_claude": owning,
+                "classification": classification,
+            }
+        )
+    return bridges
+
+
 def check_claude_sessions() -> list[dict]:
     """Find all Claude Code sessions."""
     output = run(["bash", "-c", r"\ps -ef | grep -v grep | grep claude.*dangerously"])
@@ -644,14 +811,114 @@ def _doctor_check_server_ts(report: DoctorReport) -> None:
     except (FileNotFoundError, subprocess.TimeoutExpired) as e:
         report.fail(f"pgrep failed: {e}")
         return
-    pids = [p for p in r.stdout.strip().split() if p]
-    if len(pids) == 0:
-        # 0 is OK — Claude may not be running. Informational only.
-        report.warn("no server.ts process (OK if Claude isn't running)")
-    elif len(pids) == 1:
-        report.ok(f"1 process: pid={pids[0]}")
+
+    # Filter to the Telegram plugin's bridges by /proc/<pid>/cwd.
+    # Other bun server.ts processes (unrelated projects) don't count here.
+    candidate_pids = [int(p) for p in r.stdout.strip().split() if p.isdigit()]
+    tg_pids = [
+        pid
+        for pid in candidate_pids
+        if TELEGRAM_PLUGIN_MARKER in (_proc_cwd(str(pid)) or "")
+    ]
+
+    our_claude = _find_owning_claude(os.getpid())
+    bridges = classify_bridges(tg_pids, our_claude)
+
+    ours = [b for b in bridges if b["classification"] == "ours"]
+    others = [b for b in bridges if b["classification"] == "other-session"]
+    orphans = [b for b in bridges if b["classification"] == "orphaned"]
+
+    if our_claude is None:
+        # Running outside a Claude session (cron, shell, CI). We can't do
+        # session-scoped ownership — fall back to a looser status line.
+        if not tg_pids:
+            report.warn("no telegram server.ts process (OK if no Claude is running)")
+        else:
+            pids_str = ", ".join(str(p) for p in tg_pids)
+            report.note(
+                f"{len(tg_pids)} telegram bridge(s) running ({pids_str}) — "
+                "doctor not inside a Claude session, skipping ownership check"
+            )
+        if orphans:
+            pids_str = ", ".join(str(b["pid"]) for b in orphans)
+            report.warn(
+                f"{len(orphans)} orphaned bridge(s): {pids_str} — "
+                "owning Claude is gone"
+            )
+        return
+
+    if len(ours) == 0:
+        report.warn(
+            f"no bridge owned by this Claude session (pid={our_claude}) — "
+            "MCP tools may be disconnected; /reload-plugins to respawn"
+        )
+    elif len(ours) == 1:
+        report.ok(
+            f"1 bridge for this session: pid={ours[0]['pid']} (claude={our_claude})"
+        )
     else:
-        report.fail(f"{len(pids)} processes running: {', '.join(pids)} — zombie bridge")
+        pids_str = ", ".join(str(b["pid"]) for b in ours)
+        report.fail(
+            f"{len(ours)} bridges owned by this Claude session ({pids_str}) — "
+            "true zombie, kill the extras"
+        )
+
+    if others:
+        summary = ", ".join(
+            f"{b['pid']}→claude:{b['owning_claude']}" for b in others
+        )
+        report.note(
+            f"{len(others)} bridge(s) in other Claude sessions: {summary} — ignored"
+        )
+
+    if orphans:
+        pids_str = ", ".join(str(b["pid"]) for b in orphans)
+        report.warn(
+            f"{len(orphans)} orphaned bridge(s): {pids_str} — "
+            "owning Claude is dead, safe to kill"
+        )
+
+
+def _doctor_check_session_subscription(report: DoctorReport) -> None:
+    """Warn if this Claude session wasn't launched with --channels telegram.
+
+    Without `--channels plugin:telegram@claude-plugins-official`, the MCP
+    bridge can still send messages (plain tool call) but inbound Telegram
+    messages never surface as `<channel source="telegram">` blocks — the
+    harness drops the notifications. This check catches the silent-
+    receive-path failure that is otherwise only detectable by sending a
+    test message and watching it vanish.
+    """
+    report.section("SESSION")
+    our_claude = _find_owning_claude(os.getpid())
+    if our_claude is None:
+        report.note(
+            "doctor not running inside a Claude session — "
+            "subscription check skipped"
+        )
+        return
+    argv = _read_proc_cmdline(our_claude)
+    if argv is None:
+        report.warn(
+            f"could not read /proc/{our_claude}/cmdline — "
+            "subscription check skipped"
+        )
+        return
+    if session_subscribed_to_telegram(argv):
+        report.ok(
+            f"claude pid={our_claude} launched with --channels telegram; "
+            "inbound messages will surface as channel blocks"
+        )
+    else:
+        # warn, not fail: send-only sessions (outbound MCP tool calls without
+        # needing inbound notifications) are a legitimate use case, so don't
+        # poison the doctor's exit code.
+        report.warn(
+            f"claude pid={our_claude} launched WITHOUT --channels telegram — "
+            "bridge can send but incoming messages won't surface. "
+            "Relaunch with: claude ... "
+            "--channels plugin:telegram@claude-plugins-official"
+        )
 
 
 def _find_plugin_server_ts() -> tuple[Path, str | None] | None:
@@ -892,6 +1159,7 @@ def run_doctor() -> int:
     _doctor_check_socket(report, base)
     _doctor_check_inbound_db(report, base)
     _doctor_check_server_ts(report)
+    _doctor_check_session_subscription(report)
     _doctor_check_deploy(report)
     report.section("CONFIG")
     _doctor_check_token(report)
