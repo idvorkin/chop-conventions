@@ -54,9 +54,10 @@ The JSON output has this shape:
 ```
 
 Conventions:
+
 - `remotes.source` is either `"upstream"` (fork workflow) or `"origin"` (single-remote). Use this as `SRC` for all subsequent git commands.
 - `pr` is `null` on main or when no PR exists for the current branch.
-- `branch.leftover_commits` lists commits on a feature branch not yet in `source/main` — relevant when the PR is merged but work continued.
+- `branch.leftover_commits` lists patch-unique commits on a feature branch that are still missing from `source/main`. Commits already applied upstream under a different SHA are filtered out.
 - `errors` contains any subprocess failures the script wants surfaced (empty on the happy path).
 
 ## Step 2: Report Hygiene
@@ -86,6 +87,7 @@ git pull $SRC main
 ### Feature branch + PR merged (`pr.state == "MERGED"`)
 
 Check `branch.leftover_commits` first:
+
 - Non-empty → **ASK USER**: new PR for leftovers, or discard?
 - Empty → safe to switch to main and delete branch
 
@@ -119,15 +121,15 @@ If `worktree.stashes` is non-empty, list them and inform the user.
 
 ## Output Format
 
-| Check | Status | Action |
-|---|---|---|
-| Remote naming | pass/fail | Offer rename commands from issue `fix` field |
-| Workflow | PR / direct push | Warn if fork org pushing direct |
-| Branch | `branch.name` | — |
-| PR | `#N STATE` | Context-dependent |
-| Uncommitted | N files | Listed below |
-| Behind source/main | N commits | Will pull |
-| Stashes | N stashes | Listed below |
+| Check              | Status           | Action                                       |
+| ------------------ | ---------------- | -------------------------------------------- |
+| Remote naming      | pass/fail        | Offer rename commands from issue `fix` field |
+| Workflow           | PR / direct push | Warn if fork org pushing direct              |
+| Branch             | `branch.name`    | —                                            |
+| PR                 | `#N STATE`       | Context-dependent                            |
+| Uncommitted        | N files          | Listed below                                 |
+| Behind source/main | N commits        | Will pull                                    |
+| Stashes            | N stashes        | Listed below                                 |
 
 ## Post-Sync
 
