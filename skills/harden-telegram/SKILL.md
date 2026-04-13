@@ -56,7 +56,7 @@ Read the output top-to-bottom. If everything is green, say so and stop. If anyth
 
 Two processes share the Telegram MCP responsibility. `telegram_bot.py` is the persistent Python poller — owns `getUpdates`, writes every event to `~/larry-telegram/inbound.db` (SQLite WAL), survives Claude restarts, singleton via `flock`. `server.ts` is the ephemeral bun MCP bridge — reads undelivered rows, emits MCP notifications, dies with the Claude session. Flow: `Telegram → telegram_bot.py → inbound.db → bot.sock wakeup → server.ts catchup → MCP → Claude`. Dual-reaction liveness: 👀 (inner, bot.py) + 🫡 (outer, server.ts). Both glyphs on a message means both halves of the pipeline ran.
 
-**For the full design rationale** — durability contract, why SQLite WAL + Unix socket, flock semantics, 409 retry logic, invariants across crashes — read the [`durable-telegram`](../durable-telegram/SKILL.md) skill. That's the design reference; this skill is the operator runbook.
+**For the full design rationale** — durability contract, why SQLite WAL + Unix socket, flock semantics, 409 retry logic, invariants across crashes — read [`design.md`](./design.md) in this skill directory. That's the architectural reference, loaded on demand; this file is the operator runbook.
 
 ---
 

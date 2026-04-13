@@ -1,12 +1,6 @@
----
-name: durable-telegram
-description: Design reference for the two-process Telegram MCP architecture — why it's split the way it is, what the SQLite queue guarantees, how the flock singleton and 409 retry work, and what invariants hold across crashes. Read this when designing changes to telegram_bot.py or server.ts, or when answering "why is Telegram built this way?". For break/fix use harden-telegram instead.
-allowed-tools: Read, Glob, Grep
----
+# Harden Telegram — Design Reference
 
-# Durable Telegram — Design Reference
-
-This skill is the **architectural** counterpart to [`harden-telegram`](../harden-telegram/SKILL.md). harden-telegram answers "what do I do when it breaks?"; durable-telegram answers "why is it built this way and what does it guarantee?".
+> **Loaded on demand.** This file is not a skill entry point — it's supplementary reading for the [`harden-telegram`](./SKILL.md) skill. SKILL.md is the operator runbook ("what do I do when it breaks?"); this file is the architectural reference ("why is it built this way and what does it guarantee?").
 
 Read this before:
 - Modifying `telegram_bot.py` or `server.ts` in a way that touches the queue, the socket, the singleton, or the reaction protocol
@@ -172,7 +166,7 @@ Always `cp`. Doctor catches source/plugin drift via sha256 compare — if the so
 
 ## Related
 
-- [`harden-telegram`](../harden-telegram/SKILL.md) — operator runbook (doctor, reload, recovery)
+- [`SKILL.md`](./SKILL.md) — operator runbook (doctor, reload, recovery tiers)
 - Igor's canonical design doc: `~/gits/igor2/docs/superpowers/specs/2026-04-12-telegram-two-process-design.md`
 - Igor's migration plan: `~/gits/igor2/docs/superpowers/plans/2026-04-12-telegram-two-process-migration.md`
 
@@ -189,4 +183,5 @@ Always `cp`. Doctor catches source/plugin drift via sha256 compare — if the so
 - `igor2-bgt.3.4` — `pendingCatchup` for mid-pass inserts
 - `igor2-bgt.3.5` — Permission-reply regex-drift fallback
 - `igor2-bgt.4` — harden-telegram skill (operator runbook)
-- `igor2-bgt.3.6` — This skill
+- `igor2-bgt.3.6` — This file (originally shipped as a separate durable-telegram skill)
+- `igor2-bgt.6` — Folded into harden-telegram/design.md (this file's current home)
