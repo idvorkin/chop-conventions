@@ -40,7 +40,7 @@ result (PR URL + summary) when the subagent returns.
 
 ### Invocation (flexible)
 
-```
+```text
 /delegate-to-other-repo <target> <task description>
 /delegate-to-other-repo <task description>
 /delegate-to-other-repo
@@ -72,7 +72,7 @@ result (PR URL + summary) when the subagent returns.
 
 ### Parent / subagent split
 
-```
+```text
 ┌─────────────────────────────────────────────────────────────┐
 │ Parent Claude (current session)                             │
 │                                                             │
@@ -336,7 +336,7 @@ This is the same algorithm the brief's prose describes — kept here as a
 diagram for the spec reader. The brief itself can't embed this fenced
 block because a nested fence would terminate the outer markdown fence.
 
-```
+```text
                        +------------------+
                        | How many remotes |
                        |  (origin + other)|
@@ -607,12 +607,12 @@ worktree location as a parent argument. v1 punts.
 
 ## Dispatch
 
-```
+```yaml
 Agent tool:
   subagent_type: "general-purpose"
   description: "Delegated work in <target-repo>"
   prompt: <the brief constructed above>
-  run_in_background: false  (default; true only if user asked)
+  run_in_background: false # default; true only if user asked
 ```
 
 Parent waits for the subagent's result message. On foreground dispatch,
