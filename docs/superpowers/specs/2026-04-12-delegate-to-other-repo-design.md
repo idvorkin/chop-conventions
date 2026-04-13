@@ -247,13 +247,65 @@ Then run these checks manually regardless of script output:
    `Co-Authored-By: Claude <noreply@anthropic.com>` (or whatever trailer
    the target repo's CLAUDE.md specifies — repo convention wins).
 
+# Lessons reflection (run before writing your final message)
+
+After the PR is open, before you write your final message, reflect on
+your own work against these prompts (these are the `learn-from-session`
+skill's reflection prompts — if
+`~/.claude/skills/learn-from-session/SKILL.md` is symlinked on the
+machine, read it for the full filter rules and voice guidance):
+
+1. What environmental constraint in this target repo surprised you?
+   (path quirk, tool alias, hook reformat, missing dep, protected branch)
+2. What safety gotcha almost shipped? (wrong remote, missing `.gitignore`
+   entry, commit to `main`, destructive default)
+3. What was the _right_ place for content you initially put somewhere
+   wrong?
+4. What pattern worked well enough to codify?
+5. What tool invocation ate time before you landed on the right one?
+
+Apply the durability filter: keep only lessons that are **durable**
+(true in future sessions, not specific to this task), **non-obvious**
+(not already in the target's `CLAUDE.md` or the default Claude Code
+system prompt), and **actionable** (tells a future Claude what to do —
+not a retrospective story). Discard narrative ("we discovered..."),
+vague generalities, and one-off fix postmortems.
+
+If any lessons survive the filter, draft them as a `Lessons:` block in
+your final message (see Final output contract for the format). If
+nothing survives, omit the block entirely. **When in doubt, omit** —
+narrative noise in `CLAUDE.md` is worse than a lost lesson.
+
+Do NOT commit any `CLAUDE.md` edits derived from this reflection to
+the work PR. The drafted lesson is _material for the user to approve_,
+not a committed change.
+
 # Final output contract
 
-Your final message MUST contain exactly:
+Your final message MUST contain, in this order:
 
 1. **PR URL** on its own line, prefixed with `PR: `
-2. **3–5 bullet summary** of what changed and why, prefixed with `Summary:`
-3. Nothing else. No preamble, no "I'll now...", no sign-off.
+2. **3–5 bullet summary** of what changed and why, prefixed with
+   `Summary:`
+3. **(Optional) Lessons block** — include only if your reflection
+   surfaced durable insights. Omit if nothing surfaced.
+4. Nothing else. No preamble, no "I'll now...", no sign-off.
+
+**Lessons block format (when present):** start with the literal line
+`Lessons:` on its own. For each lesson, write — as plain text, not a
+fenced code block, because nested fences would break this brief when
+it is embedded in `SKILL.md` — three fields on their own lines:
+
+- `file:` absolute path to the target repo's `CLAUDE.md` that should
+  receive the addition
+- `why:` one-line justification citing the cost or risk this work hit
+- `diff:` the lines to insert, each prefixed with `+ `, in
+  durable-rule voice (no "we discovered", no narrative, ≤5 lines per
+  lesson, bullets preferred)
+
+Multiple lessons are written as multiple `file:`/`why:`/`diff:` groups
+separated by a blank line. The parent relays this block verbatim to
+the user — don't try to pre-apply it.
 
 # Hard prohibitions
 
@@ -262,6 +314,9 @@ Your final message MUST contain exactly:
 - No commits directly to `main`
 - No `rm -rf` or destructive ops without explicit confirmation
 - No `gh pr merge` — opening the PR is the terminal action
+- No committing `CLAUDE.md` edits derived from Lessons reflection to
+  the work PR. Lessons are draft material in your final message only;
+  the user owns the approval gate.
 
 # Historical context (escape hatch)
 
@@ -622,6 +677,56 @@ Subagent does **not** delete its worktree on success. Reasons:
 Parent's final report includes the worktree path and this command for
 when the user wants to clean up.
 
+## Integration with learn-from-session
+
+`learn-from-session`-style reflection happens **inside the subagent**,
+not the parent. This is a deliberate split driven by visibility: the
+parent's view of the delegated run is limited to "brief in, structured
+final message out." It cannot see which hooks bit the subagent, which
+docs were missing, which commands were ambiguous, or which patterns
+the subagent had to invent. Parent has no substrate to reflect on. The
+subagent, by contrast, has lived the work, and is the only actor that
+can honestly answer `learn-from-session`'s reflection prompts for this
+target repo.
+
+### Responsibility split
+
+1. **Subagent drafts.** Reflection → durability filter → drafted diff.
+   Never commits the `CLAUDE.md` edit to the work PR; keeps it as
+   draft material in the final message only.
+2. **Parent relays verbatim.** The `Lessons:` block from the subagent's
+   final message passes through unchanged into the parent's final
+   report to the user.
+3. **Parent offers two follow-up paths.**
+   - **Quick path:** "Open a second PR in the same worktree with just
+     this `CLAUDE.md` addition?" Parent runs the commit and
+     `gh pr create` in the existing `.worktrees/delegated-<slug>`
+     worktree (which still exists because cleanup is manual). Fast
+     follow, same branch name suffixed with `-lessons`.
+   - **Full path:** "Run `/learn-from-session` on the target repo for
+     multi-file routing?" For lessons that might belong in multiple
+     `CLAUDE.md` files or need deeper routing than a single
+     mechanical insertion.
+4. **User decides.** Approval gate stays with the user, not the
+   subagent and not the parent. Rejected lessons ("skip it") are not a
+   failure state — parent simply omits the follow-up offer and the
+   delegated run is considered complete.
+
+### Why not auto-commit lessons to the work PR
+
+Because lesson drafting is high-noise by default. `learn-from-session`'s
+own rules say "when in doubt, omit" and require explicit user approval
+before `CLAUDE.md` edits land. Bypassing that gate to save a round-trip
+inverts the cost/risk ratio — a wrongly-committed lesson is harder to
+remove than a lost lesson is to regenerate on a re-run.
+
+### Why not have the parent reflect independently
+
+The parent's context after dispatch contains exactly the PR URL and
+summary — there is no substrate for parent-side reflection. Attempting
+it would either hallucinate observations or re-derive what the
+subagent already knew.
+
 ## Files
 
 - `skills/delegate-to-other-repo/SKILL.md` — the skill (pure markdown)
@@ -698,3 +803,10 @@ the blog` and end up with a clickable PR URL without touching another
    working repo, and the target repo's only modification (if any) is a
    one-line `.gitignore` entry for `.worktrees/` — committed in the
    target, never in the parent's checkout
+5. If the subagent's work surfaced durable lessons about the target
+   repo, they are returned in a structured `Lessons:` block that the
+   parent relays verbatim to the user. Lessons are never
+   auto-committed by either parent or subagent; the user is offered a
+   fast-follow path (same-worktree second PR) or the full
+   `/learn-from-session` flow. Rejection is a normal non-failure
+   terminal state.
