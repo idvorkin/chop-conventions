@@ -13,7 +13,7 @@ Read this before:
 - Designing a similar durable bridge somewhere else and wondering if the shape fits
 - Debugging a failure that the doctor doesn't recognize (the invariants here tell you what *should* be true)
 
-Full design spec: `~/gits/igor2/docs/superpowers/specs/2026-04-12-telegram-two-process-design.md`.
+Full design spec (on Igor's box): `~/gits/igor2/docs/superpowers/specs/2026-04-12-telegram-two-process-design.md` — the canonical long-form version of this skill's content lives there for historical traceability.
 
 ---
 
@@ -144,7 +144,7 @@ Free-tier reactions **replace** rather than **stack** — a second `setMessageRe
 
 ## Plugin-cache deploy: `cp`, never symlink
 
-bun resolves imports **relative to the real file path**. If you symlink `~/gits/igor2/telegram-server/server.ts` into `~/.claude/plugins/cache/claude-plugins-official/telegram/0.0.5/server.ts`, bun follows the symlink, starts resolving imports from `~/gits/igor2/telegram-server/`, and fails with `Cannot find module '@modelcontextprotocol/sdk'` because the MCP SDK only lives in the plugin cache's `node_modules`.
+bun resolves imports **relative to the real file path**. If you symlink `$TELEGRAM_SOURCE_DIR/server.ts` into `~/.claude/plugins/cache/claude-plugins-official/telegram/0.0.5/server.ts`, bun follows the symlink, starts resolving imports from your source directory, and fails with `Cannot find module '@modelcontextprotocol/sdk'` because the MCP SDK only lives in the plugin cache's `node_modules`.
 
 Always `cp`. Doctor catches source/plugin drift via sha256 compare — if the source and deployed copy diverge, the doctor reports it and harden-telegram walks the redeploy.
 
@@ -173,8 +173,8 @@ Always `cp`. Doctor catches source/plugin drift via sha256 compare — if the so
 ## Related
 
 - [`harden-telegram`](../harden-telegram/SKILL.md) — operator runbook (doctor, reload, recovery)
-- `~/gits/igor2/docs/superpowers/specs/2026-04-12-telegram-two-process-design.md` — full design spec
-- `~/gits/igor2/docs/superpowers/plans/2026-04-12-telegram-two-process-migration.md` — migration plan
+- Igor's canonical design doc: `~/gits/igor2/docs/superpowers/specs/2026-04-12-telegram-two-process-design.md`
+- Igor's migration plan: `~/gits/igor2/docs/superpowers/plans/2026-04-12-telegram-two-process-migration.md`
 
 ## Related beads
 

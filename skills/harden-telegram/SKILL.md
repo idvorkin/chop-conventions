@@ -24,24 +24,28 @@ Full principle in [`../../CLAUDE.md`](../../CLAUDE.md) §"Diagnostics: Code Over
 
 ## Tool locations
 
-The Python tooling this skill drives lives in `~/gits/igor2/telegram-server/` (Igor's personal knowledge repo — that's where the two-process design was built). The skill is checked into chop-conventions so it is available from any repo via the auto-discovery symlink, but the actual `telegram_debug.py` and `watchdog.py` scripts stay with the Telegram state/paths they inspect.
+The Python tooling this skill drives ships with the skill itself under `tools/`. All paths are discoverable from any repo via the chop-conventions auto-link.
 
 | Tool | Path |
 |---|---|
-| Doctor / diagnostics | `~/gits/igor2/telegram-server/telegram_debug.py` |
-| Plugin-reload watchdog | `~/gits/igor2/telegram-server/watchdog.py` |
-| `telegram_bot.py` source | `~/gits/igor2/telegram-server/telegram_bot.py` |
-| `server.ts` source | `~/gits/igor2/telegram-server/server.ts` |
-| Runtime state dir | `~/larry-telegram/` |
+| Doctor / diagnostics | `~/.claude/skills/harden-telegram/tools/telegram_debug.py` |
+| Plugin-reload watchdog | `~/.claude/skills/harden-telegram/tools/watchdog.py` |
+| Runtime state dir | `$LARRY_TELEGRAM_DIR` (default `~/larry-telegram/`) |
+| Canonical source dir | `$TELEGRAM_SOURCE_DIR` (optional — enables deploy-drift check) |
 
-If the doctor tool is missing (`ENOENT`), igor2 isn't checked out on this box — tell the user and stop. This skill only helps on machines running the Telegram MCP plugin with the two-process architecture.
+Two env vars parameterize the tool:
+
+- **`LARRY_TELEGRAM_DIR`** — runtime state directory (`bot.pid`, `bot.sock`, `inbound.db`, `server.log`, `attachments/`). Defaults to `~/larry-telegram/` if unset. The telegram_bot.py production process reads the same variable.
+- **`TELEGRAM_SOURCE_DIR`** — directory containing the canonical `server.ts` + `telegram_bot.py` source you deploy from. Required if you want the doctor to verify the plugin-cache copy matches your upstream. If unset, the drift check degrades to a note ("plugin cache: &lt;hash&gt; — set TELEGRAM_SOURCE_DIR to enable drift check").
+
+This skill only helps on machines running the Telegram MCP plugin with the two-process architecture. If you don't have a `telegram_bot.py` process alongside the MCP `server.ts`, the doctor will report the whole chain as missing.
 
 ---
 
 ## Tier 1: Doctor (`/harden-telegram doctor`)
 
 ```bash
-python3 ~/gits/igor2/telegram-server/telegram_debug.py --doctor
+python3 ~/.claude/skills/harden-telegram/tools/telegram_debug.py --doctor
 ```
 
 Runs every check, prints ✅/⚠️/❌ per section, tails `server.log`, shows source/plugin hash drift, exits non-zero on failure. JSON mode: `--json`. Legacy human-readable summary (pre-doctor): plain invocation with no flags.
@@ -66,13 +70,13 @@ bun resolves imports relative to the real file path. Symlinking `server.ts` into
 # Find the active plugin version (may be 0.0.4 or 0.0.5 — don't guess):
 cat ~/.claude/plugins/installed_plugins.json | python3 -c "import json,sys;print(json.load(sys.stdin)['telegram@claude-plugins-official'][0]['installPath'])"
 
-# Deploy:
-cp ~/gits/igor2/telegram-server/server.ts <that-path>/server.ts
+# Deploy (TELEGRAM_SOURCE_DIR points at your canonical source tree):
+cp "$TELEGRAM_SOURCE_DIR/server.ts" <that-path>/server.ts
 ```
 
 Always back up first: `cp server.ts server.ts.backup-$(date +%Y%m%d-%H%M%S)`.
 
-Doctor catches source/plugin drift automatically via sha256 compare.
+Doctor catches source/plugin drift automatically via sha256 compare when `TELEGRAM_SOURCE_DIR` is set.
 
 ### 2b. `/reload-plugins` doesn't pick up new server.ts code
 
@@ -91,7 +95,7 @@ pkill -TERM -f 'bun.*server.ts'
 
 ```bash
 # %25 → your pane id (tmux display-message -p '#{pane_id}')
-python3 ~/gits/igor2/telegram-server/watchdog.py reload --pane %25 \
+python3 ~/.claude/skills/harden-telegram/tools/watchdog.py reload --pane %25 \
   2>/tmp/watchdog_reload.log &
 disown
 ```
@@ -108,9 +112,9 @@ Flags:
 ### 2d. telegram_bot.py died or never started
 
 ```bash
-nohup ~/gits/igor2/telegram-server/telegram_bot.py \
-  --base-dir ~/larry-telegram \
-  >>~/larry-telegram/startup.log 2>&1 &
+nohup "$TELEGRAM_SOURCE_DIR/telegram_bot.py" \
+  --base-dir "${LARRY_TELEGRAM_DIR:-$HOME/larry-telegram}" \
+  >>"${LARRY_TELEGRAM_DIR:-$HOME/larry-telegram}/startup.log" 2>&1 &
 disown
 ```
 
@@ -118,7 +122,7 @@ The `flock` singleton inside the script prevents double-launch — safe to run w
 
 ### 2e. Full restart (nuclear)
 
-Exit the Claude session, run `~/gits/igor2/larry_start.sh`. `larry_start.sh` launches `telegram_bot.py` before starting Claude (singleton-safe), then Claude's MCP loader spawns `server.ts` from the plugin cache.
+Exit the Claude session, then re-launch via whatever script bootstraps `telegram_bot.py` on your setup. Whatever launcher you use should start `telegram_bot.py` *before* starting Claude (singleton-safe), then let Claude's MCP loader spawn `server.ts` from the plugin cache.
 
 ---
 
