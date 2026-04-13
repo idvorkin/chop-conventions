@@ -362,6 +362,14 @@ class TestBuildReportWithData(unittest.TestCase):
             "| **Total** | **$5.00** | **$25.00** | **$0.00** | **$0.00** | **$0.50** |",
             report,
         )
+        self.assertIn(
+            "| Day | Dur | Session | Turns (main/sub) | Input $ | Output $ | 1h cache write $ | 5m cache write $ | Cache read $ | Actual $ | PRs shipped |",
+            report,
+        )
+        self.assertIn(
+            "| 2026-04-13 | 30m | abc12345 | 5/0 | $5.00 | $25.00 | $0.00 | $0.00 | $0.50 | $30.50 | — |",
+            report,
+        )
         # Cache savings: (35 - 30.50) / 35 = 12.857% -> "13%"
         self.assertIn("13%", report)
         # TTL footnote: zero c5m tokens -> "not hit by the bug"
