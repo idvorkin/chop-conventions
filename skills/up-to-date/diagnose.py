@@ -180,15 +180,15 @@ def parse_cherry_status(raw: str) -> CherryAnalysis:
     )
 
 
-def parse_left_right_count(raw: str) -> tuple[int, int]:
+def parse_left_right_count(raw: str) -> tuple[int, int] | None:
     """Parse `git rev-list --left-right --count A...B` output."""
     parts = raw.split()
     if len(parts) != 2:
-        return (0, 0)
+        return None
     try:
         return (int(parts[0]), int(parts[1]))
     except ValueError:
-        return (0, 0)
+        return None
 
 
 # ---------- Subprocess helpers ----------
@@ -203,6 +203,11 @@ def git(*args: str, check: bool = True) -> str:
     """Run `git <args>` and return stdout (stripped)."""
     result = _run(["git", *args], check=check)
     return result.stdout.strip()
+
+
+def git_proc(*args: str, check: bool = True) -> subprocess.CompletedProcess:
+    """Run `git <args>` and return the full CompletedProcess."""
+    return _run(["git", *args], check=check)
 
 
 def gh_pr_view_json(fields: str) -> dict[str, Any] | None:
@@ -245,48 +250,79 @@ def run_diagnose() -> dict[str, Any]:
 
     # Post-fetch git queries are independent; run them in parallel.
     with ThreadPoolExecutor(max_workers=5) as pool:
-        branch_name_fut = pool.submit(git, "branch", "--show-current", check=False)
+        branch_name_fut = pool.submit(git_proc, "branch", "--show-current", check=False)
         divergence_fut = pool.submit(
-            _run,
-            ["git", "rev-list", "--left-right", "--count", f"{src}/main...HEAD"],
-            False,
+            git_proc,
+            "rev-list",
+            "--left-right",
+            "--count",
+            f"{src}/main...HEAD",
+            check=False,
         )
         behind_commits_fut = pool.submit(
-            git, "log", "--oneline", f"HEAD..{src}/main", check=False
+            git_proc, "log", "--oneline", f"HEAD..{src}/main", check=False
         )
-        uncommitted_fut = pool.submit(git, "status", "--porcelain", check=False)
-        stashes_fut = pool.submit(git, "stash", "list", check=False)
-
-        branch_name = branch_name_fut.result()
+        uncommitted_fut = pool.submit(git_proc, "status", "--porcelain", check=False)
+        stashes_fut = pool.submit(git_proc, "stash", "list", check=False)
+        branch_name_proc = branch_name_fut.result()
         divergence_proc = divergence_fut.result()
-        if divergence_proc.returncode != 0:
+        behind_commits_proc = behind_commits_fut.result()
+        uncommitted_proc = uncommitted_fut.result()
+        stash_proc = stashes_fut.result()
+
+    if branch_name_proc.returncode != 0:
+        errors.append(
+            f"git branch --show-current failed: {branch_name_proc.stderr.strip()}"
+        )
+    branch_name = branch_name_proc.stdout.strip()
+
+    behind = 0
+    ahead = 0
+    if divergence_proc.returncode != 0:
+        errors.append(
+            "git rev-list --left-right --count failed: "
+            f"{divergence_proc.stderr.strip()}"
+        )
+    else:
+        divergence = parse_left_right_count(divergence_proc.stdout.strip())
+        if divergence is None:
             errors.append(
-                f"git rev-list --left-right --count failed: {divergence_proc.stderr.strip()}"
+                "git rev-list --left-right --count returned unexpected output: "
+                f"{divergence_proc.stdout.strip()!r}"
             )
-            behind, ahead = 0, 0
         else:
-            divergence_raw = divergence_proc.stdout.strip()
-            if re.fullmatch(r"\d+\s+\d+", divergence_raw):
-                behind, ahead = parse_left_right_count(divergence_raw)
-            else:
-                errors.append(
-                    "git rev-list --left-right --count returned unexpected output: "
-                    f"{divergence_raw!r}"
-                )
-                behind, ahead = 0, 0
-        behind_commits_raw = behind_commits_fut.result()
-        uncommitted_raw = uncommitted_fut.result()
-        stash_raw = stashes_fut.result()
+            behind, ahead = divergence
+
+    if behind_commits_proc.returncode != 0:
+        errors.append(
+            f"git log HEAD..{src}/main failed: {behind_commits_proc.stderr.strip()}"
+        )
+    behind_commits_raw = behind_commits_proc.stdout.strip()
+
+    if uncommitted_proc.returncode != 0:
+        errors.append(
+            f"git status --porcelain failed: {uncommitted_proc.stderr.strip()}"
+        )
+    uncommitted_raw = uncommitted_proc.stdout.strip()
+
+    if stash_proc.returncode != 0:
+        errors.append(f"git stash list failed: {stash_proc.stderr.strip()}")
+    stash_raw = stash_proc.stdout.strip()
 
     is_main = branch_name == "main"
     behind_commits = [ln for ln in behind_commits_raw.splitlines() if ln][:10]
 
     cherry = CherryAnalysis(unique_commits=[], equivalent_commits=[])
-    if ahead > 0 and branch_name:
+    if branch_name:
         # Use patch equivalence, not commit reachability, so rebased/cherry-picked
         # commits already present upstream do not show up as unique work.
-        cherry_raw = git("cherry", "-v", f"{src}/main", branch_name, check=False)
-        cherry = parse_cherry_status(cherry_raw)
+        cherry_proc = git_proc("cherry", "-v", f"{src}/main", branch_name, check=False)
+        if cherry_proc.returncode != 0:
+            errors.append(
+                f"git cherry -v {src}/main {branch_name} failed: {cherry_proc.stderr.strip()}"
+            )
+        else:
+            cherry = parse_cherry_status(cherry_proc.stdout.strip())
 
     ahead_patch_unique_commits = cherry.unique_commits[:10]
     ahead_patch_equivalent_commits = cherry.equivalent_commits[:10]

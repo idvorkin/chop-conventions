@@ -67,7 +67,7 @@ Conventions:
 - `branch.ahead_patch_unique_commits` and `branch.ahead_patch_equivalent_commits` come from `git cherry -v source/main HEAD`, so the script tells you whether ahead commits are unique work or already present upstream under different SHAs.
 - `branch.can_force_align` is `true` only on `main` when every ahead commit is patch-equivalent to `source/main`; in that case, re-aligning the fork's `main` loses no unique work.
 - `branch.leftover_commits` lists patch-unique commits on a feature branch that are still missing from `source/main`. Commits already applied upstream under a different SHA are filtered out.
-- `errors` contains any subprocess failures the script wants surfaced (empty on the happy path).
+- `errors` contains subprocess failures from fetch and the post-fetch git diagnostics (`rev-list`, `log`, `status`, `stash`, `cherry`) so callers can tell the difference between "no divergence" and "diagnostic failed".
 
 ## Step 2: Report Hygiene
 
