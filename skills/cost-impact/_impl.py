@@ -355,16 +355,36 @@ def build_report(entries, bucket_meta, days_back, start_date, today, titles):
 
     L.append("## Per day")
     L.append("")
-    L.append(
-        "| Day | Sessions | Main turns | Sub turns | Actual $ | 1h cache $ | Cache read $ | Output $ | No-cache ref $ |"
-    )
-    L.append("|---|---:|---:|---:|---:|---:|---:|---:|---:|")
+    L.append("| Day | Actual $ | Sessions | Main turns | Sub turns | No-cache ref $ |")
+    L.append("|---|---:|---:|---:|---:|---:|")
     for day in sorted(per_day):
         d = per_day[day]
         L.append(
-            f"| {day} | {d['sess']} | {d['main']} | {d['sub']} | "
-            f"${d['actual']:.2f} | ${d['c1h']:.2f} | ${d['cread']:.2f} | ${d['out']:.2f} | ${d['naive']:.2f} |"
+            f"| {day} | ${d['actual']:.2f} | {d['sess']} | {d['main']} | {d['sub']} | ${d['naive']:.2f} |"
         )
+    L.append(
+        f"| **Total** | **${tot_actual:,.2f}** | **{len(entries)}** | **{tot_main_turns:,}** | **{tot_sub_turns:,}** | **${tot_naive:,.2f}** |"
+    )
+    L.append("")
+
+    L.append("### Daily cost details")
+    L.append("")
+    L.append(
+        "*Actual = fresh input + output + 1h cache writes + 5m cache writes + cache reads.*"
+    )
+    L.append("")
+    L.append(
+        "| Day | Fresh input $ | Output $ | 1h cache write $ | 5m cache write $ | Cache read $ |"
+    )
+    L.append("|---|---:|---:|---:|---:|---:|")
+    for day in sorted(per_day):
+        d = per_day[day]
+        L.append(
+            f"| {day} | ${d['inp']:.2f} | ${d['out']:.2f} | ${d['c1h']:.2f} | ${d['c5m']:.2f} | ${d['cread']:.2f} |"
+        )
+    L.append(
+        f"| **Total** | **${tot_comps['inp']:,.2f}** | **${tot_comps['out']:,.2f}** | **${tot_comps['c1h']:,.2f}** | **${tot_comps['c5m']:,.2f}** | **${tot_comps['cread']:,.2f}** |"
+    )
     L.append("")
 
     L.append("## Per repo")
@@ -531,14 +551,26 @@ def aggregate(bucket):
 
     per_day = defaultdict(
         lambda: dict(
-            actual=0, naive=0, c1h=0, cread=0, out=0, turns=0, sub=0, main=0, sess=0
+            actual=0,
+            naive=0,
+            inp=0,
+            out=0,
+            c1h=0,
+            c5m=0,
+            cread=0,
+            turns=0,
+            sub=0,
+            main=0,
+            sess=0,
         )
     )
     for e in entries:
         d = per_day[e["day"]]
         d["actual"] += e["total"]
         d["naive"] += e["naive"]
+        d["inp"] += e["comps"]["inp"]
         d["c1h"] += e["comps"]["c1h"]
+        d["c5m"] += e["comps"]["c5m"]
         d["cread"] += e["comps"]["cread"]
         d["out"] += e["comps"]["out"]
         d["main"] += e["main_turns"]
