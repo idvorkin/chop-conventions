@@ -155,8 +155,8 @@ class TestParseLeftRightCount(unittest.TestCase):
     def test_parses_tab_separated_counts(self):
         self.assertEqual(parse_left_right_count("3\t7"), (3, 7))
 
-    def test_invalid_output_defaults_to_zeroes(self):
-        self.assertEqual(parse_left_right_count("nonsense"), (0, 0))
+    def test_invalid_output_returns_none(self):
+        self.assertIsNone(parse_left_right_count("nonsense"))
 
 
 if __name__ == "__main__":
