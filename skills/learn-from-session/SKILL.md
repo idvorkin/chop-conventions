@@ -113,6 +113,7 @@ Show all proposed changes in one message, grouped by target file. Include CLAUDE
 
 On approval:
 
+0. **Check repo locality first.** For each target file from Step 3, ask: is it inside the current session's repo (the one containing `pwd`)? If **YES**, apply it directly via the steps below. If **NO**, delegate that target via the `delegate-to-other-repo` skill instead of editing in-session. Cross-repo edits via delegation isolate the other repo's CLAUDE.md / conventions / PR flow into a fresh subagent context, so the parent session doesn't get polluted with another repo's state. Do not try to apply cross-repo edits inline — even if it feels easier, you'll end up `cd`-ing into the wrong tree, branching off the wrong base, or missing the target's pre-commit hooks. **For cross-repo CLAUDE.md edits, use `delegate-to-other-repo`, not inline edits.**
 1. **Create a feature branch per repo** — naming: `claude-md-<short-topic>` or `session-learnings-<date>`
 2. **Apply edits** using the Edit tool (not Write — these are targeted insertions)
 3. **Commit per repo** with a descriptive message that cites the lesson itself, not "update CLAUDE.md". Include the standard `Co-Authored-By` trailer.

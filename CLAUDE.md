@@ -2,6 +2,8 @@
 
 Reusable development conventions, skills, and agent definitions designed to be pulled into multiple projects.
 
+**Scope.** Claude Code workflow tooling and shared dev conventions: git workflows, telegram MCP, image lifecycle, host doctors, scripting defaults, skill packaging. **NOT for**: personal/body/health content for one human, project-specific data, or anything another developer pulling these conventions into their own machine wouldn't get value from. When in doubt, file an issue with the proposal rather than a PR. See open issues #77 (skill grouping) and #83 (back-care wrong-repo proposal) for prior scope discussions.
+
 ## Commands
 
 ```bash
@@ -46,6 +48,10 @@ Scripts that signal processes by pattern (cpulimit, pkill, kill by comm match) M
 ## Diagnostics: Code Over Prose
 
 **Diagnostic checks belong in scripts, not in skill/doc prose.** Skills describe WHEN to diagnose and HOW to recover; code describes WHAT to check. Paths move — code errors loudly, prose rots silently. Reference implementation: `skills/harden-telegram/tools/telegram_debug.py` (`--doctor` with `ok`/`warn`/`fail`/`note` accumulators, `--paths` file-map inventory, inline log tails). **Vendor the doctor *into* the skill** (`skills/<name>/tools/`), never into a source repo it diagnoses — source-repo coupling kills portability on any machine without that repo checked out. Parameterize runtime/source paths via env vars (e.g. `LARRY_TELEGRAM_DIR`, `TELEGRAM_SOURCE_DIR`), not constants. If you catch yourself writing "check X at path Y" prose in a skill, stop and move it to the doctor.
+
+## Diagnostics: Out-of-Band Notification
+
+**A diagnostic tool must not depend on the thing it's diagnosing.** A watchdog that notifies via the MCP bridge it's watching, a healthcheck running inside the process it's checking, backup verification using the backup system itself — all foot-guns that go silent at exactly the moment they need to scream. Notify out-of-band. Reference: `skills/harden-telegram` watchdog uses `telegram_debug.py --direct-send` (POSTs straight to Telegram Bot API) for alerts, never the MCP `reply` tool, so it works even when `server.ts` is dead.
 
 ## Abstractions: Wait for N=2
 
