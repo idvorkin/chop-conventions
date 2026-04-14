@@ -371,15 +371,57 @@ def check_access_config() -> dict:
         return {"exists": True, "error": str(e)}
 
 
+# Hardcoded fallback for the canonical server.ts source directory.
+# Matches Igor's box layout: the two-process telegram fork lives under
+# ~/gits/igor2/telegram-server. Anyone else either sets TELEGRAM_SOURCE_DIR
+# explicitly or degrades to the legacy "skipped" note.
+_DEFAULT_SOURCE_DIR = Path.home() / "gits" / "igor2" / "telegram-server"
+
+
+def _resolve_source_dir() -> tuple[Path | None, str | None]:
+    """Resolve the canonical server.ts source directory and its lookup source.
+
+    Lookup order (first hit wins):
+      1. `TELEGRAM_SOURCE_DIR` env var — explicit override.
+      2. `~/gits/igor2/telegram-server` — hardcoded default for Igor's layout.
+
+    Returns (path, source) where source is "env", "default", or None. Path is
+    only returned when the resolved dir exists AND contains a `server.ts`;
+    otherwise returns (None, "env"|"default"|None) so the caller can tell the
+    difference between "not configured" and "configured but missing".
+
+    The "env" case short-circuits even if the dir is missing — callers should
+    check `path is None` to decide whether to skip the drift check vs emit a
+    louder warning about an explicitly-set-but-missing source. See
+    `_doctor_check_deploy` for the degrade-gracefully path.
+    """
+    env = os.environ.get("TELEGRAM_SOURCE_DIR")
+    if env:
+        p = Path(env).expanduser()
+        if (p / "server.ts").exists():
+            return p, "env"
+        # Explicitly set but missing — return None path with "env" source so
+        # the doctor can emit the legacy skipped note instead of crashing.
+        return None, "env"
+    if (_DEFAULT_SOURCE_DIR / "server.ts").exists():
+        return _DEFAULT_SOURCE_DIR, "default"
+    return None, None
+
+
 def _source_dir() -> Path | None:
     """Canonical server.ts source directory (for hash-drift check).
 
-    Set TELEGRAM_SOURCE_DIR to the dir containing server.ts. If unset, drift
-    checks degrade to a note — the doctor still runs, it just can't tell you
-    whether the plugin-cache copy matches an upstream source.
+    Lookup order:
+      1. `TELEGRAM_SOURCE_DIR` env var (explicit override)
+      2. `~/gits/igor2/telegram-server` (hardcoded default for Igor's box)
+
+    Returns None if neither resolves to a dir containing `server.ts` — the
+    doctor still runs, it just can't tell you whether the plugin-cache copy
+    matches an upstream source. Callers that need the lookup-source metadata
+    (env vs default) should call `_resolve_source_dir()` directly.
     """
-    env = os.environ.get("TELEGRAM_SOURCE_DIR")
-    return Path(env).expanduser() if env else None
+    path, _ = _resolve_source_dir()
+    return path
 
 
 def _source_server_ts() -> Path | None:
@@ -396,27 +438,74 @@ def _file_hash(path: Path) -> str | None:
 
 
 def check_plugin_deploy() -> dict:
-    """Check if our custom server.ts is deployed and matches source."""
+    """Check if our custom server.ts is deployed and matches source.
+
+    Emits both the legacy fields (installed/version/deploy_path/WARNING_DRIFT/
+    etc. — preserved for any existing consumers) and the structured `deploy`
+    block that --json mode exposes for watchdog parsing:
+
+        {
+            "plugin_cache_path": "...",
+            "plugin_cache_sha256": "...",
+            "source_path": "..." | None,
+            "source_sha256": "..." | None,
+            "source_source": "env" | "default" | None,
+            "drift_detected": True | False,
+            "severity": "ok" | "error" | "skipped"
+        }
+
+    `severity` is the single field automation should key on:
+      - "ok": source == plugin, everything matches
+      - "error": drift detected OR plugin missing — watchdog should alarm
+      - "skipped": no source configured or no plugin cache to compare against
+    """
     # Find the version dir
     if not PLUGIN_DIR.exists():
-        return {"installed": False}
+        return {
+            "installed": False,
+            "deploy": {
+                "plugin_cache_path": None,
+                "plugin_cache_sha256": None,
+                "source_path": None,
+                "source_sha256": None,
+                "source_source": None,
+                "drift_detected": False,
+                "severity": "skipped",
+            },
+        }
     versions = sorted(
         [d for d in PLUGIN_DIR.iterdir() if d.is_dir() and d.name[0].isdigit()],
         reverse=True,
     )
     if not versions:
-        return {"installed": False}
+        return {
+            "installed": False,
+            "deploy": {
+                "plugin_cache_path": None,
+                "plugin_cache_sha256": None,
+                "source_path": None,
+                "source_sha256": None,
+                "source_source": None,
+                "drift_detected": False,
+                "severity": "skipped",
+            },
+        }
     version_dir = versions[0]  # newest version
     deployed_file = version_dir / "server.ts"
-    source_ts = _source_server_ts()
+    source_path, source_source = _resolve_source_dir()
+    source_ts = (source_path / "server.ts") if source_path else None
     result: dict = {
         "installed": True,
         "version": version_dir.name,
         "deploy_path": str(deployed_file),
         "source_path": str(source_ts) if source_ts else None,
         "source_configured": source_ts is not None,
+        "source_source": source_source,
         "server_ts_exists": deployed_file.exists(),
     }
+    source_hash: str | None = None
+    deploy_hash: str | None = None
+    drift_detected = False
     if deployed_file.exists():
         result["is_symlink"] = deployed_file.is_symlink()
         if deployed_file.is_symlink():
@@ -429,20 +518,41 @@ def check_plugin_deploy() -> dict:
             result["has_heartbeat"] = "heartbeat" in content
         except OSError:
             pass
+        deploy_hash = _file_hash(deployed_file)
         # Compare source vs deployed — only if a source dir is configured.
         if source_ts is not None:
             source_hash = _file_hash(source_ts)
-            deploy_hash = _file_hash(deployed_file)
             result["source_hash"] = source_hash
             result["deploy_hash"] = deploy_hash
             if source_hash and deploy_hash:
                 result["in_sync"] = source_hash == deploy_hash
-                if not result["in_sync"]:
+                drift_detected = source_hash != deploy_hash
+                if drift_detected:
                     result["WARNING_DRIFT"] = (
                         "Source and deployed server.ts differ! "
                         f"Run: cp {source_ts} {deployed_file}"
                     )
             result["source_exists"] = source_ts.exists()
+
+    # Derive severity for the structured deploy block.
+    if deploy_hash is None:
+        severity = "skipped"  # plugin cache unreadable or missing
+    elif source_hash is None:
+        severity = "skipped"  # no source to compare against
+    elif drift_detected:
+        severity = "error"
+    else:
+        severity = "ok"
+
+    result["deploy"] = {
+        "plugin_cache_path": str(deployed_file),
+        "plugin_cache_sha256": deploy_hash,
+        "source_path": str(source_ts) if source_ts else None,
+        "source_sha256": source_hash,
+        "source_source": source_source,
+        "drift_detected": drift_detected,
+        "severity": severity,
+    }
     return result
 
 
@@ -842,8 +952,7 @@ def _doctor_check_server_ts(report: DoctorReport) -> None:
         if orphans:
             pids_str = ", ".join(str(b["pid"]) for b in orphans)
             report.warn(
-                f"{len(orphans)} orphaned bridge(s): {pids_str} — "
-                "owning Claude is gone"
+                f"{len(orphans)} orphaned bridge(s): {pids_str} — owning Claude is gone"
             )
         return
 
@@ -864,9 +973,7 @@ def _doctor_check_server_ts(report: DoctorReport) -> None:
         )
 
     if others:
-        summary = ", ".join(
-            f"{b['pid']}→claude:{b['owning_claude']}" for b in others
-        )
+        summary = ", ".join(f"{b['pid']}→claude:{b['owning_claude']}" for b in others)
         report.note(
             f"{len(others)} bridge(s) in other Claude sessions: {summary} — ignored"
         )
@@ -893,15 +1000,13 @@ def _doctor_check_session_subscription(report: DoctorReport) -> None:
     our_claude = _find_owning_claude(os.getpid())
     if our_claude is None:
         report.note(
-            "doctor not running inside a Claude session — "
-            "subscription check skipped"
+            "doctor not running inside a Claude session — subscription check skipped"
         )
         return
     argv = _read_proc_cmdline(our_claude)
     if argv is None:
         report.warn(
-            f"could not read /proc/{our_claude}/cmdline — "
-            "subscription check skipped"
+            f"could not read /proc/{our_claude}/cmdline — subscription check skipped"
         )
         return
     if session_subscribed_to_telegram(argv):
@@ -957,35 +1062,73 @@ def _find_plugin_server_ts() -> tuple[Path, str | None] | None:
 
 
 def _doctor_check_deploy(report: DoctorReport) -> None:
+    """Auto-run plugin-cache drift check.
+
+    Source dir is resolved in this order:
+      1. `$TELEGRAM_SOURCE_DIR` (explicit override)
+      2. `~/gits/igor2/telegram-server` (hardcoded default for Igor's box)
+      3. skipped — degrades to legacy note for setups without either
+
+    If the source is resolved and the plugin cache is readable, sha256-compares
+    both files:
+      - match   → ✅ green, nothing to worry about
+      - drift   → ❌ red, fails the doctor (exit non-zero) so the hourly
+                   watchdog catches plugin auto-update damage automatically
+      - skipped → legacy "·" note, unchanged behavior for non-Igor setups
+
+    This check existed before but only ran when `TELEGRAM_SOURCE_DIR` was
+    explicitly exported. On 2026-04-14 a plugin auto-update 0.0.5→0.0.6
+    silently replaced the deployed two-process fork with upstream vanilla,
+    re-enabling polling and causing 409 Conflicts with `telegram_bot.py`.
+    Making the check default-on closes that silent-miss.
+    """
     report.section("DEPLOY")
     plugin_info = _find_plugin_server_ts()
-    src = _source_server_ts()
+    source_path, source_source = _resolve_source_dir()
+    src = (source_path / "server.ts") if source_path else None
+
     if src is None:
-        # No canonical source configured — we can still validate the plugin
-        # cache exists, just not whether it's in sync with an upstream copy.
+        # No canonical source resolved (neither env var nor default).
+        # We can still validate the plugin cache exists; we just can't tell
+        # whether it's in sync with an upstream copy. Legacy skipped note.
         if plugin_info is None:
-            report.warn("no plugin-cache server.ts found (TELEGRAM_SOURCE_DIR unset)")
+            report.warn(
+                "no plugin-cache server.ts found "
+                "(set TELEGRAM_SOURCE_DIR or populate ~/gits/igor2/telegram-server)"
+            )
             return
         plugin_path, plugin_hash = plugin_info
-        report.note(
-            f"plugin cache: {plugin_hash} ({plugin_path}) — "
-            "set TELEGRAM_SOURCE_DIR to enable drift check"
-        )
+        # If TELEGRAM_SOURCE_DIR was explicitly set but pointed somewhere that
+        # doesn't contain server.ts, say so loudly — otherwise the operator
+        # thinks the check ran.
+        if source_source == "env":
+            report.note(
+                f"plugin cache: {plugin_hash} ({plugin_path}) — "
+                "TELEGRAM_SOURCE_DIR set but missing server.ts, drift check skipped"
+            )
+        else:
+            report.note(
+                f"plugin cache: {plugin_hash} ({plugin_path}) — "
+                "no source dir resolvable, drift check skipped"
+            )
         return
-    if not src.exists():
-        report.fail(f"source server.ts missing at {src}")
-        return
+
     src_hash = _file_hash(src)
     if plugin_info is None:
         report.warn(f"no plugin-cache server.ts found (src={src_hash})")
         return
     plugin_path, plugin_hash = plugin_info
     if src_hash and plugin_hash and src_hash == plugin_hash:
-        report.ok(f"source == plugin: {src_hash} ({plugin_path})")
+        report.ok(
+            f"plugin cache matches source (sha256: {src_hash}) — "
+            f"source={src} [{source_source}]"
+        )
     else:
-        report.warn(
-            f"source/plugin drift: src={src_hash} plugin={plugin_hash} — "
-            f"redeploy needed ({plugin_path})"
+        # Red X, not warning — doctor exits non-zero and the watchdog will
+        # catch it. This is the whole point of auto-running the check.
+        report.fail(
+            f"plugin cache DRIFT: source={src_hash} cache={plugin_hash} — "
+            f"run: cp {src} {plugin_path}"
         )
 
 
@@ -1219,7 +1362,7 @@ def run_paths() -> int:
         *(
             [
                 (
-                    "Source tree (TELEGRAM_SOURCE_DIR)",
+                    f"Source tree ({_resolve_source_dir()[1] or '?'}: {_source_dir()})",
                     [
                         ("telegram_bot.py", _source_dir() / "telegram_bot.py"),  # type: ignore[operator]
                         ("server.ts", _source_dir() / "server.ts"),  # type: ignore[operator]
