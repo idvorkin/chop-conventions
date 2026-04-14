@@ -31,6 +31,16 @@ POLL_INTERVAL = 5  # seconds between liveness checks
 SETTLE_DELAY = 2  # seconds to wait after bun death before recovery
 NEW_BUN_TIMEOUT = 60  # seconds to wait for new bun to appear
 
+# Sentinel returned by _resolve_pane_via_rmux_helper when the caller should
+# fall back to the Python walker. Distinct from None (which is a *definitive*
+# no-match from rmux_helper exit 1) so we can tell "unavailable" apart from
+# "answer is: no pane".
+_FALLBACK = object()
+
+# Timeout for the rmux_helper subprocess. The binary is fast (µs-level walks),
+# so 2s is a generous ceiling that still protects us against a hung process.
+_RMUX_HELPER_TIMEOUT = 2.0
+
 
 def log(msg: str) -> None:
     """Log to stderr with timestamp and PID."""
@@ -149,6 +159,77 @@ def list_tmux_pane_pids() -> dict[int, str]:
     return out
 
 
+def _resolve_pane_via_rmux_helper(pid: int):
+    """Try to resolve the pane by shelling out to ``rmux_helper parent-pid-tree``.
+
+    Returns:
+        str: the pane id (e.g. ``"%35"``) if rmux_helper found a match.
+        None: if rmux_helper definitively said "no match" (exit 1) — caller
+              must NOT fall back, this is a real answer.
+        _FALLBACK: sentinel meaning "try the Python fallback" (rmux_helper
+                   unavailable, timed out, or returned an unexpected code).
+
+    Exit-code semantics from the Rust ``rmux_helper parent-pid-tree``:
+      0 — match found, pane id on stdout
+      1 — no match (definitive; don't fall back)
+      2 — tmux not running → fall back
+      3 — /proc unreadable → fall back
+    """
+    try:
+        result = subprocess.run(
+            ["rmux_helper", "parent-pid-tree", "--pid", str(pid)],
+            capture_output=True,
+            text=True,
+            timeout=_RMUX_HELPER_TIMEOUT,
+        )
+    except FileNotFoundError:
+        log("rmux_helper unavailable — falling back to Python walker")
+        return _FALLBACK
+    except subprocess.TimeoutExpired:
+        log("rmux_helper timed out — falling back to Python walker")
+        return _FALLBACK
+
+    if result.returncode == 0:
+        pane = result.stdout.strip()
+        if not pane:
+            # Exit 0 with empty stdout is weird — treat defensively.
+            log(
+                "rmux_helper returned exit 0 with empty stdout — falling back to Python walker"
+            )
+            return _FALLBACK
+        return pane
+    if result.returncode == 1:
+        # Definitive "no pane in ancestor chain". Don't fall back — the
+        # Python walker is looking at the same process tree and would give
+        # the same answer.
+        return None
+
+    # Exit 2 (tmux not running) or 3 (/proc unreadable) — these could be
+    # transient quirks of the rmux_helper build on this box. Fall back to
+    # the Python walker as a safety net.
+    log(
+        f"rmux_helper returned exit {result.returncode} — falling back to Python walker"
+    )
+    return _FALLBACK
+
+
+def _resolve_pane_via_python_walker(pid: int) -> str | None:
+    """Find the tmux pane whose shell is an ancestor of `pid` (Python impl).
+
+    This is the fallback path for ``resolve_pane_for_pid``. It derives the
+    answer from the kernel process tree by walking ppid from `pid` upward
+    through ``/proc/<pid>/stat`` and matching each ancestor against the
+    set of known tmux pane shell pids. Resilient to env-var staleness,
+    nested tmux, and pane reparenting.
+
+    Kept as a safety net even though ``rmux_helper parent-pid-tree``
+    reimplements the same algorithm in Rust — the Python walker runs
+    without external dependencies and has its own test coverage.
+    """
+    pane_pids = list_tmux_pane_pids()
+    return find_ancestor_pane(pid, pane_pids)
+
+
 def resolve_pane_for_pid(pid: int) -> str | None:
     """Find the tmux pane whose shell is an ancestor of `pid`.
 
@@ -156,14 +237,30 @@ def resolve_pane_for_pid(pid: int) -> str | None:
     backgrounded/disowned subprocess where `TMUX_PANE` may be stale and
     the unscoped `tmux display-message -p '#{pane_id}'` fallback can
     land on the wrong pane — specifically, tmux's session-most-recent
-    active pane rather than the caller's own pane. Walks ppid from
-    `pid` upward through `/proc/<pid>/stat` and matches each ancestor
-    against the set of known tmux pane shell pids, returning the first
-    hit. Derives the answer from the kernel process tree so it's
-    resilient to env-var staleness, nested tmux, and pane reparenting.
+    active pane rather than the caller's own pane.
+
+    Primary path: shells out to ``rmux_helper parent-pid-tree --pid <pid>``
+    (the Rust implementation from idvorkin/Settings PR #76). This matches
+    the repo convention added in d8431ad to prefer rmux_helper for
+    tmux/proc primitives instead of re-implementing them inline.
+
+    Fallback path: the existing Python parent-chain walker
+    (``_resolve_pane_via_python_walker``). Invoked only if rmux_helper is
+    missing from PATH, times out, or returns an unexpected exit code.
+    rmux_helper exit 1 (definitive "no pane in ancestor chain") is NOT
+    treated as a fall-back trigger — the two implementations walk the
+    same ``/proc`` tree and would give the same answer.
+
+    See ``skills/harden-telegram/SKILL.md`` and the 2026-04-14 Telegram
+    meltdown debug session for why ``tmux display-message -p '#{pane_id}'``
+    is wrong.
     """
-    pane_pids = list_tmux_pane_pids()
-    return find_ancestor_pane(pid, pane_pids)
+    result = _resolve_pane_via_rmux_helper(pid)
+    if result is _FALLBACK:
+        return _resolve_pane_via_python_walker(pid)
+    if isinstance(result, str):
+        log(f"rmux_helper resolved pane {result} for pid {pid}")
+    return result  # str (match) or None (definitive no-match)
 
 
 def write_pid_file() -> None:

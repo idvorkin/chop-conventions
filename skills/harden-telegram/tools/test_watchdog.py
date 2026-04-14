@@ -13,15 +13,20 @@ process tree, so it's deterministic regardless of env-var hygiene.
 Run with: python3 -m unittest test_watchdog.py
 """
 
+import subprocess
 import sys
 import unittest
 from pathlib import Path
+from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).parent))
 
 from watchdog import (  # noqa: E402
+    _FALLBACK,
+    _resolve_pane_via_rmux_helper,
     find_ancestor_pane,
     parse_proc_stat,
+    resolve_pane_for_pid,
 )
 
 
@@ -178,6 +183,144 @@ class TestFindAncestorPane(unittest.TestCase):
                 199, {9999: "%1"}, stat_reader=make_stat_reader(table), max_depth=50
             )
         )
+
+
+def _completed_process(returncode: int, stdout: str = "", stderr: str = ""):
+    """Build a fake CompletedProcess for subprocess.run mocks."""
+    return subprocess.CompletedProcess(
+        args=["rmux_helper", "parent-pid-tree", "--pid", "999"],
+        returncode=returncode,
+        stdout=stdout,
+        stderr=stderr,
+    )
+
+
+class TestResolvePaneViaRmuxHelper(unittest.TestCase):
+    """Unit tests for the rmux_helper subprocess path.
+
+    The primary path of ``resolve_pane_for_pid`` shells out to
+    ``rmux_helper parent-pid-tree --pid <pid>``. These tests mock
+    ``subprocess.run`` to cover each exit-code branch so we don't
+    depend on rmux_helper being installed in the test environment.
+    """
+
+    def test_happy_path_returns_pane_id(self):
+        with mock.patch(
+            "watchdog.subprocess.run",
+            return_value=_completed_process(0, stdout="%35\n"),
+        ):
+            self.assertEqual(_resolve_pane_via_rmux_helper(999), "%35")
+
+    def test_exit_1_returns_none_not_sentinel(self):
+        # Exit 1 is a definitive "no pane in ancestor chain" — caller
+        # must NOT fall back, the answer is None.
+        with mock.patch(
+            "watchdog.subprocess.run",
+            return_value=_completed_process(
+                1, stderr="no tmux pane found for pid 999\n"
+            ),
+        ):
+            self.assertIsNone(_resolve_pane_via_rmux_helper(999))
+
+    def test_file_not_found_returns_fallback(self):
+        # rmux_helper not on PATH → fall back to Python walker.
+        with mock.patch(
+            "watchdog.subprocess.run",
+            side_effect=FileNotFoundError("rmux_helper"),
+        ):
+            self.assertIs(_resolve_pane_via_rmux_helper(999), _FALLBACK)
+
+    def test_timeout_returns_fallback(self):
+        # rmux_helper hangs → fall back to Python walker.
+        with mock.patch(
+            "watchdog.subprocess.run",
+            side_effect=subprocess.TimeoutExpired(cmd="rmux_helper", timeout=2.0),
+        ):
+            self.assertIs(_resolve_pane_via_rmux_helper(999), _FALLBACK)
+
+    def test_exit_2_returns_fallback(self):
+        # Exit 2 = tmux not running. Fall back — rmux_helper's tmux
+        # detection may be wrong on this box.
+        with mock.patch(
+            "watchdog.subprocess.run",
+            return_value=_completed_process(2, stderr="tmux not running\n"),
+        ):
+            self.assertIs(_resolve_pane_via_rmux_helper(999), _FALLBACK)
+
+    def test_exit_3_returns_fallback(self):
+        # Exit 3 = /proc unreadable. Fall back.
+        with mock.patch(
+            "watchdog.subprocess.run",
+            return_value=_completed_process(3, stderr="/proc unreadable\n"),
+        ):
+            self.assertIs(_resolve_pane_via_rmux_helper(999), _FALLBACK)
+
+    def test_empty_stdout_on_exit_0_returns_fallback(self):
+        # Exit 0 with empty stdout is malformed — fall back defensively.
+        with mock.patch(
+            "watchdog.subprocess.run",
+            return_value=_completed_process(0, stdout="\n"),
+        ):
+            self.assertIs(_resolve_pane_via_rmux_helper(999), _FALLBACK)
+
+
+class TestResolvePaneForPid(unittest.TestCase):
+    """Integration tests for the two-tier resolver.
+
+    ``resolve_pane_for_pid`` tries ``rmux_helper`` first and only falls
+    back to the Python walker on sentinel responses. These tests verify
+    the dispatch logic between the two paths.
+    """
+
+    def test_falls_back_to_python_walker_when_rmux_helper_missing(self):
+        with (
+            mock.patch(
+                "watchdog.subprocess.run",
+                side_effect=FileNotFoundError("rmux_helper"),
+            ),
+            mock.patch(
+                "watchdog._resolve_pane_via_python_walker",
+                return_value="%99",
+            ) as mock_walker,
+        ):
+            self.assertEqual(resolve_pane_for_pid(999), "%99")
+            mock_walker.assert_called_once_with(999)
+
+    def test_primary_path_wins_python_walker_not_called(self):
+        # When rmux_helper succeeds, the Python walker must never run.
+        # Mock it to raise so the test fails loudly if the fallback is
+        # invoked by mistake.
+        with (
+            mock.patch(
+                "watchdog.subprocess.run",
+                return_value=_completed_process(0, stdout="%35\n"),
+            ),
+            mock.patch(
+                "watchdog._resolve_pane_via_python_walker",
+                side_effect=AssertionError(
+                    "fallback must not be called on primary success"
+                ),
+            ) as mock_walker,
+        ):
+            self.assertEqual(resolve_pane_for_pid(999), "%35")
+            mock_walker.assert_not_called()
+
+    def test_exit_1_does_not_fall_back(self):
+        # Exit 1 from rmux_helper is a definitive "no match". The Python
+        # walker must NOT be called — if it were, the two implementations
+        # could disagree on the same process tree.
+        with (
+            mock.patch(
+                "watchdog.subprocess.run",
+                return_value=_completed_process(1),
+            ),
+            mock.patch(
+                "watchdog._resolve_pane_via_python_walker",
+                return_value="%99",
+            ) as mock_walker,
+        ):
+            self.assertIsNone(resolve_pane_for_pid(999))
+            mock_walker.assert_not_called()
 
 
 if __name__ == "__main__":
