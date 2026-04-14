@@ -34,8 +34,15 @@ NEW_BUN_TIMEOUT = 60  # seconds to wait for new bun to appear
 # Sentinel returned by _resolve_pane_via_rmux_helper when the caller should
 # fall back to the Python walker. Distinct from None (which is a *definitive*
 # no-match from rmux_helper exit 1) so we can tell "unavailable" apart from
-# "answer is: no pane".
-_FALLBACK = object()
+# "answer is: no pane". Defined as a class-based singleton so Pyright can
+# narrow the union type (`str | _FallbackSentinel | None`) via `isinstance`.
+class _FallbackSentinel:
+    """Singleton marker for 'rmux_helper path unavailable — use the Python walker'."""
+
+    __slots__ = ()
+
+
+_FALLBACK = _FallbackSentinel()
 
 # Timeout for the rmux_helper subprocess. The binary is fast (µs-level walks),
 # so 2s is a generous ceiling that still protects us against a hung process.
@@ -159,7 +166,7 @@ def list_tmux_pane_pids() -> dict[int, str]:
     return out
 
 
-def _resolve_pane_via_rmux_helper(pid: int):
+def _resolve_pane_via_rmux_helper(pid: int) -> "str | None | _FallbackSentinel":
     """Try to resolve the pane by shelling out to ``rmux_helper parent-pid-tree``.
 
     Returns:
@@ -256,11 +263,12 @@ def resolve_pane_for_pid(pid: int) -> str | None:
     is wrong.
     """
     result = _resolve_pane_via_rmux_helper(pid)
-    if result is _FALLBACK:
+    if isinstance(result, _FallbackSentinel):
         return _resolve_pane_via_python_walker(pid)
-    if isinstance(result, str):
+    # result is now narrowed to str | None
+    if result is not None:
         log(f"rmux_helper resolved pane {result} for pid {pid}")
-    return result  # str (match) or None (definitive no-match)
+    return result
 
 
 def write_pid_file() -> None:
