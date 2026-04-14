@@ -84,6 +84,36 @@ Use it when:
 
 The watchdog cron scheduled by `/startup-larry` step 3 item 4 uses this exclusively — that's the design principle: **the thing watching Telegram must not depend on Telegram's MCP bridge.**
 
+### Recovery Protocol (interactive session)
+
+When an interactive Claude session detects the Telegram MCP has died — `mcp__plugin_telegram_telegram__*` tools vanish from the available tool list, or a `reply` call fails, or the doctor shows red — **follow this order. Do not skip the first direct-send.**
+
+1. **Ping Igor's phone FIRST via `--direct-send`, before diagnosing.** One second of cost, guarantees Igor knows something is happening even if he's on Telegram-only and not watching the terminal:
+   ```bash
+   python3 ~/.claude/skills/harden-telegram/tools/telegram_debug.py \
+     --direct-send "⚠️ Larry: Telegram MCP down. Starting recovery."
+   ```
+
+2. **Diagnose.** Run `telegram_debug.py --doctor` (or `--doctor --json` if parsing). Identify the specific failure mode.
+
+3. **Walk Tier 2 recovery.** Kill stale process if needed, restart, fire `/reload-plugins` (via the background watchdog pattern — never foreground).
+
+4. **Ping again on outcome** — same direct-send path:
+   - Success: `--direct-send "✅ Recovered — <what was fixed>"`
+   - Failure: `--direct-send "❌ Still broken — <details>"` AND append a timestamped line to `/tmp/larry_telegram_recovery.log`
+
+5. **Verify via an untagged MCP reply.** After MCP comes back, send a normal `reply` tool call to confirm the bridge is live. The **absence** of the `[direct-send]` prefix on the next message Igor sees proves MCP is back — that's the semantic signal.
+
+**Why the first direct-send is mandatory.** Silent recovery looks identical to "Claude crashed" from Igor's perspective. A 1-second notification is cheap insurance against a 30-minute silence. This is the same principle as the hourly watchdog cron documented above: **the thing watching Telegram must not depend on Telegram's MCP bridge.** The cron already follows this principle; the interactive recovery path must too.
+
+**What counts as "detecting MCP is down".** Any of:
+- System-reminder arrives saying `plugin:telegram:telegram` has disconnected
+- `mcp__plugin_telegram_telegram__reply` or related tools are no longer in the tool list
+- A reply-tool call returns a "tool not available" or transport error
+- `telegram_debug.py --doctor` shows any red section
+
+Any one of these triggers the protocol. Do not wait for confirmation across multiple signals — ping first, confirm after.
+
 ---
 
 ## Tier 2: Reload (`/harden-telegram reload`)
