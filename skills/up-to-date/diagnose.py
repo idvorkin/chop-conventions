@@ -22,14 +22,26 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
+import platform
 import re
+import shutil
+import socket
 import subprocess
 import sys
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import asdict, dataclass, field
+from pathlib import Path
 from typing import Any
 
 FORK_ORGS = ["idvorkin-ai-tools"]
+
+# Hostname pattern for the dev-VM class (`c-5004`, `C-5004`, etc.).
+_DEV_HOSTNAME_RE = re.compile(r"^c-\d+$", re.IGNORECASE)
+
+# Canonical slot names emitted into `shared_claude_md.expected_symlinks`
+# and matching action-kind output from `compute_slot_action`.
+_SLOTS = ("global", "machine", "dev_machine")
 
 
 # ---------- Data types ----------
@@ -60,6 +72,22 @@ class RemoteAnalysis:
 class CherryAnalysis:
     unique_commits: list[str]
     equivalent_commits: list[str]
+
+
+@dataclass(frozen=True)
+class MachineInfo:
+    """Classification result for the machine running `diagnose.py`.
+
+    `machine` is one of `"mac" | "orbstack-dev" | "unknown"`.
+    `dev_machine` is True iff the host is served to the user over
+    Tailscale (Tailscale present AND hostname matches dev-VM pattern).
+    `reasons` is a human-readable evidence list — both for debugging
+    and for surfacing in the diagnose output.
+    """
+
+    machine: str
+    dev_machine: bool
+    reasons: list[str]
 
 
 @dataclass(frozen=True)
@@ -261,6 +289,358 @@ def parse_symbolic_ref_output(raw: str, src: str) -> str | None:
     return None
 
 
+# ---------- Machine detection (pure) ----------
+
+
+def classify_machine(
+    system: str,
+    mac_ver_nonempty: bool,
+    home_developer_exists: bool,
+) -> tuple[str, list[str]]:
+    """Classify the machine type from already-evaluated booleans.
+
+    Pure: callers pass in pre-computed signals, so the test suite never
+    needs to mock `platform` or `pathlib`. Returns
+    `(machine, reasons)` where `machine` is one of
+    `"mac" | "orbstack-dev" | "unknown"`.
+    """
+    reasons: list[str] = []
+    if system == "Darwin":
+        if mac_ver_nonempty:
+            reasons.append("platform.system()==Darwin + mac_ver non-empty")
+            return "mac", reasons
+        reasons.append(
+            "platform.system()==Darwin but mac_ver empty — falling through"
+        )
+        return "unknown", reasons
+    if system == "Linux":
+        if home_developer_exists:
+            reasons.append("Linux + /home/developer present")
+            return "orbstack-dev", reasons
+        reasons.append("Linux but /home/developer absent")
+        return "unknown", reasons
+    reasons.append(f"unrecognized platform.system()={system!r}")
+    return "unknown", reasons
+
+
+def classify_dev_machine(
+    tailscale_present: bool,
+    hostname: str,
+) -> tuple[bool, list[str]]:
+    """Classify whether this host is served to the user over Tailscale.
+
+    Both conditions must hold:
+    1. Tailscale is installed (binary in PATH or well-known install paths).
+    2. The hostname matches `^c-\\d+$` (case-insensitive).
+
+    Returns `(dev_machine, reasons)`.
+    """
+    reasons: list[str] = []
+    if tailscale_present:
+        reasons.append("tailscale present")
+    else:
+        reasons.append("tailscale not found in PATH or well-known paths")
+    if _DEV_HOSTNAME_RE.match(hostname):
+        reasons.append(f"hostname={hostname} matches ^c-\\d+$")
+    else:
+        reasons.append(f"hostname={hostname} does not match ^c-\\d+$")
+    return (tailscale_present and bool(_DEV_HOSTNAME_RE.match(hostname))), reasons
+
+
+def _tailscale_present() -> bool:
+    """Thin I/O wrapper: True if Tailscale is discoverable on this host.
+
+    Checks PATH first (covers Mac+Homebrew and Linux) and falls back to
+    two well-known absolute paths.
+    """
+    if shutil.which("tailscale") is not None:
+        return True
+    for candidate in ("/usr/bin/tailscale", "/opt/homebrew/bin/tailscale"):
+        if Path(candidate).exists():
+            return True
+    return False
+
+
+def detect_machine() -> MachineInfo:
+    """Build a MachineInfo by probing `platform`, `pathlib`, `socket`.
+
+    This is the thin I/O wrapper around `classify_machine` and
+    `classify_dev_machine`. Each OS probe runs exactly once; the pure
+    classifiers receive only booleans and strings. Intentionally not
+    unit-tested — the classifiers are.
+    """
+    system = platform.system()
+    mac_ver = platform.mac_ver()[0]
+    home_developer_exists = Path("/home/developer").is_dir()
+    machine, machine_reasons = classify_machine(
+        system=system,
+        mac_ver_nonempty=bool(mac_ver),
+        home_developer_exists=home_developer_exists,
+    )
+    hostname = socket.gethostname()
+    dev_machine, dev_reasons = classify_dev_machine(
+        tailscale_present=_tailscale_present(),
+        hostname=hostname,
+    )
+    return MachineInfo(
+        machine=machine,
+        dev_machine=dev_machine,
+        reasons=machine_reasons + dev_reasons,
+    )
+
+
+# ---------- Shared CLAUDE.md (pure, stat-based) ----------
+
+
+def resolve_chop_root(env: dict[str, str], home: Path) -> Path | None:
+    """Return an absolute Path to a chop-conventions checkout or None.
+
+    Preference order:
+    1. `CHOP_CONVENTIONS_ROOT` environment variable.
+    2. `<home>/gits/chop-conventions` fallback.
+
+    A candidate is accepted only if it contains `claude-md/global.md`.
+    Pure on `(env, home)` with one stat per candidate.
+    """
+    candidates: list[Path] = []
+    env_root = env.get("CHOP_CONVENTIONS_ROOT")
+    if env_root:
+        candidates.append(Path(env_root))
+    candidates.append(home / "gits" / "chop-conventions")
+    for candidate in candidates:
+        try:
+            marker = candidate / "claude-md" / "global.md"
+            if marker.is_file():
+                return candidate
+        except OSError:
+            continue
+    return None
+
+
+def _slot_plan(
+    chop_root: Path,
+    home: Path,
+    machine_info: MachineInfo,
+    enabled: bool,
+) -> dict[str, dict[str, Any]]:
+    """Compute `expected_symlinks` (path + target + should_install per slot).
+
+    Pure: takes already-resolved inputs.
+    """
+    base = home / ".claude" / "claude-md"
+    cm = chop_root / "claude-md"
+    machine = machine_info.machine
+    machine_target_exists = (cm / "machines" / f"{machine}.md").is_file()
+    plan: dict[str, dict[str, Any]] = {
+        "global": {
+            "path": str(base / "global.md"),
+            "target": str(cm / "global.md"),
+            "should_install": enabled,
+        },
+        "machine": {
+            "path": str(base / "machine.md"),
+            # Unknown / missing machine file → target points at the would-be
+            # file and should_install=false; the skill will report that no
+            # machine-type fragment is available rather than crash.
+            "target": str(cm / "machines" / f"{machine}.md"),
+            "should_install": enabled and machine_target_exists,
+        },
+        "dev_machine": {
+            "path": str(base / "dev-machine.md"),
+            "target": str(cm / "dev-machine.md"),
+            "should_install": enabled and machine_info.dev_machine,
+        },
+    }
+    return plan
+
+
+def _inspect_slot(path: Path) -> dict[str, Any]:
+    """Return the current filesystem state of a single slot path.
+
+    Pure on the filesystem — calls lstat + readlink only. Never mutates.
+    """
+    is_symlink = path.is_symlink()
+    exists = path.exists() or is_symlink  # lexists semantics
+    resolves_to: str | None = None
+    if is_symlink:
+        try:
+            resolves_to = os.readlink(path)
+            # Normalize to an absolute path when the stored link is relative,
+            # so comparisons against the plan's `target` (always absolute)
+            # are meaningful.
+            if not os.path.isabs(resolves_to):
+                resolves_to = str((path.parent / resolves_to).resolve(strict=False))
+        except OSError:
+            resolves_to = None
+    return {
+        "exists": exists,
+        "is_symlink": is_symlink,
+        "resolves_to": resolves_to,
+    }
+
+
+def compute_slot_action(
+    slot: str,
+    expected: dict[str, Any],
+    actual: dict[str, Any],
+) -> dict[str, Any] | None:
+    """Decide the single action (if any) needed to bring a slot to its expected state.
+
+    Returns one of `create_symlink`, `replace_stale_symlink`,
+    `remove_obsolete_symlink`, `report_user_file`, or `None` (slot is
+    already correct). Pure.
+    """
+    should_install = expected["should_install"]
+    target = expected["target"]
+    path = expected["path"]
+    if actual["is_symlink"]:
+        if should_install:
+            if actual["resolves_to"] == target:
+                return None
+            return {
+                "kind": "replace_stale_symlink",
+                "slot": slot,
+                "path": path,
+                "target": target,
+                "current_target": actual["resolves_to"],
+            }
+        return {
+            "kind": "remove_obsolete_symlink",
+            "slot": slot,
+            "path": path,
+            "current_target": actual["resolves_to"],
+        }
+    if actual["exists"]:
+        # Real file (or directory) sitting at the slot path — never touch it.
+        return {
+            "kind": "report_user_file",
+            "slot": slot,
+            "path": path,
+        }
+    # Slot is missing.
+    if should_install:
+        return {
+            "kind": "create_symlink",
+            "slot": slot,
+            "path": path,
+            "target": target,
+        }
+    return None
+
+
+def _slot_drift(
+    expected: dict[str, Any],
+    actual: dict[str, Any],
+) -> bool:
+    """True iff the slot's actual state disagrees with its expected state."""
+    should_install = expected["should_install"]
+    if not actual["exists"]:
+        return should_install
+    if not actual["is_symlink"]:
+        # Real file — drift regardless of should_install; skill must
+        # report it.
+        return True
+    if should_install:
+        return actual["resolves_to"] != expected["target"]
+    # symlink present but should_install=false → drift (obsolete).
+    return True
+
+
+def check_shared_claude_md(
+    chop_root: Path,
+    home: Path,
+    enabled: bool,
+    machine_info: MachineInfo,
+) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+    """Compute the `shared_claude_md` block + any errors to append.
+
+    Called only when `resolve_chop_root` returned a real Path. Pure
+    with respect to its inputs; the filesystem reads are via
+    `_inspect_slot` which only stats, never writes.
+    """
+    errors: list[dict[str, Any]] = []
+    claude_md_dir = home / ".claude" / "claude-md"
+    # The parent directory MUST be a real directory, not a symlink.
+    # A symlink here would redirect `.enabled`, `hooks-trusted.json`,
+    # and every slot into attacker-controlled space.
+    if claude_md_dir.is_symlink():
+        errors.append(
+            {
+                "subsystem": "shared_claude_md",
+                "code": "claude_md_dir_is_symlink",
+                "message": (
+                    f"{claude_md_dir} is a symlink; refusing to inspect slots. "
+                    "Remove or replace with a real directory."
+                ),
+                "path": str(claude_md_dir),
+            }
+        )
+
+    expected = _slot_plan(chop_root, home, machine_info, enabled)
+    actual: dict[str, dict[str, Any]] = {}
+    actions: list[dict[str, Any]] = []
+    for slot in _SLOTS:
+        slot_path = Path(expected[slot]["path"])
+        state = _inspect_slot(slot_path)
+        state["drift"] = _slot_drift(expected[slot], state)
+        actual[slot] = state
+        # If the parent dir is a symlink, skip action emission — the
+        # skill will read the error first and abort.
+        if claude_md_dir.is_symlink():
+            continue
+        action = compute_slot_action(slot, expected[slot], state)
+        if action is not None:
+            actions.append(action)
+
+    block: dict[str, Any] = {
+        "machine_info": {
+            "machine": machine_info.machine,
+            "dev_machine": machine_info.dev_machine,
+            "reasons": list(machine_info.reasons),
+        },
+        "chop_root": str(chop_root),
+        "enabled": enabled,
+        "expected_symlinks": expected,
+        "actual": actual,
+        "actions": actions,
+    }
+    return block, errors
+
+
+# ---------- post-up-to-date hook detection ----------
+
+
+def check_post_up_to_date(repo_toplevel: Path | None) -> tuple[str | None, list[dict[str, Any]]]:
+    """Locate `<repo>/.claude/post-up-to-date.md` and enforce symlink refusal.
+
+    Returns `(path_or_none, errors)`. If the hook exists as a symlink,
+    `path_or_none` is `None` and an error is emitted so the skill
+    refuses to execute it.
+    """
+    errors: list[dict[str, Any]] = []
+    if repo_toplevel is None:
+        return None, errors
+    hook_path = repo_toplevel / ".claude" / "post-up-to-date.md"
+    if hook_path.is_symlink():
+        errors.append(
+            {
+                "subsystem": "post_up_to_date",
+                "code": "hook_is_symlink",
+                "message": (
+                    "Refusing to treat a symlinked post-up-to-date.md as a "
+                    "trusted hook — symlink targets drift outside the repo's "
+                    "commit history. Replace with a regular file or use "
+                    "`@`-imports from the markdown instead."
+                ),
+                "path": str(hook_path),
+            }
+        )
+        return None, errors
+    if hook_path.is_file():
+        return str(hook_path), errors
+    return None, errors
+
+
 # ---------- Subprocess helpers ----------
 
 
@@ -322,8 +702,14 @@ def detect_default_branch(src: str) -> str:
 
 
 def run_diagnose() -> dict[str, Any]:
-    """Collect full diagnosis as a JSON-serializable dict."""
-    errors: list[str] = []
+    """Collect full diagnosis as a JSON-serializable dict.
+
+    Top-level `errors` is a heterogeneous list: legacy git/gh failures
+    are plain strings; shared-CLAUDE.md and post-up-to-date errors are
+    dicts with `{subsystem, code, message, ...}` so the skill can
+    filter by subsystem.
+    """
+    errors: list[Any] = []
 
     # Remote hygiene — needs to happen before fetch so we know the source name.
     remotes_raw = git("remote", "-v", check=False)
@@ -550,7 +936,52 @@ def run_diagnose() -> dict[str, Any]:
             "recent_comments": comments[-3:],
         }
 
-    return {
+    # Machine detection — pure Python, no shelling out.
+    machine_info = detect_machine()
+
+    # Resolve chop-conventions root so we know where to point symlinks.
+    home = Path.home()
+    env = dict(os.environ)
+    chop_root = resolve_chop_root(env, home)
+    shared_block: dict[str, Any] | None = None
+    if chop_root is None:
+        probed: list[str] = []
+        if env.get("CHOP_CONVENTIONS_ROOT"):
+            probed.append(env["CHOP_CONVENTIONS_ROOT"])
+        probed.append(str(home / "gits" / "chop-conventions"))
+        errors.append(
+            {
+                "subsystem": "shared_claude_md",
+                "code": "chop_root_unresolved",
+                "message": (
+                    "Could not locate a chop-conventions checkout containing "
+                    "`claude-md/global.md`. Set CHOP_CONVENTIONS_ROOT or clone "
+                    "to ~/gits/chop-conventions."
+                ),
+                "probed": probed,
+            }
+        )
+    else:
+        enabled = (home / ".claude" / "claude-md" / ".enabled").is_file()
+        shared_block, shared_errors = check_shared_claude_md(
+            chop_root=chop_root,
+            home=home,
+            enabled=enabled,
+            machine_info=machine_info,
+        )
+        errors.extend(shared_errors)
+
+    # Locate the repo toplevel for the post-up-to-date hook. `git
+    # rev-parse --show-toplevel` is the canonical way — NOT cwd.
+    toplevel_proc = git_proc("rev-parse", "--show-toplevel", check=False)
+    if toplevel_proc.returncode == 0:
+        repo_toplevel: Path | None = Path(toplevel_proc.stdout.strip())
+    else:
+        repo_toplevel = None
+    post_up_to_date_path, hook_errors = check_post_up_to_date(repo_toplevel)
+    errors.extend(hook_errors)
+
+    result: dict[str, Any] = {
         "remotes": {
             "entries": [asdict(r) for r in analysis.entries],
             "source": analysis.source,
@@ -576,8 +1007,15 @@ def run_diagnose() -> dict[str, Any]:
         "worktrees": worktrees_out,
         "absorbable_branches": absorbable_branches,
         "pr": pr_block,
+        "post_up_to_date_path": post_up_to_date_path,
         "errors": errors,
     }
+    # Per spec: when resolve_chop_root returns None, omit the
+    # `shared_claude_md` key entirely rather than emitting an empty
+    # block. The error in `errors[]` is the signal.
+    if shared_block is not None:
+        result["shared_claude_md"] = shared_block
+    return result
 
 
 def main() -> int:

@@ -56,9 +56,28 @@ The JSON output has this shape:
     "recent_reviews": [...],
     "recent_comments": [...]
   },
+  "shared_claude_md": {
+    "machine_info": {"machine": "orbstack-dev", "dev_machine": true, "reasons": [...]},
+    "chop_root": "/home/user/gits/chop-conventions",
+    "enabled": true,
+    "expected_symlinks": {"global": {...}, "machine": {...}, "dev_machine": {...}},
+    "actual":            {"global": {...}, "machine": {...}, "dev_machine": {...}},
+    "actions":           [{"kind": "create_symlink", "slot": "global", ...}]
+  },
+  "post_up_to_date_path": "/home/user/gits/foo/.claude/post-up-to-date.md",
   "errors": []
 }
 ```
+
+`shared_claude_md` is **omitted entirely** when `diagnose.py` cannot
+resolve a chop-conventions checkout. In that case `errors[]` carries a
+`{subsystem: "shared_claude_md", code: "chop_root_unresolved"}` entry
+and Step 3.5 is skipped without blocking the rest of `/up-to-date`.
+
+`post_up_to_date_path` is `null` when no `.claude/post-up-to-date.md`
+exists at the repo toplevel; symlinked hooks are refused and surface as
+`{subsystem: "post_up_to_date", code: "hook_is_symlink"}` in
+`errors[]`.
 
 Conventions:
 
@@ -175,6 +194,96 @@ If `worktree.stashes` is non-empty, list them and inform the user.
 | Uncommitted        | N files          | Listed below                                 |
 | Behind source/main | N commits        | Will pull                                    |
 | Stashes            | N stashes        | Listed below                                 |
+
+## Step 3.5 — Shared CLAUDE.md setup / resync
+
+Consult `shared_claude_md` in the diagnose JSON. Skip this step entirely
+when any `errors[]` entry has `subsystem == "shared_claude_md"` — that
+includes `chop_root_unresolved` (no chop-conventions checkout found),
+which the skill surfaces once at end-of-run with the remediation
+hint. The other shared-CLAUDE.md subsystems (a symlinked
+`~/.claude/claude-md`, etc.) are also reported but not auto-fixed.
+
+If the `shared_claude_md` key is absent, the subsystem could not run —
+treat exactly the same as "skip this step". The skill never invents an
+empty block.
+
+### First-run opt-in
+
+If `shared_claude_md.enabled == false` AND `shared_claude_md.actions` is
+empty, the user has never opted in on this machine. Offer opt-in:
+
+1. Print `shared_claude_md.machine_info` so the user sees which files
+   would be linked: `machine` (and, if `dev_machine==true`, the
+   `dev-machine.md` slot).
+2. Ask: "Enable shared CLAUDE.md on this machine?"
+3. On approval, verify `~/.claude/claude-md` is **not a symlink**
+   (`Path.is_symlink()` — refuse with a clear error if it is), then
+   `mkdir -p ~/.claude/claude-md` and `touch ~/.claude/claude-md/.enabled`.
+4. Re-run `diagnose.py` and act on the now-non-empty `actions` list.
+5. Print the `@`-import lines the user must add to `~/.claude/CLAUDE.md`
+   by hand — the skill never edits that file automatically because it
+   may contain machine-local overrides. Template:
+
+   ```markdown
+   @~/.claude/claude-md/global.md
+   @~/.claude/claude-md/machine.md
+   @~/.claude/claude-md/dev-machine.md
+   ```
+
+   On non-dev machines the third line resolves to a missing symlink and
+   is silently ignored — Claude Code's `@`-imports no-op on absent
+   targets — so the template is byte-identical across all machines.
+
+### Subsequent runs — action loop
+
+For each action in `shared_claude_md.actions`:
+
+| Kind                      | Command                 | Auto?        |
+| ------------------------- | ----------------------- | ------------ |
+| `create_symlink`          | `ln -s <target> <path>` | Ask user     |
+| `replace_stale_symlink`   | `ln -sfn <target> <path>` | Ask user   |
+| `remove_obsolete_symlink` | report only             | Never auto   |
+| `report_user_file`        | report only             | Never auto   |
+
+`create_symlink` uses plain `-s` (NOT `-sfn`) so a race-condition real
+file at `<path>` fails loudly rather than being clobbered. Stay silent
+when `actions` is empty.
+
+## Step 5 — Post-hook
+
+If `post_up_to_date_path` is non-null, run the hook-trust helper:
+
+```bash
+skills/up-to-date/hook_trust.py --repo-toplevel $(git rev-parse --show-toplevel) --pretty
+```
+
+The helper returns a JSON object with `status`:
+
+- `trusted` — hash matches a recorded approval. Execute the hook by
+  reading the content from the helper's `content_b64` field (base64-
+  decoded), treating the markdown as instructions to follow. **Do not
+  re-read the file from disk** — the helper already performed the
+  single authoritative read; re-reading opens a TOCTOU window between
+  the hash check and execution.
+- `first_sight` — no prior approval. Display the decoded content to
+  the user, ask "trust this hook?", and on approval run
+  `hook_trust.py --approve --repo-toplevel <toplevel>` to record the
+  hash. Then execute the content from memory.
+- `changed` — the hook content changed since the prior approval.
+  Same flow as `first_sight` — show the new content, ask, approve,
+  execute.
+- `corrupt` — the trust store at `~/.claude/claude-md/hooks-trusted.json`
+  could not be parsed. Surface the error to the user and SKIP
+  execution. Do NOT overwrite the corrupt file — the user must
+  inspect and repair (or `rm` to reset all trust) manually.
+- `rejected` — the hook is a symlink or unreadable. Surface the error
+  and skip. Symlinked hooks are refused outright because their targets
+  can drift outside the repo's commit history.
+- `absent` — no hook file present. No-op.
+
+Hooks fire on every `/up-to-date` run regardless of whether commits
+were pulled; the markdown is responsible for its own idempotency.
 
 ## Post-Sync
 
