@@ -152,10 +152,15 @@ def list_tmux_pane_pids() -> dict[int, str]:
 def resolve_pane_for_pid(pid: int) -> str | None:
     """Find the tmux pane whose shell is an ancestor of `pid`.
 
-    This is the correct way to ask "what pane am I running in?" when the
-    tmux-*active* pane (what `tmux display-message -p '#{pane_id}'` returns)
-    may belong to a different session. Walks ppid from `pid` upward, matches
-    against the set of known tmux pane pids, returns the first hit.
+    This is the correct way to ask "what pane am I running in?" from a
+    backgrounded/disowned subprocess where `TMUX_PANE` may be stale and
+    the unscoped `tmux display-message -p '#{pane_id}'` fallback can
+    land on the wrong pane — specifically, tmux's session-most-recent
+    active pane rather than the caller's own pane. Walks ppid from
+    `pid` upward through `/proc/<pid>/stat` and matches each ancestor
+    against the set of known tmux pane shell pids, returning the first
+    hit. Derives the answer from the kernel process tree so it's
+    resilient to env-var staleness, nested tmux, and pane reparenting.
     """
     pane_pids = list_tmux_pane_pids()
     return find_ancestor_pane(pid, pane_pids)
@@ -318,13 +323,17 @@ def do_recovery(tmux_pane: str) -> bool:
 
 
 def tmux_active_pane() -> str:
-    """Return the tmux-active pane ID via `display-message`.
+    """Fallback: ask tmux for a pane ID via unscoped `display-message`.
 
-    WARNING: this is the pane currently focused in the attached client,
-    NOT necessarily the pane containing the caller. With multiple Claude
-    sessions on one box, the active pane is often the wrong answer. Use
-    `resolve_pane_for_pid(os.getpid())` first and fall back here only if
-    the parent-chain walk cannot resolve a pane.
+    WARNING: this is unreliable from backgrounded/disowned subprocesses.
+    Without `-t "$TMUX_PANE"`, `display-message` uses whatever pane
+    context tmux can infer from the caller — and for a long-lived
+    backgrounded process whose `TMUX_PANE` env has gone stale (or whose
+    parent shell has exited), that falls back to the session's
+    most-recently-active pane, which is often the wrong one on a box
+    with multiple concurrent tmux clients. Use
+    `resolve_pane_for_pid(os.getpid())` first and fall back here only
+    if the parent-chain walk cannot resolve a pane.
     """
     try:
         result = subprocess.run(
@@ -343,9 +352,11 @@ def tmux_active_pane() -> str:
 def detect_tmux_pane() -> str:
     """Detect the tmux pane containing the caller.
 
-    Prefers parent-chain resolution (correct across concurrent Claude
-    sessions) and falls back to the tmux-active pane only if the walk
-    fails. Logs which path was taken so failures surface.
+    Prefers parent-PID chain resolution (derives the answer from the
+    kernel process tree, so it survives backgrounding, disown, and
+    stale `TMUX_PANE`). Falls back to unscoped `display-message` only
+    if the walk can't resolve a pane. Logs which path was taken so
+    failures surface.
     """
     resolved = resolve_pane_for_pid(os.getpid())
     if resolved:

@@ -3,10 +3,12 @@
 
 Focus: the pane-resolution logic that walks the parent-process chain to find
 the tmux pane containing the caller. The real bug (fixed 2026-04-14) was that
-`reload` used `tmux display-message -p '#{pane_id}'` which returns the
-tmux-*active* pane, not the pane containing the caller — so with multiple
-concurrent Claude sessions the watchdog fired /reload-plugins into whichever
-session happened to be focused. Parent-chain walk is deterministic.
+`reload` used unscoped `tmux display-message -p '#{pane_id}'` from a
+backgrounded, disowned watchdog subprocess — by then `TMUX_PANE` was stale
+and display-message fell back to the session's most-recently-active pane,
+which with multiple concurrent Claude sessions was routinely the wrong one.
+Parent-chain walk via /proc/<pid>/stat derives the answer from the kernel
+process tree, so it's deterministic regardless of env-var hygiene.
 
 Run with: python3 -m unittest test_watchdog.py
 """
