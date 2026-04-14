@@ -7,7 +7,14 @@
       "Bash(git stash:*)",
       "Bash(git push:*)",
       "Bash(git add:*)",
-      "Bash(git commit -m ':*)"
+      "Bash(git commit:*)",
+      "Skill(up-to-date)",
+      "Bash(ln -s /Users/idvorkin/gits/chop-conventions/skills/docs ~/.claude/skills/docs)",
+      "Bash(cp ~/.claude/statusline-command.sh ~/.claude/statusline-command.sh.bak)",
+      "Bash(cp /Users/idvorkin/gits/chop-conventions/dev-setup/statusline-command.sh ~/.claude/statusline-command.sh)",
+      "Bash(chmod +x ~/.claude/statusline-command.sh)",
+      "Read(//Users/idvorkin/.claude/**)",
+      "Bash(git rebase:*)"
     ],
     "deny": [],
     "ask": []
