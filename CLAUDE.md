@@ -63,6 +63,15 @@ Scripts that signal processes by pattern (cpulimit, pkill, kill by comm match) M
 
 **When a user reports "I don't see the new feature" after code changes to a compiled tool, first check the installed binary's mtime, not the source.** `ls -la $(which <tool>)` or `stat` — compare against commit time. `cargo test` / `cargo build` validates fresh source but does NOT replace `~/.cargo/bin/<tool>`; use `cargo install --path . --force`. Don't open the debugger until you've confirmed the binary you're running contains the change.
 
+## Environment Primitives: Use `rmux_helper`
+
+**For tmux, `/proc`, or system-introspection primitives, call `rmux_helper <subcommand>` — do NOT hand-roll shell/Python equivalents.** `rmux_helper` is the Rust utility at `~/gits/settings/rust/tmux_helper/` (canonical home for environment tooling). Run `rmux_helper --help` for the current subcommand list. Highlights:
+
+- `rmux_helper side-edit [file]` / `side-run <cmd>` — open a file in the side nvim pane, or run a command there.
+- `rmux_helper parent-pid-tree` — resolve the caller's owning tmux pane by walking `/proc/<pid>/stat` ppid chain and matching ancestors against `tmux list-panes -a -F '#{pane_pid}'`. **Use this for "which pane am I in" lookups.** `tmux display-message -p '#{pane_id}'` is NOT a substitute — it returns the tmux-active (focused) pane, not the caller's pane, and silently targets the wrong pane when multiple Claude sessions run concurrently (observed 2026-04-14: `harden-telegram` watchdog hit the wrong pane for ~45 min before the correct primitive was factored out).
+
+**When a primitive you need doesn't exist, add a new subcommand to `rmux_helper`** rather than duplicating walk/parse logic in every caller. Follow the existing `Subcommand` enum pattern in `rust/tmux_helper/src/main.rs`, add unit tests, rebuild with `cargo install --path . --force`. The cross-repo dependency (chop-conventions → `idvorkin/settings`) is explicit and accepted — the alternative is N copies of the same subtle logic drifting out of sync.
+
 ## Diagnostics: Out-of-Band Notification
 
 **A diagnostic tool must not depend on the thing it's diagnosing.** A watchdog that notifies via the MCP bridge it's watching, a healthcheck running inside the process it's checking, backup verification using the backup system itself — all foot-guns that go silent at exactly the moment they need to scream. Notify out-of-band. Reference: `skills/harden-telegram` watchdog uses `telegram_debug.py --direct-send` (POSTs straight to Telegram Bot API) for alerts, never the MCP `reply` tool, so it works even when `server.ts` is dead.
