@@ -22,6 +22,7 @@ import signal
 import subprocess
 import sys
 import time
+from pathlib import Path
 
 PID_FILE = os.path.join(
     os.environ.get("HOME", "/tmp"), ".claude", "channels", "telegram", "watchdog.pid"
@@ -49,6 +50,115 @@ def is_pid_alive(pid: int) -> bool:
         return True
     except OSError:
         return False
+
+
+def parse_proc_stat(data: str) -> tuple[str, int] | None:
+    """Parse /proc/<pid>/stat contents into (comm, ppid).
+
+    The comm field is wrapped in parens and can contain spaces or parens
+    itself, so we anchor on the *last* ')' rather than splitting whitespace
+    naively. Returns None on any malformed input.
+    """
+    rparen = data.rfind(")")
+    lparen = data.find("(")
+    if rparen == -1 or lparen == -1 or rparen < lparen:
+        return None
+    tail = data[rparen + 1 :].split()
+    # tail[0] is state, tail[1] is ppid
+    if len(tail) < 2:
+        return None
+    try:
+        ppid = int(tail[1])
+    except ValueError:
+        return None
+    comm = data[lparen + 1 : rparen]
+    return (comm, ppid)
+
+
+def _read_proc_stat(pid: int) -> tuple[str, int] | None:
+    """Return (comm, ppid) for a PID, or None if the process is gone."""
+    try:
+        data = Path(f"/proc/{pid}/stat").read_text()
+    except (OSError, ValueError):
+        return None
+    return parse_proc_stat(data)
+
+
+def find_ancestor_pane(
+    pid: int,
+    pane_pids: dict[int, str],
+    *,
+    stat_reader=_read_proc_stat,
+    max_depth: int = 32,
+) -> str | None:
+    """Walk the ppid chain from `pid` upward looking for an entry in `pane_pids`.
+
+    `pane_pids` maps a tmux pane's shell pid to its pane_id (e.g. %35).
+    Returns the pane_id of the first ancestor whose pid appears in the map,
+    or None if no ancestor in the chain is a known tmux pane shell.
+
+    The walk includes `pid` itself (edge case: the caller *is* the pane's
+    shell). Loop-guarded against pid-reuse cycles. `stat_reader` injected
+    for tests.
+    """
+    if not pane_pids:
+        return None
+    seen: set[int] = set()
+    current = pid
+    for _ in range(max_depth):
+        if current <= 1:
+            return None
+        if current in seen:
+            return None
+        seen.add(current)
+        if current in pane_pids:
+            return pane_pids[current]
+        info = stat_reader(current)
+        if info is None:
+            return None
+        _comm, ppid = info
+        current = ppid
+    return None
+
+
+def list_tmux_pane_pids() -> dict[int, str]:
+    """Return a {pane_pid: pane_id} map from `tmux list-panes -a`.
+
+    Empty dict on any failure (no tmux, server not running, parse error).
+    """
+    try:
+        result = subprocess.run(
+            ["tmux", "list-panes", "-a", "-F", "#{pane_id} #{pane_pid}"],
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+    except (subprocess.TimeoutExpired, FileNotFoundError):
+        return {}
+    if result.returncode != 0:
+        return {}
+    out: dict[int, str] = {}
+    for line in result.stdout.strip().splitlines():
+        parts = line.split()
+        if len(parts) != 2:
+            continue
+        try:
+            out[int(parts[1])] = parts[0]
+        except ValueError:
+            continue
+    return out
+
+
+def resolve_pane_for_pid(pid: int) -> str | None:
+    """Find the tmux pane whose shell is an ancestor of `pid`.
+
+    This is the correct way to ask "what pane am I running in?" when the
+    tmux-*active* pane (what `tmux display-message -p '#{pane_id}'` returns)
+    may belong to a different session. Walks ppid from `pid` upward, matches
+    against the set of known tmux pane pids, returns the first hit.
+    """
+    pane_pids = list_tmux_pane_pids()
+    return find_ancestor_pane(pid, pane_pids)
 
 
 def write_pid_file() -> None:
@@ -207,8 +317,15 @@ def do_recovery(tmux_pane: str) -> bool:
     return False
 
 
-def detect_tmux_pane() -> str:
-    """Detect the current tmux pane ID."""
+def tmux_active_pane() -> str:
+    """Return the tmux-active pane ID via `display-message`.
+
+    WARNING: this is the pane currently focused in the attached client,
+    NOT necessarily the pane containing the caller. With multiple Claude
+    sessions on one box, the active pane is often the wrong answer. Use
+    `resolve_pane_for_pid(os.getpid())` first and fall back here only if
+    the parent-chain walk cannot resolve a pane.
+    """
     try:
         result = subprocess.run(
             ["tmux", "display-message", "-p", "#{pane_id}"],
@@ -221,6 +338,25 @@ def detect_tmux_pane() -> str:
     except (subprocess.TimeoutExpired, FileNotFoundError):
         pass
     return ""
+
+
+def detect_tmux_pane() -> str:
+    """Detect the tmux pane containing the caller.
+
+    Prefers parent-chain resolution (correct across concurrent Claude
+    sessions) and falls back to the tmux-active pane only if the walk
+    fails. Logs which path was taken so failures surface.
+    """
+    resolved = resolve_pane_for_pid(os.getpid())
+    if resolved:
+        log(f"resolved pane {resolved} from parent chain (pid {os.getpid()})")
+        return resolved
+    fallback = tmux_active_pane()
+    if fallback:
+        log(
+            f"could not resolve pane from parent chain, falling back to tmux active pane {fallback}"
+        )
+    return fallback
 
 
 def find_claude_pid() -> int | None:
@@ -373,51 +509,14 @@ def _parse_cli():
 
 
 def pane_from_pid(pid: int) -> str | None:
-    """Find the tmux pane containing a given PID by walking pane PIDs."""
-    try:
-        result = subprocess.run(
-            ["tmux", "list-panes", "-a", "-F", "#{pane_id} #{pane_pid}"],
-            capture_output=True,
-            text=True,
-            timeout=5,
-        )
-        if result.returncode != 0:
-            return None
-        for line in result.stdout.strip().splitlines():
-            parts = line.split()
-            if len(parts) == 2:
-                pane_id, pane_pid = parts
-                # Check if target PID is a descendant of this pane's shell
-                try:
-                    children = subprocess.run(
-                        ["pgrep", "-P", pane_pid, "--ns", pane_pid],
-                        capture_output=True,
-                        text=True,
-                        timeout=5,
-                    )
-                    # Check pane_pid itself and all descendants
-                    if str(pid) == pane_pid:
-                        return pane_id
-                    if children.returncode == 0 and str(pid) in children.stdout:
-                        return pane_id
-                except (subprocess.TimeoutExpired, FileNotFoundError):
-                    pass
-                # Simpler fallback: check /proc/<pid>/stat for ppid chain
-                try:
-                    check_pid = pid
-                    for _ in range(10):  # walk up max 10 levels
-                        with open(f"/proc/{check_pid}/stat") as f:
-                            ppid = int(f.read().split()[3])
-                        if str(ppid) == pane_pid:
-                            return pane_id
-                        if ppid <= 1:
-                            break
-                        check_pid = ppid
-                except (FileNotFoundError, ValueError, IndexError):
-                    pass
-    except (subprocess.TimeoutExpired, FileNotFoundError):
-        pass
-    return None
+    """Find the tmux pane containing a given PID.
+
+    Walks the ppid chain from `pid` upward and matches each ancestor against
+    the set of known tmux pane shell pids. Returns the matching pane_id, or
+    None if no ancestor is a tmux pane shell (e.g., caller isn't running in
+    tmux, or target pid is detached).
+    """
+    return resolve_pane_for_pid(pid)
 
 
 def main() -> None:
