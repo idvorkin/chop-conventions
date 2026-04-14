@@ -5,6 +5,7 @@ Run with: python3 -m unittest test_diagnose.py
 """
 
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 
@@ -13,15 +14,22 @@ sys.path.insert(0, str(Path(__file__).parent))
 
 from diagnose import (  # noqa: E402
     CherryAnalysis,
+    MachineInfo,
     Remote,
     WorktreeRef,
+    check_post_up_to_date,
+    check_shared_claude_md,
+    classify_dev_machine,
+    classify_machine,
     classify_remotes,
+    compute_slot_action,
     is_fork_url,
     parse_cherry_status,
     parse_left_right_count,
     parse_remotes,
     parse_symbolic_ref_output,
     parse_worktree_list,
+    resolve_chop_root,
 )
 
 FORK_ORGS = ["idvorkin-ai-tools"]
@@ -297,6 +305,349 @@ class TestParseSymbolicRefOutput(unittest.TestCase):
     def test_empty_branch_returns_none(self):
         # Defensive: if stripping the prefix leaves an empty string, return None.
         self.assertIsNone(parse_symbolic_ref_output("refs/remotes/origin/", "origin"))
+
+
+class TestClassifyMachine(unittest.TestCase):
+    def test_darwin_with_mac_ver(self):
+        machine, reasons = classify_machine(
+            system="Darwin",
+            mac_ver_nonempty=True,
+            home_developer_exists=False,
+        )
+        self.assertEqual(machine, "mac")
+        self.assertTrue(any("Darwin" in r for r in reasons))
+
+    def test_darwin_without_mac_ver_is_unknown(self):
+        # Defensive: platform.mac_ver()[0] being empty on Darwin is an
+        # edge case we'd rather flag than silently misclassify.
+        machine, _ = classify_machine(
+            system="Darwin",
+            mac_ver_nonempty=False,
+            home_developer_exists=False,
+        )
+        self.assertEqual(machine, "unknown")
+
+    def test_linux_with_home_developer_is_orbstack_dev(self):
+        machine, reasons = classify_machine(
+            system="Linux",
+            mac_ver_nonempty=False,
+            home_developer_exists=True,
+        )
+        self.assertEqual(machine, "orbstack-dev")
+        self.assertTrue(any("/home/developer" in r for r in reasons))
+
+    def test_linux_without_home_developer_is_unknown(self):
+        machine, _ = classify_machine(
+            system="Linux",
+            mac_ver_nonempty=False,
+            home_developer_exists=False,
+        )
+        self.assertEqual(machine, "unknown")
+
+    def test_unknown_system(self):
+        machine, reasons = classify_machine(
+            system="FreeBSD",
+            mac_ver_nonempty=False,
+            home_developer_exists=False,
+        )
+        self.assertEqual(machine, "unknown")
+        self.assertTrue(any("FreeBSD" in r for r in reasons))
+
+
+class TestClassifyDevMachine(unittest.TestCase):
+    def test_both_conditions_true(self):
+        dev, reasons = classify_dev_machine(
+            tailscale_present=True, hostname="c-5004"
+        )
+        self.assertTrue(dev)
+        self.assertTrue(any("hostname=c-5004" in r for r in reasons))
+
+    def test_tailscale_missing(self):
+        dev, _ = classify_dev_machine(
+            tailscale_present=False, hostname="c-5004"
+        )
+        self.assertFalse(dev)
+
+    def test_hostname_does_not_match(self):
+        # Mac with Tailscale installed but human hostname: not a dev machine.
+        dev, _ = classify_dev_machine(
+            tailscale_present=True, hostname="igor-mbp"
+        )
+        self.assertFalse(dev)
+
+    def test_neither_condition(self):
+        dev, _ = classify_dev_machine(
+            tailscale_present=False, hostname="other-host"
+        )
+        self.assertFalse(dev)
+
+    def test_hostname_case_insensitive(self):
+        dev, _ = classify_dev_machine(
+            tailscale_present=True, hostname="C-5004"
+        )
+        self.assertTrue(dev)
+
+
+class TestResolveChopRoot(unittest.TestCase):
+    def _make_chop_checkout(self, parent: Path, name: str = "chop-conventions") -> Path:
+        root = parent / name
+        (root / "claude-md").mkdir(parents=True)
+        (root / "claude-md" / "global.md").write_text("# global", encoding="utf-8")
+        return root
+
+    def test_env_var_set_and_valid(self):
+        with tempfile.TemporaryDirectory() as td:
+            chop = self._make_chop_checkout(Path(td))
+            home = Path(td) / "fake-home"
+            home.mkdir()
+            result = resolve_chop_root({"CHOP_CONVENTIONS_ROOT": str(chop)}, home)
+            self.assertEqual(result, chop)
+
+    def test_env_var_set_but_path_missing(self):
+        # Env var set to nonsense → fall through to home fallback.
+        with tempfile.TemporaryDirectory() as td:
+            home = Path(td) / "home"
+            home.mkdir()
+            fallback = self._make_chop_checkout(home / "gits")
+            (home / "gits").resolve()  # ensure parent stat-able
+            result = resolve_chop_root(
+                {"CHOP_CONVENTIONS_ROOT": "/nonexistent/path"}, home
+            )
+            self.assertEqual(result, fallback)
+
+    def test_env_var_unset_fallback_valid(self):
+        with tempfile.TemporaryDirectory() as td:
+            home = Path(td) / "home"
+            home.mkdir()
+            fallback = self._make_chop_checkout(home / "gits")
+            result = resolve_chop_root({}, home)
+            self.assertEqual(result, fallback)
+
+    def test_env_var_unset_fallback_missing(self):
+        with tempfile.TemporaryDirectory() as td:
+            home = Path(td) / "home"
+            home.mkdir()
+            result = resolve_chop_root({}, home)
+            self.assertIsNone(result)
+
+    def test_env_var_points_at_dir_without_global_md(self):
+        # Directory exists but lacks `claude-md/global.md` → rejected.
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td) / "empty-repo"
+            root.mkdir()
+            home = Path(td) / "home"
+            home.mkdir()
+            result = resolve_chop_root(
+                {"CHOP_CONVENTIONS_ROOT": str(root)}, home
+            )
+            self.assertIsNone(result)
+
+
+class TestCheckSharedClaudeMd(unittest.TestCase):
+    def _setup(self, td: str, enabled: bool = False, machine: str = "orbstack-dev",
+              dev_machine: bool = True) -> tuple[Path, Path, MachineInfo]:
+        chop = Path(td) / "chop-conventions"
+        (chop / "claude-md" / "machines").mkdir(parents=True)
+        (chop / "claude-md" / "global.md").write_text("# global", encoding="utf-8")
+        (chop / "claude-md" / "dev-machine.md").write_text(
+            "# dev-machine", encoding="utf-8"
+        )
+        (chop / "claude-md" / "machines" / f"{machine}.md").write_text(
+            f"# {machine}", encoding="utf-8"
+        )
+        home = Path(td) / "home"
+        (home / ".claude" / "claude-md").mkdir(parents=True)
+        if enabled:
+            (home / ".claude" / "claude-md" / ".enabled").touch()
+        info = MachineInfo(machine=machine, dev_machine=dev_machine, reasons=[])
+        return chop, home, info
+
+    def test_enabled_false_zero_actions(self):
+        with tempfile.TemporaryDirectory() as td:
+            chop, home, info = self._setup(td, enabled=False)
+            block, errors = check_shared_claude_md(chop, home, False, info)
+            self.assertEqual(block["actions"], [])
+            self.assertEqual(errors, [])
+
+    def test_enabled_true_no_symlinks_three_create_actions(self):
+        with tempfile.TemporaryDirectory() as td:
+            chop, home, info = self._setup(td, enabled=True)
+            block, errors = check_shared_claude_md(chop, home, True, info)
+            kinds = [a["kind"] for a in block["actions"]]
+            slots = [a["slot"] for a in block["actions"]]
+            self.assertEqual(set(kinds), {"create_symlink"})
+            self.assertEqual(set(slots), {"global", "machine", "dev_machine"})
+            self.assertEqual(errors, [])
+
+    def test_correct_symlinks_empty_actions(self):
+        with tempfile.TemporaryDirectory() as td:
+            chop, home, info = self._setup(td, enabled=True)
+            cm_home = home / ".claude" / "claude-md"
+            (cm_home / "global.md").symlink_to(chop / "claude-md" / "global.md")
+            (cm_home / "machine.md").symlink_to(
+                chop / "claude-md" / "machines" / "orbstack-dev.md"
+            )
+            (cm_home / "dev-machine.md").symlink_to(
+                chop / "claude-md" / "dev-machine.md"
+            )
+            block, _ = check_shared_claude_md(chop, home, True, info)
+            self.assertEqual(block["actions"], [])
+            for slot in ("global", "machine", "dev_machine"):
+                self.assertFalse(block["actual"][slot]["drift"])
+
+    def test_stale_machine_symlink_replace_action(self):
+        with tempfile.TemporaryDirectory() as td:
+            chop, home, info = self._setup(td, enabled=True, machine="orbstack-dev")
+            # Point machine at the wrong file (e.g. mac).
+            (chop / "claude-md" / "machines" / "mac.md").write_text(
+                "# mac", encoding="utf-8"
+            )
+            cm_home = home / ".claude" / "claude-md"
+            (cm_home / "machine.md").symlink_to(
+                chop / "claude-md" / "machines" / "mac.md"
+            )
+            block, _ = check_shared_claude_md(chop, home, True, info)
+            kinds_by_slot = {a["slot"]: a["kind"] for a in block["actions"]}
+            self.assertEqual(kinds_by_slot["machine"], "replace_stale_symlink")
+
+    def test_real_file_at_slot_reports_user_file(self):
+        with tempfile.TemporaryDirectory() as td:
+            chop, home, info = self._setup(td, enabled=True)
+            cm_home = home / ".claude" / "claude-md"
+            (cm_home / "global.md").write_text("my own rules", encoding="utf-8")
+            block, _ = check_shared_claude_md(chop, home, True, info)
+            kinds_by_slot = {a["slot"]: a["kind"] for a in block["actions"]}
+            self.assertEqual(kinds_by_slot["global"], "report_user_file")
+
+    def test_dev_machine_slot_obsolete_when_not_dev(self):
+        # Machine went dev → non-dev: dev_machine symlink should be
+        # surfaced as removable but not auto-removed.
+        with tempfile.TemporaryDirectory() as td:
+            chop, home, info = self._setup(td, enabled=True, dev_machine=False)
+            cm_home = home / ".claude" / "claude-md"
+            (cm_home / "dev-machine.md").symlink_to(
+                chop / "claude-md" / "dev-machine.md"
+            )
+            block, _ = check_shared_claude_md(chop, home, True, info)
+            kinds_by_slot = {a["slot"]: a["kind"] for a in block["actions"]}
+            self.assertEqual(
+                kinds_by_slot["dev_machine"], "remove_obsolete_symlink"
+            )
+
+    def test_partial_installation(self):
+        # Only global symlinked; machine + dev_machine missing.
+        with tempfile.TemporaryDirectory() as td:
+            chop, home, info = self._setup(td, enabled=True)
+            cm_home = home / ".claude" / "claude-md"
+            (cm_home / "global.md").symlink_to(chop / "claude-md" / "global.md")
+            block, _ = check_shared_claude_md(chop, home, True, info)
+            kinds_by_slot = {a["slot"]: a["kind"] for a in block["actions"]}
+            self.assertNotIn("global", kinds_by_slot)
+            self.assertEqual(kinds_by_slot["machine"], "create_symlink")
+            self.assertEqual(kinds_by_slot["dev_machine"], "create_symlink")
+
+    def test_claude_md_dir_is_symlink_errors_and_no_actions(self):
+        with tempfile.TemporaryDirectory() as td:
+            chop = Path(td) / "chop-conventions"
+            (chop / "claude-md" / "machines").mkdir(parents=True)
+            (chop / "claude-md" / "global.md").write_text("g", encoding="utf-8")
+            (chop / "claude-md" / "dev-machine.md").write_text("d", encoding="utf-8")
+            (chop / "claude-md" / "machines" / "orbstack-dev.md").write_text(
+                "o", encoding="utf-8"
+            )
+            home = Path(td) / "home"
+            (home / ".claude").mkdir(parents=True)
+            # Replace ~/.claude/claude-md with a symlink — refuse.
+            target = Path(td) / "hostile"
+            target.mkdir()
+            (home / ".claude" / "claude-md").symlink_to(target)
+            info = MachineInfo(
+                machine="orbstack-dev", dev_machine=True, reasons=[]
+            )
+            _, errors = check_shared_claude_md(chop, home, True, info)
+            self.assertTrue(
+                any(e.get("code") == "claude_md_dir_is_symlink" for e in errors)
+            )
+
+
+class TestComputeSlotAction(unittest.TestCase):
+    def _expected(self, should_install: bool = True) -> dict:
+        return {
+            "path": "/home/x/.claude/claude-md/global.md",
+            "target": "/repo/claude-md/global.md",
+            "should_install": should_install,
+        }
+
+    def test_correct_symlink_emits_no_action(self):
+        expected = self._expected()
+        actual = {
+            "exists": True,
+            "is_symlink": True,
+            "resolves_to": "/repo/claude-md/global.md",
+        }
+        self.assertIsNone(compute_slot_action("global", expected, actual))
+
+    def test_missing_with_should_install_emits_create(self):
+        expected = self._expected()
+        actual = {"exists": False, "is_symlink": False, "resolves_to": None}
+        action = compute_slot_action("global", expected, actual)
+        assert action is not None
+        self.assertEqual(action["kind"], "create_symlink")
+
+    def test_missing_without_should_install_emits_nothing(self):
+        expected = self._expected(should_install=False)
+        actual = {"exists": False, "is_symlink": False, "resolves_to": None}
+        self.assertIsNone(compute_slot_action("global", expected, actual))
+
+
+class TestCheckPostUpToDate(unittest.TestCase):
+    def test_no_repo_toplevel(self):
+        path, errors = check_post_up_to_date(None)
+        self.assertIsNone(path)
+        self.assertEqual(errors, [])
+
+    def test_hook_present(self):
+        with tempfile.TemporaryDirectory() as td:
+            repo = Path(td)
+            (repo / ".claude").mkdir()
+            hook = repo / ".claude" / "post-up-to-date.md"
+            hook.write_text("# hook", encoding="utf-8")
+            path, errors = check_post_up_to_date(repo)
+            self.assertEqual(path, str(hook))
+            self.assertEqual(errors, [])
+
+    def test_hook_absent(self):
+        with tempfile.TemporaryDirectory() as td:
+            repo = Path(td)
+            path, errors = check_post_up_to_date(repo)
+            self.assertIsNone(path)
+            self.assertEqual(errors, [])
+
+    def test_symlinked_hook_is_rejected(self):
+        with tempfile.TemporaryDirectory() as td:
+            repo = Path(td)
+            (repo / ".claude").mkdir()
+            real = Path(td) / "elsewhere.md"
+            real.write_text("# elsewhere", encoding="utf-8")
+            hook = repo / ".claude" / "post-up-to-date.md"
+            hook.symlink_to(real)
+            path, errors = check_post_up_to_date(repo)
+            self.assertIsNone(path)
+            self.assertTrue(
+                any(e.get("code") == "hook_is_symlink" for e in errors)
+            )
+
+    def test_subdirectory_does_not_affect_resolution(self):
+        # The function takes an already-resolved toplevel, so running it
+        # with a toplevel that differs from cwd is the whole point.
+        with tempfile.TemporaryDirectory() as td:
+            repo = Path(td)
+            (repo / ".claude").mkdir()
+            hook = repo / ".claude" / "post-up-to-date.md"
+            hook.write_text("# hook", encoding="utf-8")
+            (repo / "subdir").mkdir()
+            path, _ = check_post_up_to_date(repo)
+            self.assertEqual(path, str(hook))
 
 
 if __name__ == "__main__":
