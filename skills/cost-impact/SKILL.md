@@ -33,22 +33,29 @@ If the user names a specific day ("yesterday", "last Friday"), compute the
 integer offset from today and pass that — the underlying script is
 window-based, not date-based.
 
-## Ask destination FIRST
+## Default flow: save locally, then offer the gist
 
-**Before running `_impl.py`, ask the user where the report should go:**
+**Always save locally first.** Local save is the unconditional default — the
+user's own disk is not a publication surface and needs no approval gate.
+After the local save lands, **ask whether they also want to publish a public
+gist.** If yes, run the privacy guard (see below) and only publish if it
+passes.
 
-> "Where should this go — public gist, or local save to
-> `~/tmp/cost-impact-YYYY-MM-DD.md`?"
+Sequence:
 
-Ask this up front so (a) the user doesn't have to context-switch after
-waiting for the script, and (b) the privacy guard below can short-circuit
-the run if a gist is selected and the content is sensitive. The destination
-answer is the only thing that gates how the script's output is routed — it
-does NOT change what `_impl.py` computes.
+1. Run `_impl.py` (writes `/tmp/cost-impact.md`)
+2. Copy to `~/tmp/cost-impact-YYYY-MM-DD.md` and report the absolute path
+3. Ask: "Want me to also publish this as a public gist?"
+4. If yes → run the privacy guard, then `gh gist create` if it passes
+5. If no → done
 
-If the user already has a cost-impact gist they want updated in place, ask
-which gist ID (see "Updating an existing gist" below). Treat an in-place
-edit as a gist publish for the purposes of the privacy guard.
+**Do not ask about destination up front.** That order forces the user to
+context-switch before the script's output exists; asking *after* the local
+save lets them glance at the file (or its summary) before deciding to share.
+
+If the user has an existing cost-impact gist they want updated in place,
+treat the in-place edit as a publish for privacy-guard purposes — see
+"Updating an existing gist" below.
 
 ## How to run
 
@@ -83,22 +90,9 @@ If you see `Actual: $0.00` the window is probably wrong — check that
 
 ## Routing the output
 
-Destination was chosen up front (see "Ask destination FIRST"). After
-`_impl.py` writes `/tmp/cost-impact.md`:
+After `_impl.py` writes `/tmp/cost-impact.md`:
 
-**If the user chose gist: run the privacy guard first (see below). Only if
-the guard passes, publish:**
-
-```bash
-gh gist create --public \
-  -d "Claude cost impact YYYY-MM-DD (N-day window)" \
-  /tmp/cost-impact.md
-```
-
-Relay the gist URL back.
-
-**If the user chose local save** (always allowed — it's their own disk, no
-privacy check needed):
+**Step 1 — Save locally (always, no questions):**
 
 ```bash
 mkdir -p ~/tmp
@@ -106,6 +100,18 @@ cp /tmp/cost-impact.md ~/tmp/cost-impact-$(date +%Y-%m-%d).md
 ```
 
 Relay the absolute path back.
+
+**Step 2 — Ask if they want a public gist as well.** Only if yes, run the
+privacy guard (see below). If the guard passes, publish:
+
+```bash
+gh gist create --public \
+  -d "Claude cost impact YYYY-MM-DD (N-day window)" \
+  /tmp/cost-impact.md
+```
+
+Relay the gist URL back. If they decline the gist or the guard refuses,
+the local save from Step 1 is the final artifact — no further action.
 
 ### Updating an existing gist
 
