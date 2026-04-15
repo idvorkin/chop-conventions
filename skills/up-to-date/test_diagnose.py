@@ -4,6 +4,9 @@
 Run with: python3 -m unittest test_diagnose.py
 """
 
+import json
+import os
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -648,6 +651,83 @@ class TestCheckPostUpToDate(unittest.TestCase):
             (repo / "subdir").mkdir()
             path, _ = check_post_up_to_date(repo)
             self.assertEqual(path, str(hook))
+
+
+class TestRunDiagnoseChopRootUnresolved(unittest.TestCase):
+    """Orchestrator invariant (spec §734-737):
+
+    When `resolve_chop_root` returns None, `run_diagnose()` MUST
+    (a) append a `{subsystem: "shared_claude_md", code:
+    "chop_root_unresolved"}` entry to `errors[]` and (b) omit the
+    `shared_claude_md` key entirely from the returned JSON — not
+    emit an empty block.
+
+    We exercise this via a subprocess invocation: a throwaway
+    minimal git repo + bogus `CHOP_CONVENTIONS_ROOT` + throwaway
+    HOME with no `~/gits/chop-conventions/`. That drives both
+    resolver candidates to miss and `resolve_chop_root` returns
+    None, exactly the condition under test.
+    """
+
+    DIAGNOSE_PATH = Path(__file__).parent / "diagnose.py"
+
+    def test_chop_root_unresolved_omits_key_and_emits_error(self):
+        with tempfile.TemporaryDirectory() as td:
+            repo = Path(td) / "repo"
+            repo.mkdir()
+            fake_home = Path(td) / "fake-home"
+            fake_home.mkdir()
+            # Minimal git repo — runtime of `diagnose.py` shells out
+            # to git, so it needs a repo to run against.
+            def _git(*args: str) -> None:
+                subprocess.run(
+                    ["git", *args],
+                    cwd=repo,
+                    check=True,
+                    capture_output=True,
+                )
+
+            _git("init", "-q")
+            _git("config", "user.email", "test@test")
+            _git("config", "user.name", "test")
+            _git("config", "commit.gpgsign", "false")
+            (repo / "README.md").write_text("# r", encoding="utf-8")
+            _git("add", "README.md")
+            _git("commit", "-q", "-m", "initial")
+
+            env = {
+                **os.environ,
+                "CHOP_CONVENTIONS_ROOT": str(Path(td) / "nowhere"),
+                "HOME": str(fake_home),
+            }
+            proc = subprocess.run(
+                [sys.executable, str(self.DIAGNOSE_PATH)],
+                cwd=repo,
+                env=env,
+                capture_output=True,
+                text=True,
+            )
+            self.assertEqual(proc.returncode, 0, proc.stderr)
+            data = json.loads(proc.stdout)
+
+            # Invariant 1: no `shared_claude_md` key at all.
+            self.assertNotIn("shared_claude_md", data)
+
+            # Invariant 2: errors[] carries the chop_root_unresolved
+            # entry, tagged with the right subsystem+code.
+            matches = [
+                e
+                for e in data["errors"]
+                if isinstance(e, dict)
+                and e.get("subsystem") == "shared_claude_md"
+                and e.get("code") == "chop_root_unresolved"
+            ]
+            self.assertEqual(
+                len(matches),
+                1,
+                f"expected exactly one chop_root_unresolved error, "
+                f"got errors={data['errors']!r}",
+            )
 
 
 if __name__ == "__main__":
