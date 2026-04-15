@@ -173,7 +173,9 @@ On success:
 
 - Worktree at `$T/.worktrees/delegated-<slug>` checked out to
   `delegated/<slug>` branch, based on `origin/<default-branch>`
-- (Maybe) one new commit on the target's default branch adding
-  `.worktrees/` to `.gitignore`
+- Possibly one new line appended to `.git/info/exclude` ensuring
+  `.worktrees/` is ignored. This is local-only, untracked, and
+  shared across all worktrees via the common git dir — no branch
+  history is mutated.
 
 Pass `$path` and `$branch` forward to Phase 3 (brief construction).
