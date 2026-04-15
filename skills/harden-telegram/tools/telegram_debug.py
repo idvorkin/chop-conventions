@@ -1493,6 +1493,7 @@ REACTION_WHITELIST: frozenset[str] = frozenset(
         "\U0001f64a",  # 🙊
         "\U0001f60e",  # 😎
         "\U0001f47e",  # 👾
+        "\U0001f5d1",  # 🗑  (used by larry-bead cancel)
     }
 )
 
