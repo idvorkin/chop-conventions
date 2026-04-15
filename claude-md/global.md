@@ -66,16 +66,16 @@ Just do it - including obvious follow-up actions. Only pause when:
 - **Signing GitHub issues and comments on external repos.** When filing issues or comments on repos *outside* `idvorkin/*` and `idvorkin-ai-tools/*` (e.g., upstream projects, third-party libraries), append this signature:
 
   ```
-  Files with ♥ via [Igor's Claw](https://idvork.in/claw)
+  @idvorkin — Created w/♥ via [Igor's Claws](https://idvork.in/igors-claws)
   ```
 
-  This makes the AI-agent origin explicit and links back to Igor's writeup on the claw concept. **Skip the signature on `idvorkin/*` and `idvorkin-ai-tools/*` repos** — they're self-authored and attribution is implied.
+  This tags Igor for notification, makes the AI-agent origin explicit, and deep-links to the page about his claws. **Skip the signature on `idvorkin/*` and `idvorkin-ai-tools/*` repos** — they're self-authored and attribution is implied.
 
   **Example issue comment:**
 
   > Confirmed — `--dangerously-skip-permissions` has intentional carve-outs (sensitive-file writes, outside-cwd writes, shell metachars). Worth a docs update since the flag name implies full bypass. Happy to PR if useful.
   >
-  > Files with ♥ via [Igor's Claw](https://idvork.in/claw)
+  > @idvorkin — Created w/♥ via [Igor's Claws](https://idvork.in/igors-claws)
 - **zsh reserved array vars**: `path`, `PATH`, `manpath`, `cdpath`, `fpath` are tied to shell path resolution. Using them as local string vars fails with "inconsistent type for assignment". Use `wt_path`, `file_path`, `dir` etc. instead.
 
 ## Side-Edit: Preview Files in a Side Pane
