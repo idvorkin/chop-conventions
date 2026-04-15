@@ -376,12 +376,27 @@ def check_access_config() -> dict:
 def _source_dir() -> Path | None:
     """Canonical server.ts source directory (for hash-drift check).
 
-    Set TELEGRAM_SOURCE_DIR to the dir containing server.ts. If unset, drift
-    checks degrade to a note — the doctor still runs, it just can't tell you
-    whether the plugin-cache copy matches an upstream source.
+    Resolution order:
+      1. $TELEGRAM_SOURCE_DIR (explicit override, wins if set).
+      2. Sibling `server/` directory of this skill — i.e. the canonical
+         source vendored into `skills/harden-telegram/server/` in
+         chop-conventions.
+      3. None (drift check degrades to a note).
+
+    The sibling-dir fallback makes the common case env-var-free: the skill
+    ships the source it diagnoses, so by default the doctor can compare the
+    plugin-cache copy against the checked-in canonical tree.
     """
     env = os.environ.get("TELEGRAM_SOURCE_DIR")
-    return Path(env).expanduser() if env else None
+    if env:
+        return Path(env).expanduser()
+    # Fall back to the sibling server/ dir of this skill.
+    # __file__ -> .../skills/harden-telegram/tools/telegram_debug.py
+    #             .parent.parent == .../skills/harden-telegram/
+    sibling = Path(__file__).resolve().parent.parent / "server"
+    if (sibling / "server.ts").is_file():
+        return sibling
+    return None
 
 
 def _source_server_ts() -> Path | None:
