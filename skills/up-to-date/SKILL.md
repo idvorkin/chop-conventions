@@ -104,26 +104,36 @@ Use `SRC = remotes.source`. After any action on main, surface absorbed branches 
 
 ### Absorbable branches (`absorbable_branches` in the JSON)
 
-Local branches (excluding `main`, `master`, and the currently checked-out branch) that are either (a) patch-id-equivalent to `$SRC/main` (via `git cherry`), or (b) the head ref of a MERGED PR (via `gh pr list`). Safe to delete. Branches matched only by (b) — squash-merges — are also listed in `squash_merged_branches` for callers that want to warn about the distinction.
+Local branches (excluding `main`, `master`, and the currently checked-out branch) that are either (a) patch-id-equivalent to `$SRC/main` (via `git cherry`), or (b) the head ref of a MERGED PR **whose recorded head SHA still matches the local branch tip** (via `gh pr list --json headRefName,headRefOid`). Safe to delete. Branches matched only by (b) — squash-merges — are also listed in `squash_merged_branches` for callers that want to distinguish absorption source.
 
-Surface the list to the user and offer deletion. Use `-d` first (safe), fall back to `-D` only after the absorption check already verified:
+**Auto-delete without prompting** — membership in `absorbable_branches` is the safety check (patch-id equivalence or PR-merge-with-matching-SHA, both conservative). Print the list of deletions so the user sees what went, but do not ask per-branch. Use `-d` first (defensive — refuses if `git` disagrees); fall back to `-D` only for squash-merged branches (listed in `squash_merged_branches`) since `-d` still wants a patch-id match and will refuse there:
 
 ```bash
-git branch -d <branch> 2>/dev/null || git branch -D <branch>
+for b in <absorbable_branches>; do
+  git branch -d "$b" 2>/dev/null || git branch -D "$b"
+done
 ```
+
+### Diverged squash-merged branches (`squash_merged_diverged_branches` in the JSON)
+
+Branches whose PR is MERGED but whose local tip has advanced past the PR's recorded head SHA — the user pushed the PR, it merged, and then new local commits landed on the same branch name. **These are NOT in `absorbable_branches` and must NOT be auto-deleted** — the post-merge commits are unsynced work.
+
+Surface this list to the user with a warning ("branch X has commits made after its PR merged; review before deleting"). Do not offer an automatic deletion command — the user should review the post-merge commits first and either open a new PR or reset/discard manually.
 
 ### Prunable worktrees (`worktrees` in the JSON)
 
 Each entry has `{path, branch, is_primary, absorbed, unmerged_count}`. **A worktree is prunable iff `is_primary == false AND absorbed == true`.** The primary checkout is flagged separately and is never a deletion candidate, regardless of its branch's absorption state — removing the primary is destructive.
 
-Surface prunable worktrees to the user and offer removal. **Do not auto-remove** — a stale worktree on disk is cheap, a lost in-progress change is expensive:
+**Auto-remove without prompting** — `absorbed == true` combines patch-id absorption with PR-merge-plus-matching-SHA, so a worktree whose branch advanced past the merge point stays `absorbed == false` and is kept. Print what was removed so the user sees it, but do not ask per-worktree. `git worktree remove` refuses on dirty worktrees, which catches the edge case where the user had uncommitted work locally.
 
 ```bash
 git worktree remove <path>
 git branch -D <branch>   # branch left behind by worktree remove; safe after absorption check
 ```
 
-Non-primary worktrees with `absorbed == false` (`unmerged_count > 0`) should be **kept** — their branch still has work not yet in `$SRC/main`.
+If `git worktree remove` fails (dirty worktree), skip that entry and surface the refusal to the user — do not force.
+
+Non-primary worktrees with `absorbed == false` (`unmerged_count > 0`) are **kept silently** — their branch still has work not yet in `$SRC/main`. No prompt, no deletion.
 
 ### On main (`branch.is_main` true)
 
