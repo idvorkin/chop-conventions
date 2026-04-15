@@ -267,19 +267,28 @@ The helper returns a JSON object with `status`:
   single authoritative read; re-reading opens a TOCTOU window between
   the hash check and execution.
 - `first_sight` — no prior approval. Display the decoded content to
-  the user, ask "trust this hook?", and on approval run
-  `hook_trust.py --approve --repo-toplevel <toplevel> --expected-sha256 <current_hash>`
-  to record the hash. **`<current_hash>` is the `current_hash` field
-  from the evaluate invocation above** — the exact hash the user just
-  approved. Passing it lets the helper abort if the file mutated
-  between evaluate and approve; without it a hostile swap between
-  the two CLI calls would record a trust entry for content the user
-  never saw. On a `hook_mutated_during_approval` error, surface the
-  diagnostic to the user and skip execution — do NOT retry silently.
-  Then execute the content from memory.
+  the user, ask "trust this hook?", and on approval:
+  1. **Re-verify `~/.claude/claude-md/` is NOT a symlink**
+     (`Path.is_symlink()` semantics — `test -L ~/.claude/claude-md`
+     in bash). The enable flow already checked this, but the trust
+     store will be created under that directory, and a symlink here
+     is the same attack surface the enable flow rejects. If it is
+     a symlink, abort with the enable-flow error and skip execution.
+  2. Run
+     `hook_trust.py --approve --repo-toplevel <toplevel> --expected-sha256 <current_hash>`
+     to record the hash. **`<current_hash>` is the `current_hash` field
+     from the evaluate invocation above** — the exact hash the user
+     just approved. Passing it lets the helper abort if the file
+     mutated between evaluate and approve; without it a hostile swap
+     between the two CLI calls would record a trust entry for content
+     the user never saw. On a `hook_mutated_during_approval` error,
+     surface the diagnostic to the user and skip execution — do NOT
+     retry silently.
+  3. Execute the content from memory.
 - `changed` — the hook content changed since the prior approval.
-  Same flow as `first_sight` — show the new content, ask, approve
-  (with `--expected-sha256 <current_hash>`), execute.
+  Same flow as `first_sight` — re-verify the parent-dir symlink
+  guard, show the new content, ask, approve (with
+  `--expected-sha256 <current_hash>`), execute.
 - `corrupt` — the trust store at `~/.claude/claude-md/hooks-trusted.json`
   could not be parsed. Surface the error to the user and SKIP
   execution. Do NOT overwrite the corrupt file — the user must

@@ -12,10 +12,10 @@ import tempfile
 import unittest
 from pathlib import Path
 
-# Make sibling diagnose.py importable
-sys.path.insert(0, str(Path(__file__).parent))
-
-from diagnose import (  # noqa: E402
+# sys.path setup for sibling module imports lives in conftest.py —
+# `unittest discover` adds the start dir automatically; pytest and
+# pyright rely on the conftest shim.
+from diagnose import (
     CherryAnalysis,
     MachineInfo,
     Remote,
