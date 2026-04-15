@@ -1,6 +1,7 @@
 ---
 name: gist-image
 description: Use when you need to host images (screenshots, diagrams, PNGs) on GitHub for use in PR descriptions, issues, or markdown docs. Solves the problem that `gh gist create` rejects binary files.
+allowed-tools: Bash, Read, Write
 ---
 
 # Gist Image Upload
