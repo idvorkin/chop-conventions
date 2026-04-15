@@ -21,9 +21,10 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-sys.path.insert(0, str(Path(__file__).parent))
-
-from hook_trust import (  # noqa: E402
+# sys.path setup for sibling module imports lives in conftest.py —
+# `unittest discover` adds the start dir automatically; pytest and
+# pyright rely on the conftest shim.
+from hook_trust import (
     HOOK_REL_PATH,
     TRUST_STORE_VERSION,
     classify_trust,

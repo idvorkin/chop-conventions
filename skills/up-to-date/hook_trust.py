@@ -175,13 +175,12 @@ def evaluate_hook(
     to the LLM without re-reading from disk.
     """
     hook_path = hook_path_from_toplevel(repo_toplevel)
-    if not hook_path.exists():
-        return TrustOutcome(
-            status="absent",
-            current_hash=None,
-            stored_hash=None,
-            content_bytes=None,
-        )
+    # Check symlink-ness BEFORE existence. `Path.exists()` follows
+    # symlinks, so a symlink pointing at a real file would pass the
+    # existence check before the symlink rejection below — not
+    # currently exploitable (both paths no-op) but the reordered
+    # form reads more clearly and applies the symlink rejection
+    # uniformly regardless of target validity.
     if hook_path.is_symlink():
         # Upstream (`check_post_up_to_date` in diagnose.py) already
         # emits an error for this case, but we enforce again for
@@ -198,6 +197,13 @@ def evaluate_hook(
                 "message": "Refusing to read a symlinked hook",
                 "path": str(hook_path),
             },
+        )
+    if not hook_path.exists():
+        return TrustOutcome(
+            status="absent",
+            current_hash=None,
+            stored_hash=None,
+            content_bytes=None,
         )
     # Single read — TOCTOU-safe for downstream use.
     try:
@@ -244,11 +250,19 @@ def record_approval(
 ) -> tuple[bool, dict[str, Any] | None]:
     """Persist an approval for a repo's hook at the given hash.
 
-    Atomic: writes to `<store>.tmp` then `os.replace`s into place so
-    a crash mid-write cannot leave a corrupt JSON. The parent
-    directory (`~/.claude/claude-md/`) must exist and must NOT be a
-    symlink — caller is responsible for the `is_symlink()` guard and
-    the `mkdir -p` before invoking this.
+    Atomic **for visibility**: writes to `<store>.tmp` then
+    `os.replace`s into place, so a Python-level crash mid-write
+    cannot leave a half-populated `hooks-trusted.json`. This does
+    NOT fsync the tmp file or the parent directory — a kernel
+    panic or abrupt power loss between `write_text` and the next
+    journal flush may still lose the approval (the user re-approves
+    on the next `/up-to-date`; there is no corruption risk, only
+    forgotten consent). The spec does not mandate fsync; this
+    docstring clarifies the actual guarantee.
+
+    The parent directory (`~/.claude/claude-md/`) must exist and
+    must NOT be a symlink — caller is responsible for the
+    `is_symlink()` guard and the `mkdir -p` before invoking this.
 
     Returns `(True, None)` on success or `(False, error_dict)` if the
     store is corrupt (record_approval refuses to overwrite).
