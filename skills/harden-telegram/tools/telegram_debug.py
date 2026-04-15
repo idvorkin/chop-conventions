@@ -8,6 +8,8 @@ Usage:
     python3 telegram_debug.py --tail 50      # More log lines (default 20)
     python3 telegram_debug.py --json --tail 100 | jq '.server_log[-5:]'
     python3 telegram_debug.py --doctor       # Validate two-process chain end-to-end
+    python3 telegram_debug.py --send-reply "hi" --reply-to 42 --chat-id 123  # Threaded reply (prints new message_id)
+    python3 telegram_debug.py --react "\U0001f44d" --message-id 42 --chat-id 123  # Set reaction
 """
 
 import argparse
@@ -842,8 +844,7 @@ def _doctor_check_server_ts(report: DoctorReport) -> None:
         if orphans:
             pids_str = ", ".join(str(b["pid"]) for b in orphans)
             report.warn(
-                f"{len(orphans)} orphaned bridge(s): {pids_str} — "
-                "owning Claude is gone"
+                f"{len(orphans)} orphaned bridge(s): {pids_str} — owning Claude is gone"
             )
         return
 
@@ -864,9 +865,7 @@ def _doctor_check_server_ts(report: DoctorReport) -> None:
         )
 
     if others:
-        summary = ", ".join(
-            f"{b['pid']}→claude:{b['owning_claude']}" for b in others
-        )
+        summary = ", ".join(f"{b['pid']}→claude:{b['owning_claude']}" for b in others)
         report.note(
             f"{len(others)} bridge(s) in other Claude sessions: {summary} — ignored"
         )
@@ -893,15 +892,13 @@ def _doctor_check_session_subscription(report: DoctorReport) -> None:
     our_claude = _find_owning_claude(os.getpid())
     if our_claude is None:
         report.note(
-            "doctor not running inside a Claude session — "
-            "subscription check skipped"
+            "doctor not running inside a Claude session — subscription check skipped"
         )
         return
     argv = _read_proc_cmdline(our_claude)
     if argv is None:
         report.warn(
-            f"could not read /proc/{our_claude}/cmdline — "
-            "subscription check skipped"
+            f"could not read /proc/{our_claude}/cmdline — subscription check skipped"
         )
         return
     if session_subscribed_to_telegram(argv):
@@ -1422,6 +1419,245 @@ def send_direct(text: str, chat_id: str | None = None) -> int:
     return 0
 
 
+# Telegram's fixed reaction whitelist (Bot API setMessageReaction).
+# Source: https://core.telegram.org/bots/api#reactiontypeemoji — free-tier bots
+# may only set reactions drawn from this set. Non-whitelisted emoji return
+# HTTP 400 "REACTION_INVALID". Mirrors server.ts's `react` tool, which today
+# delegates validation to Telegram; we validate client-side so the CLI can
+# fail loudly without a network round-trip.
+REACTION_WHITELIST: frozenset[str] = frozenset(
+    {
+        "\U0001f44d",  # 👍
+        "\U0001f44e",  # 👎
+        "\u2764",  # ❤
+        "\U0001f525",  # 🔥
+        "\U0001f970",  # 🥰
+        "\U0001f44f",  # 👏
+        "\U0001f60a",  # 😊
+        "\U0001f914",  # 🤔
+        "\U0001f92f",  # 🤯
+        "\U0001f631",  # 😱
+        "\U0001f92c",  # 🤬
+        "\U0001f622",  # 😢
+        "\U0001f389",  # 🎉
+        "\U0001f929",  # 🤩
+        "\U0001f92e",  # 🤮
+        "\U0001f4a9",  # 💩
+        "\U0001f64f",  # 🙏
+        "\U0001f44c",  # 👌
+        "\U0001f54a",  # 🕊
+        "\U0001f921",  # 🤡
+        "\U0001f971",  # 🥱
+        "\U0001f974",  # 🥴
+        "\U0001f60d",  # 😍
+        "\U0001f433",  # 🐳
+        "\u2764\u200d\U0001f525",  # ❤‍🔥
+        "\U0001f31a",  # 🌚
+        "\U0001f32d",  # 🌭
+        "\U0001f4af",  # 💯
+        "\U0001f923",  # 🤣
+        "\u26a1",  # ⚡
+        "\U0001f34c",  # 🍌
+        "\U0001f3c6",  # 🏆
+        "\U0001f494",  # 💔
+        "\U0001f928",  # 🤨
+        "\U0001f610",  # 😐
+        "\U0001f353",  # 🍓
+        "\U0001f37e",  # 🍾
+        "\U0001f48b",  # 💋
+        "\U0001f595",  # 🖕
+        "\U0001f608",  # 😈
+        "\U0001f634",  # 😴
+        "\U0001f62d",  # 😭
+        "\U0001f913",  # 🤓
+        "\U0001f47b",  # 👻
+        "\U0001f468\u200d\U0001f4bb",  # 👨‍💻
+        "\U0001f440",  # 👀
+        "\U0001f383",  # 🎃
+        "\U0001f648",  # 🙈
+        "\U0001f607",  # 😇
+        "\U0001f628",  # 😨
+        "\U0001f91d",  # 🤝
+        "\u270d",  # ✍
+        "\U0001f917",  # 🤗
+        "\U0001fae1",  # 🫡
+        "\U0001f385",  # 🎅
+        "\U0001f384",  # 🎄
+        "\u2603",  # ☃
+        "\U0001f485",  # 💅
+        "\U0001f92a",  # 🤪
+        "\U0001f5ff",  # 🗿
+        "\U0001f36f",  # 🍯
+        "\U0001f483",  # 💃
+        "\U0001f62e\u200d\U0001f4a8",  # 😮‍💨
+        "\U0001f64a",  # 🙊
+        "\U0001f60e",  # 😎
+        "\U0001f47e",  # 👾
+    }
+)
+
+
+def build_reply_request(
+    token: str,
+    chat_id: str,
+    text: str,
+    reply_to_message_id: int,
+) -> tuple[str, bytes]:
+    """Build (url, body) for a threaded sendMessage via Bot API.
+
+    Pure — no network, no token leak. Unlike build_direct_request(), this
+    does NOT auto-tag with [direct-send]: replies route through the normal
+    conversation and should read as ordinary bot messages.
+    """
+    import urllib.parse
+
+    url = f"{TELEGRAM_API_BASE}/bot{token}/sendMessage"
+    body = urllib.parse.urlencode(
+        {
+            "chat_id": str(chat_id),
+            "text": text,
+            "reply_to_message_id": str(int(reply_to_message_id)),
+        }
+    ).encode()
+    return url, body
+
+
+def build_react_request(
+    token: str,
+    chat_id: str,
+    message_id: int,
+    emoji: str,
+) -> tuple[str, bytes]:
+    """Build (url, body) for a setMessageReaction call.
+
+    Telegram's setMessageReaction takes `reaction` as a JSON array — we
+    urlencode the single-element JSON array inline.
+    """
+    import urllib.parse
+
+    url = f"{TELEGRAM_API_BASE}/bot{token}/setMessageReaction"
+    reaction_json = json.dumps([{"type": "emoji", "emoji": emoji}])
+    body = urllib.parse.urlencode(
+        {
+            "chat_id": str(chat_id),
+            "message_id": str(int(message_id)),
+            "reaction": reaction_json,
+        }
+    ).encode()
+    return url, body
+
+
+def parse_sent_message_id(response_body: str) -> int | None:
+    """Extract `result.message_id` from a Telegram sendMessage JSON response.
+
+    Returns None on malformed input — caller decides whether that's fatal.
+    """
+    try:
+        payload = json.loads(response_body)
+    except (json.JSONDecodeError, TypeError):
+        return None
+    if not isinstance(payload, dict):
+        return None
+    result = payload.get("result")
+    if not isinstance(result, dict):
+        return None
+    mid = result.get("message_id")
+    try:
+        return int(mid)
+    except (TypeError, ValueError):
+        return None
+
+
+def send_reply(text: str, chat_id: str, reply_to: int) -> int:
+    """Post a threaded reply via Bot API. Prints new message_id on success.
+
+    Unlike send_direct(), both chat_id and reply_to are REQUIRED — this is
+    an explicit-threading operation, not an emergency broadcast.
+    """
+    import urllib.request
+
+    try:
+        token = _read_bot_token()
+    except RuntimeError as e:
+        print(f"send-reply failed: {e}", file=sys.stderr)
+        return 1
+
+    if not chat_id:
+        print("send-reply failed: --chat-id is required", file=sys.stderr)
+        return 1
+
+    url, data = build_reply_request(token, chat_id, text, reply_to)
+    try:
+        with urllib.request.urlopen(url, data=data, timeout=10) as resp:
+            body = resp.read().decode()
+            if resp.status != 200:
+                print(
+                    f"send-reply HTTP {resp.status}: {_redact(body, token)}",
+                    file=sys.stderr,
+                )
+                return 1
+    except Exception as e:
+        print(f"send-reply failed: {_redact(str(e), token)}", file=sys.stderr)
+        return 1
+
+    new_mid = parse_sent_message_id(body)
+    if new_mid is None:
+        # Telegram returned 200 but we couldn't parse the id. The message
+        # likely landed; still, callers who pipe stdout into a pipeline
+        # need to know the contract wasn't fully met.
+        print(
+            f"send-reply succeeded but could not parse message_id from response: {body[:200]}",
+            file=sys.stderr,
+        )
+        return 1
+    print(new_mid)
+    return 0
+
+
+def set_reaction(emoji: str, chat_id: str, message_id: int) -> int:
+    """Set a single-emoji reaction on a message via Bot API.
+
+    Validates `emoji` against REACTION_WHITELIST before any network call so
+    the operator gets a fast, obvious error on typos / non-whitelist picks
+    instead of an opaque HTTP 400 from Telegram.
+    """
+    import urllib.request
+
+    if emoji not in REACTION_WHITELIST:
+        print(
+            f"react failed: emoji {emoji!r} is not in Telegram's reaction whitelist",
+            file=sys.stderr,
+        )
+        return 1
+
+    try:
+        token = _read_bot_token()
+    except RuntimeError as e:
+        print(f"react failed: {e}", file=sys.stderr)
+        return 1
+
+    if not chat_id:
+        print("react failed: --chat-id is required", file=sys.stderr)
+        return 1
+
+    url, data = build_react_request(token, chat_id, message_id, emoji)
+    try:
+        with urllib.request.urlopen(url, data=data, timeout=10) as resp:
+            body = resp.read().decode()
+            if resp.status != 200:
+                print(
+                    f"react HTTP {resp.status}: {_redact(body, token)}",
+                    file=sys.stderr,
+                )
+                return 1
+    except Exception as e:
+        print(f"react failed: {_redact(str(e), token)}", file=sys.stderr)
+        return 1
+
+    print(f"reacted {emoji} on chat_id={chat_id} message_id={message_id}")
+    return 0
+
+
 def main():
     parser = argparse.ArgumentParser(description="Telegram MCP diagnostic tool")
     parser.add_argument("--json", action="store_true", help="JSON output (pipe to jq)")
@@ -1449,13 +1685,69 @@ def main():
         help="EMERGENCY DIRECT-SEND via Telegram Bot API — bypasses MCP entirely. Use when server.ts is down and you still need to reach Igor. Message is auto-tagged with [direct-send] so it's visually distinct in Telegram. Runs alone; ignores --doctor/--paths if combined.",
     )
     parser.add_argument(
+        "--send-reply",
+        dest="send_reply",
+        metavar="TEXT",
+        help="Post a threaded reply via Bot API. Partners with --reply-to and --chat-id (both required). Prints the new message_id on success. Unlike --direct-send, output is NOT tagged — threads as a normal bot reply.",
+    )
+    parser.add_argument(
+        "--reply-to",
+        dest="reply_to",
+        type=int,
+        help="Message_id to thread under when using --send-reply (required).",
+    )
+    parser.add_argument(
+        "--react",
+        dest="react",
+        metavar="EMOJI",
+        help="Set an emoji reaction on a Telegram message via Bot API setMessageReaction. Partners with --message-id and --chat-id (both required). Emoji must be in Telegram's reaction whitelist.",
+    )
+    parser.add_argument(
+        "--message-id",
+        dest="message_id",
+        type=int,
+        help="Message_id to react to when using --react (required).",
+    )
+    parser.add_argument(
         "--chat-id",
-        help="Target chat_id for --direct-send (defaults to last inbound chat_id from inbound.db)",
+        help="Target chat_id for --direct-send / --send-reply / --react. Defaults to the last inbound chat_id from inbound.db for --direct-send; required explicitly for --send-reply and --react.",
     )
     args = parser.parse_args()
 
+    # Enforce top-level action exclusivity. We do this manually (rather than
+    # via argparse's add_mutually_exclusive_group) so the error message names
+    # every action in one place and keeps each flag a simple value flag.
+    actions = {
+        "--doctor": args.doctor,
+        "--paths": args.paths,
+        "--direct-send": args.direct_send is not None,
+        "--send-reply": args.send_reply is not None,
+        "--react": args.react is not None,
+    }
+    active = [name for name, on in actions.items() if on]
+    if len(active) > 1:
+        parser.error(f"only one top-level action allowed; got {', '.join(active)}")
+
     if args.direct_send is not None:
         sys.exit(send_direct(args.direct_send, chat_id=args.chat_id))
+
+    if args.send_reply is not None:
+        if args.reply_to is None:
+            parser.error("--send-reply requires --reply-to <message-id>")
+        if not args.chat_id:
+            parser.error("--send-reply requires --chat-id <chat-id>")
+        sys.exit(
+            send_reply(args.send_reply, chat_id=args.chat_id, reply_to=args.reply_to)
+        )
+
+    if args.react is not None:
+        if args.message_id is None:
+            parser.error("--react requires --message-id <message-id>")
+        if not args.chat_id:
+            parser.error("--react requires --chat-id <chat-id>")
+        sys.exit(
+            set_reaction(args.react, chat_id=args.chat_id, message_id=args.message_id)
+        )
 
     if args.doctor:
         sys.exit(run_doctor())
