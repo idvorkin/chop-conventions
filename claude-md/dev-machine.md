@@ -10,7 +10,14 @@ symlink is created only on machines whose `diagnose.py` classifies them
 as `dev_machine: true` (Tailscale installed **and** hostname matches the
 dev-VM pattern).
 
-<!-- Content migration from the current flat `~/.claude/CLAUDE.md` is
-     tracked as a follow-up; this file starts as a stub. Typical
-     content: URL-sharing conventions, bind-host defaults, Tailnet
-     name resolution. -->
+## CPU-heavy ML / embedding work: nice + thread caps
+
+Wrap CPU-heavy ML commands with BOTH a `nice` prefix AND a thread cap:
+
+```bash
+nice -n 19 ionice -c 3 env OMP_NUM_THREADS=2 ORT_NUM_THREADS=2 MKL_NUM_THREADS=2 <command>
+```
+
+`nice` alone does NOT cap absolute CPU — it only yields on contention. Thread caps are the real knob. Empirically 2 threads is often *faster* than default on consumer CPUs because the default thrashes. Applies to `uvx ... onnx-asr`, `fastembed`, `sentence-transformers`, local LLM inference, `ffmpeg` transcode loops, batch AI processing. Foreground interactive commands stay plain; anything >30s and CPU-heavy gets the full prefix.
+
+This rule lives under `dev-machine.md` rather than `global.md` because `ionice` is Linux-only — the command errors on macOS. Dev VMs are where the heavy batch work actually runs.
