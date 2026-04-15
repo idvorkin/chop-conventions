@@ -15,6 +15,7 @@ from pathlib import Path
 # sys.path setup for sibling module imports lives in conftest.py —
 # `unittest discover` adds the start dir automatically; pytest and
 # pyright rely on the conftest shim.
+import diagnose
 from diagnose import (
     CherryAnalysis,
     MachineInfo,
@@ -26,6 +27,7 @@ from diagnose import (
     classify_machine,
     classify_remotes,
     compute_slot_action,
+    gh_pr_list_merged_heads,
     is_fork_url,
     parse_cherry_status,
     parse_left_right_count,
@@ -723,6 +725,84 @@ class TestRunDiagnoseChopRootUnresolved(unittest.TestCase):
                 f"expected exactly one chop_root_unresolved error, "
                 f"got errors={data['errors']!r}",
             )
+
+
+class TestGhPrListMergedHeads(unittest.TestCase):
+    """Unit tests for the squash-merge absorption fallback.
+
+    `gh_pr_list_merged_heads` calls `gh pr list --state merged` and
+    returns the `headRefName` values. We stub `diagnose._run` so no
+    real `gh` process fires.
+    """
+
+    def _stub_run(self, stdout: str = "", returncode: int = 0):
+        def fake_run(cmd, check=True):  # noqa: ARG001  (check is for signature parity)
+            _ = check
+            return subprocess.CompletedProcess(
+                args=cmd, returncode=returncode, stdout=stdout, stderr=""
+            )
+
+        return fake_run
+
+    def test_returns_head_names_on_success(self):
+        payload = json.dumps(
+            [
+                {"headRefName": "feat/a"},
+                {"headRefName": "fix/b"},
+                {"headRefName": "delegated/c"},
+            ]
+        )
+        original = diagnose._run
+        diagnose._run = self._stub_run(stdout=payload)
+        try:
+            result = gh_pr_list_merged_heads()
+        finally:
+            diagnose._run = original
+        self.assertEqual(result, ["feat/a", "fix/b", "delegated/c"])
+
+    def test_nonzero_returncode_returns_empty(self):
+        original = diagnose._run
+        diagnose._run = self._stub_run(stdout="", returncode=1)
+        try:
+            result = gh_pr_list_merged_heads()
+        finally:
+            diagnose._run = original
+        self.assertEqual(result, [])
+
+    def test_malformed_json_returns_empty(self):
+        original = diagnose._run
+        diagnose._run = self._stub_run(stdout="not-json")
+        try:
+            result = gh_pr_list_merged_heads()
+        finally:
+            diagnose._run = original
+        self.assertEqual(result, [])
+
+    def test_non_list_json_returns_empty(self):
+        """Defensive: if gh's JSON shape changes (e.g. error object), fail closed."""
+        original = diagnose._run
+        diagnose._run = self._stub_run(stdout=json.dumps({"message": "oops"}))
+        try:
+            result = gh_pr_list_merged_heads()
+        finally:
+            diagnose._run = original
+        self.assertEqual(result, [])
+
+    def test_entries_without_headRefName_are_skipped(self):
+        payload = json.dumps(
+            [
+                {"headRefName": "kept"},
+                {"other": "skip"},
+                {"headRefName": "also-kept"},
+            ]
+        )
+        original = diagnose._run
+        diagnose._run = self._stub_run(stdout=payload)
+        try:
+            result = gh_pr_list_merged_heads()
+        finally:
+            diagnose._run = original
+        self.assertEqual(result, ["kept", "also-kept"])
 
 
 if __name__ == "__main__":
