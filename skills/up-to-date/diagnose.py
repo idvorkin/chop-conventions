@@ -671,6 +671,43 @@ def gh_pr_view_json(fields: str) -> dict[str, Any] | None:
         return None
 
 
+def gh_pr_list_merged_heads(limit: int = 200) -> list[str]:
+    """Return headRefNames of MERGED PRs for the current repo context.
+
+    Closes the squash-merge blind spot in patch-id absorption: a squash
+    merge rewrites the diff into one commit whose patch-id differs from
+    any individual branch commit, so `git cherry` labels the branch as
+    unique work even though the PR landed. Querying `gh pr list` for
+    MERGED PRs is the authoritative fallback.
+
+    Returns `[]` on any failure (no gh auth, network error, not a GitHub
+    repo) — callers should treat empty as "no extra absorption signal".
+    """
+    proc = _run(
+        [
+            "gh",
+            "pr",
+            "list",
+            "--state",
+            "merged",
+            "--limit",
+            str(limit),
+            "--json",
+            "headRefName",
+        ],
+        check=False,
+    )
+    if proc.returncode != 0:
+        return []
+    try:
+        entries = json.loads(proc.stdout)
+    except json.JSONDecodeError:
+        return []
+    if not isinstance(entries, list):
+        return []
+    return [e["headRefName"] for e in entries if isinstance(e, dict) and "headRefName" in e]
+
+
 def detect_default_branch(src: str) -> str:
     """Detect the default branch of a remote. Returns 'main' as last-resort fallback.
 
@@ -717,16 +754,20 @@ def run_diagnose() -> dict[str, Any]:
     analysis = classify_remotes(remotes, FORK_ORGS)
     src = analysis.source
 
-    # Run fetch and PR lookup in parallel — they don't depend on each other.
-    # gh pr view reads local branch state, not the remote fetch result.
-    with ThreadPoolExecutor(max_workers=2) as pool:
+    # Run fetch, current-branch PR lookup, and merged-PR-heads lookup in
+    # parallel — all three hit different endpoints and don't depend on each
+    # other. gh pr view/list read local branch state or remote API, not the
+    # remote fetch result.
+    with ThreadPoolExecutor(max_workers=3) as pool:
         fetch_fut = pool.submit(_run, ["git", "fetch", "--all", "--prune"], False)
         pr_fut = pool.submit(
             gh_pr_view_json,
             "state,number,title,mergeable,reviewDecision,reviews,comments",
         )
+        merged_heads_fut = pool.submit(gh_pr_list_merged_heads)
         fetch_proc = fetch_fut.result()
         pr_data = pr_fut.result()
+        merged_pr_heads = set(merged_heads_fut.result())
 
     if fetch_proc.returncode != 0:
         errors.append(f"git fetch failed: {fetch_proc.stderr.strip()}")
@@ -871,19 +912,31 @@ def run_diagnose() -> dict[str, Any]:
 
     leftover_commits = [] if is_main else ahead_patch_unique_commits
 
-    # Absorbable branches: local branches whose work is fully in $src_default
-    # (zero unique patch-ids). Excludes the currently checked-out branch
-    # since deleting it requires switching away first — callers should
-    # surface it separately if they want that.
+    # Absorbable branches: local branches whose work is fully in $src_default,
+    # caught via either (a) zero unique patch-ids from `git cherry`, or
+    # (b) a MERGED PR with the branch as head. (b) catches squash-merges
+    # that (a) misses — the squashed commit's patch-id differs from the
+    # branch's commits.
+    #
+    # Excludes the currently checked-out branch since deleting it requires
+    # switching away first — callers should surface it separately if they
+    # want that.
     absorbable_branches: list[str] = []
+    squash_absorbed: set[str] = set()
     for b in sorted(local_branch_names):
         if b == default_branch:
             continue
         if b == branch_name:
             continue  # never auto-prune the checked-out branch
         analysis_for_b = cherry_by_branch.get(b)
-        if analysis_for_b is not None and not analysis_for_b.unique_commits:
+        patch_absorbed = (
+            analysis_for_b is not None and not analysis_for_b.unique_commits
+        )
+        pr_merged = b in merged_pr_heads
+        if patch_absorbed or pr_merged:
             absorbable_branches.append(b)
+        if pr_merged and not patch_absorbed:
+            squash_absorbed.add(b)
 
     # Worktree classification: first entry is primary, rest are linked.
     # For each linked worktree, flag "absorbed" if its branch has zero
@@ -900,13 +953,20 @@ def run_diagnose() -> dict[str, Any]:
             unmerged_count: int | None = None
         elif analysis_for_wt is None:
             # No cherry result (branch skipped because it's main, or errored).
-            # Conservative: treat as not-absorbed so we never suggest pruning.
-            absorbed = False
-            unmerged_count = None
+            # Conservative: treat as not-absorbed unless a merged PR says
+            # otherwise.
+            pr_merged = wt.branch in merged_pr_heads
+            absorbed = pr_merged
+            unmerged_count = 0 if pr_merged else None
         else:
             unique = analysis_for_wt.unique_commits
-            absorbed = len(unique) == 0
-            unmerged_count = len(unique)
+            patch_absorbed = len(unique) == 0
+            pr_merged = wt.branch in merged_pr_heads
+            absorbed = patch_absorbed or pr_merged
+            # When the PR merged via squash, the branch's commits are still
+            # patch-id-unique, but the work is in main. Report 0 unmerged
+            # to reflect semantic state rather than patch-id state.
+            unmerged_count = 0 if pr_merged else len(unique)
         worktrees_out.append(
             {
                 "path": wt.path,
@@ -1006,6 +1066,7 @@ def run_diagnose() -> dict[str, Any]:
         },
         "worktrees": worktrees_out,
         "absorbable_branches": absorbable_branches,
+        "squash_merged_branches": sorted(squash_absorbed),
         "pr": pr_block,
         "post_up_to_date_path": post_up_to_date_path,
         "errors": errors,

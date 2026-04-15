@@ -75,6 +75,10 @@ Scripts that signal processes by pattern (cpulimit, pkill, kill by comm match) M
 
 Before modifying any workflow that uses `anthropics/claude-code-action@v1`, read [`dev-inner-loop/github-action-claude-code-action-gotcha.md`](dev-inner-loop/github-action-claude-code-action-gotcha.md). Critical traps: the YAML must byte-match the default branch or token exchange 401s, `show_full_output` defaults to `false` (hiding Claude's activity), fork PRs can't get OIDC tokens (use `pull_request_target`), and Node 20 forced to Node 24 on June 2, 2026.
 
+## Shared CLAUDE.md Fragments
+
+`claude-md/global.md` holds rules that are **both universally applicable AND ones the user intends to share.** When migrating a flat `~/.claude/CLAUDE.md` bullet into fragments, confirm per-rule — a rule being *defensible* on every machine doesn't mean the user *wants* it on every machine. Personal-preference rules (caution defaults, push-handling conventions) belong in `machines/<name>.md` or stay flat, even when the rule reads as universally good practice. Scrub project-specific identifiers (project names, issue IDs) when migrating — shared fragments propagate to every opted-in machine.
+
 ## Structure
 
 - `dev-setup/` - Development environment configuration (beads, hooks, gitignore, justfile, tailscale)

@@ -103,15 +103,15 @@ If `remotes.issues` is non-empty, show them in the output table and offer the `f
 
 ## Step 3: Act
 
-Use `SRC = remotes.source`. After any action on main, surface absorbed branches and prunable worktrees from the diagnose JSON — both are pre-computed via `git cherry` (patch-id), so squash/rebase/cherry-pick merges are all detected uniformly.
+Use `SRC = remotes.source`. After any action on main, surface absorbed branches and prunable worktrees from the diagnose JSON. Absorption is detected by two signals combined: `git cherry` patch-id (catches rebase and cherry-pick merges) **and** `gh pr list --state merged` (catches squash-merges, whose squashed commit has a different patch-id than the branch's commits). The union is what `absorbable_branches` exposes; the squash-only subset is `squash_merged_branches` for callers that want to distinguish.
 
 **Do not use `git branch --merged` for cleanup.** It only catches branches whose tip is an ancestor of main, missing squash and rebase merges — the most common paths for PRs to land. Use `diagnose.py`'s `absorbable_branches` field instead.
 
 ### Absorbable branches (`absorbable_branches` in the JSON)
 
-Local branches (excluding `main`, `master`, and the currently checked-out branch) whose every commit is patch-id-equivalent to something already in `$SRC/main`. Safe to delete.
+Local branches (excluding `main`, `master`, and the currently checked-out branch) that are either (a) patch-id-equivalent to `$SRC/main` (via `git cherry`), or (b) the head ref of a MERGED PR (via `gh pr list`). Safe to delete. Branches matched only by (b) — squash-merges — are also listed in `squash_merged_branches` for callers that want to warn about the distinction.
 
-Surface the list to the user and offer deletion. Use `-d` first (safe), fall back to `-D` only after the patch-id check already verified:
+Surface the list to the user and offer deletion. Use `-d` first (safe), fall back to `-D` only after the absorption check already verified:
 
 ```bash
 git branch -d <branch> 2>/dev/null || git branch -D <branch>
@@ -125,7 +125,7 @@ Surface prunable worktrees to the user and offer removal. **Do not auto-remove**
 
 ```bash
 git worktree remove <path>
-git branch -D <branch>   # branch left behind by worktree remove; safe after patch-id check
+git branch -D <branch>   # branch left behind by worktree remove; safe after absorption check
 ```
 
 Non-primary worktrees with `absorbed == false` (`unmerged_count > 0`) should be **kept** — their branch still has work not yet in `$SRC/main`.
