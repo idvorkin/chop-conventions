@@ -9,6 +9,19 @@ This file is loaded into each machine's `~/.claude/CLAUDE.md` via an
 managed by `/up-to-date`. Editing this file in `chop-conventions` propagates
 to every opted-in machine automatically.
 
+## Important Rules
+
+- **Never run destructive commands without confirmation** — `rm -rf`, `git reset --hard`, `DROP TABLE`, force-push, etc. Show the command and ask before running.
+- **Don't use `claude-agent-sdk` for batch/pipeline extraction.** Measured 17× cost + ~50% reliability vs direct `anthropic.AsyncAnthropic` on an 80-entry structured-JSON test. Claude Code auto-loads ~20k tokens of framework context per call and has no stateless-cache path. If `ANTHROPIC_API_KEY` credits exhaust, switch to the Anthropic **batches endpoint** (50% cheaper), not Claude Code SDK.
+- **Agent tool background dispatches cannot be aborted.** `run_in_background: true` is fire-and-forget; no kill mechanism exists. Plan tests assuming you can't stop them mid-flight.
+  - **Corollary**: when dispatching a background agent that will **write** to a shared repo (file edit, issue, PR), confirm scope with the user first. You can't undo a write you can't abort.
+- **`isolation: "worktree"` shares `.git/`** — parallel agents see the same hooks/config/branches and can race on concurrent commits. Give each agent a unique output namespace (`result_<agent_id>_*.json`, `notes_<guid>.md`) and collate afterward.
+- **Debug third-party library / SDK oddities via the `docs` skill FIRST** (Context7-backed fresh docs) before speculative iteration. Applies to `anthropic`, `claude-agent-sdk`, `fastembed`, `sqlite-vec`, or any named library. Example miss: `claude-agent-sdk` `output_format` is designed to allow tool-use — fighting with `tools=[]` / `max_turns=1` wasted hours before a doc-fetch would have clarified it in seconds.
+- **`ls` → `eza`, `du` → `dua`, `ps` → `procs`** — flags differ from coreutils. `ls -t` errors with "Option --time has no 'modified' setting", `du -sh` errors with "unexpected argument '-s' found", `ps -ef` errors with "unexpected argument '-e' found". Use `\ls`/`\du`/`\ps` to bypass the alias, or prefer the Glob/Read tools for listings.
+- **`/reload-plugins` does NOT restart running MCP server processes.** It re-reads plugin config but leaves live MCP servers alone. To deploy new MCP code: `pkill -f '<server>'` first, THEN `/reload-plugins` (the next MCP tool call respawns the server from the plugin cache). Confirmed against Claude Code's telegram plugin 2026-04-12.
+- **Non-interactive `git rebase -i` via scripted editors.** For programmatic squashes in sessions without a human editor, write todo to `/tmp/rebase-todo.txt` and message to `/tmp/rebase-msg.txt`, then `GIT_SEQUENCE_EDITOR="cp /tmp/rebase-todo.txt" GIT_EDITOR="cp /tmp/rebase-msg.txt" git rebase -i <base>`. Supports `pick`/`fixup`/`reword`/`squash` in one pass. Always `git tag backup HEAD` first — reflog expires.
+- **Session token / context usage** — when asked "how many tokens am I using" or "how much context is left," read `~/.claude/statusline_last_input.json` with `jq`. The statusline script dumps the harness JSON there every turn; grab `.context_window.used_percentage`, `.context_window.context_window_size`, `.cost.total_cost_usd`. Don't guess from transcript length.
+
 ## Side-Edit: Preview Files in a Side Pane
 
 Use `rmux_helper side-edit <FILE>` to open a file in a side nvim pane within tmux. This reuses the same pane across calls, so repeated edits don't spawn new splits. Supports `file:line` syntax (e.g. `foo.py:42`).
