@@ -27,11 +27,18 @@ Usage:
         so the calling skill can prompt the user and persist the
         approval.
 
-    ./hook_trust.py --approve --repo-toplevel <path>
+    ./hook_trust.py --approve --repo-toplevel <path> \
+        --expected-sha256 <hash-the-user-approved>
         records the current hash in the trust store (atomic write),
         creating the file if absent. Does NOT re-prompt — the calling
         skill is responsible for collecting explicit user approval
-        before invoking --approve.
+        before invoking --approve. The mandatory `--expected-sha256`
+        closes the TOCTOU gap between the user seeing the content and
+        the trust entry being written: the helper re-reads and
+        re-hashes the hook (single-read per invocation, by contract),
+        and aborts if the freshly-computed hash does not match the
+        hash the user approved. A hostile swap between the two CLI
+        invocations is refused; the trust store is left untouched.
 """
 
 from __future__ import annotations
@@ -281,6 +288,17 @@ def main() -> int:
         action="store_true",
         help="Record approval for the current hook hash",
     )
+    parser.add_argument(
+        "--expected-sha256",
+        default=None,
+        help=(
+            "Required with --approve. The sha256 hex the user just "
+            "approved (returned by the prior evaluate invocation as "
+            "`current_hash`). The helper re-reads the hook and aborts "
+            "if the re-hash does not match this value, closing the "
+            "TOCTOU gap between evaluate and approve."
+        ),
+    )
     parser.add_argument("--pretty", action="store_true")
     args = parser.parse_args()
 
@@ -288,6 +306,23 @@ def main() -> int:
     home = Path.home()
 
     if args.approve:
+        if not args.expected_sha256:
+            payload = {
+                "ok": False,
+                "error": {
+                    "subsystem": "hook_trust",
+                    "code": "expected_sha256_required",
+                    "message": (
+                        "--approve requires --expected-sha256 <hash> "
+                        "(the hash the user just approved). Refusing "
+                        "to record a trust entry without the caller "
+                        "pinning the expected content."
+                    ),
+                },
+            }
+            json.dump(payload, sys.stdout, indent=2 if args.pretty else None)
+            sys.stdout.write("\n")
+            return 1
         outcome = evaluate_hook(repo_toplevel, home)
         if outcome.current_hash is None:
             payload = {
@@ -296,6 +331,29 @@ def main() -> int:
                 or {
                     "code": "no_hook_to_approve",
                     "message": "No hook file present",
+                    "path": str(hook_path_from_toplevel(repo_toplevel)),
+                },
+            }
+            json.dump(payload, sys.stdout, indent=2 if args.pretty else None)
+            sys.stdout.write("\n")
+            return 1
+        if outcome.current_hash != args.expected_sha256:
+            payload = {
+                "ok": False,
+                "error": {
+                    "subsystem": "hook_trust",
+                    "code": "hook_mutated_during_approval",
+                    "message": (
+                        "Hook content changed between evaluate and "
+                        "approve. The user approved sha256="
+                        f"{args.expected_sha256} but the hook on disk "
+                        f"now hashes to {outcome.current_hash}. "
+                        "Refusing to record a trust entry for content "
+                        "the user never saw; re-run /up-to-date to "
+                        "re-evaluate."
+                    ),
+                    "expected_sha256": args.expected_sha256,
+                    "actual_sha256": outcome.current_hash,
                     "path": str(hook_path_from_toplevel(repo_toplevel)),
                 },
             }

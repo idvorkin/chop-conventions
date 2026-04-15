@@ -13,6 +13,7 @@ Run with: python3 -m unittest test_hook_trust.py
 from __future__ import annotations
 
 import hashlib
+import io
 import json
 import sys
 import tempfile
@@ -30,6 +31,7 @@ from hook_trust import (  # noqa: E402
     evaluate_hook,
     hook_path_from_toplevel,
     load_trust_store,
+    main as cli_main,
     record_approval,
     trust_store_path,
 )
@@ -313,6 +315,114 @@ class TestRecordApproval(unittest.TestCase):
             self.assertEqual(
                 trust_store_path(home).read_text(), "{not json"
             )
+
+
+class TestCliApproveTocTouGuard(unittest.TestCase):
+    """`--approve --expected-sha256 <hash>` must refuse to write a
+    trust entry when the hook file mutated between the evaluate call
+    (where the user approved `<hash>`) and the approve call (where
+    we'd otherwise blindly re-hash the current bytes). This closes
+    the two-invocation TOCTOU window at the CLI seam.
+    """
+
+    def _prep(self, td: str, content: bytes) -> tuple[Path, Path]:
+        repo = Path(td) / "repo"
+        (repo / ".claude").mkdir(parents=True)
+        hook_path_from_toplevel(repo).write_bytes(content)
+        home = Path(td) / "home"
+        (home / ".claude" / "claude-md").mkdir(parents=True)
+        return repo, home
+
+    def _run_cli(self, argv: list[str], home: Path) -> tuple[int, dict]:
+        buf = io.StringIO()
+        with mock.patch.object(sys, "argv", ["hook_trust.py", *argv]):
+            with mock.patch.object(Path, "home", classmethod(lambda cls: home)):
+                with mock.patch.object(sys, "stdout", buf):
+                    rc = cli_main()
+        # Last line in buffer is the JSON payload.
+        payload = json.loads(buf.getvalue().strip().splitlines()[-1])
+        return rc, payload
+
+    def test_happy_path_records_entry(self):
+        with tempfile.TemporaryDirectory() as td:
+            content = b"# trusted hook\n"
+            repo, home = self._prep(td, content)
+            expected = compute_sha256(content)
+            rc, payload = self._run_cli(
+                [
+                    "--approve",
+                    "--repo-toplevel",
+                    str(repo),
+                    "--expected-sha256",
+                    expected,
+                ],
+                home=home,
+            )
+            self.assertEqual(rc, 0)
+            self.assertTrue(payload["ok"])
+            self.assertEqual(payload["sha256"], expected)
+            # Trust store now carries the entry.
+            store = json.loads(trust_store_path(home).read_text())
+            self.assertEqual(
+                store["entries"][str(repo.resolve())]["sha256"], expected
+            )
+
+    def test_missing_expected_sha256_refuses(self):
+        with tempfile.TemporaryDirectory() as td:
+            content = b"# hook\n"
+            repo, home = self._prep(td, content)
+            rc, payload = self._run_cli(
+                ["--approve", "--repo-toplevel", str(repo)],
+                home=home,
+            )
+            self.assertEqual(rc, 1)
+            self.assertFalse(payload["ok"])
+            self.assertEqual(
+                payload["error"]["code"], "expected_sha256_required"
+            )
+            # Trust store must NOT have been created.
+            self.assertFalse(trust_store_path(home).exists())
+
+    def test_mutation_between_evaluate_and_approve_is_rejected(self):
+        """Simulate the race: user sees hash X (from evaluate); an
+        attacker swaps the file to Y before --approve runs. The
+        helper re-reads (single-read contract per invocation), sees
+        Y, compares to the user-approved X, aborts."""
+        with tempfile.TemporaryDirectory() as td:
+            user_approved_content = b"# what the user saw\n"
+            repo, home = self._prep(td, user_approved_content)
+            # Step 1: evaluate (happens in a previous CLI run) →
+            # returns `current_hash` for user_approved_content.
+            approved_hash = compute_sha256(user_approved_content)
+            # Step 2: attacker mutates the file.
+            hostile = b"# silently swapped payload\n"
+            hook_path_from_toplevel(repo).write_bytes(hostile)
+            # Step 3: skill invokes --approve with the hash the user
+            # approved.
+            rc, payload = self._run_cli(
+                [
+                    "--approve",
+                    "--repo-toplevel",
+                    str(repo),
+                    "--expected-sha256",
+                    approved_hash,
+                ],
+                home=home,
+            )
+            self.assertEqual(rc, 1)
+            self.assertFalse(payload["ok"])
+            self.assertEqual(payload["error"]["subsystem"], "hook_trust")
+            self.assertEqual(
+                payload["error"]["code"], "hook_mutated_during_approval"
+            )
+            self.assertEqual(
+                payload["error"]["expected_sha256"], approved_hash
+            )
+            self.assertEqual(
+                payload["error"]["actual_sha256"], compute_sha256(hostile)
+            )
+            # Trust store must be unchanged (never created).
+            self.assertFalse(trust_store_path(home).exists())
 
 
 if __name__ == "__main__":
