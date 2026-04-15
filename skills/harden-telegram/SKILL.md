@@ -25,19 +25,42 @@ Full principle in [`../../CLAUDE.md`](../../CLAUDE.md) §"Diagnostics: Code Over
 
 ## Tool locations
 
-The Python tooling this skill drives ships with the skill itself under `tools/`. All paths are discoverable from any repo via the chop-conventions auto-link.
+The Python tooling this skill drives ships with the skill itself under `tools/`. The canonical `server.ts` + `telegram_bot.py` source now ships alongside it under `server/`. All paths are discoverable from any repo via the chop-conventions auto-link.
 
 | Tool | Path |
 |---|---|
 | Doctor / diagnostics | `~/.claude/skills/harden-telegram/tools/telegram_debug.py` |
 | Plugin-reload watchdog | `~/.claude/skills/harden-telegram/tools/watchdog.py` |
+| Canonical source (deploy-from) | `~/.claude/skills/harden-telegram/server/` |
 | Runtime state dir | `$LARRY_TELEGRAM_DIR` (default `~/larry-telegram/`) |
-| Canonical source dir | `$TELEGRAM_SOURCE_DIR` (optional — enables deploy-drift check) |
+| Canonical source dir override | `$TELEGRAM_SOURCE_DIR` (optional — defaults to the `server/` subdir) |
 
 Two env vars parameterize the tool:
 
 - **`LARRY_TELEGRAM_DIR`** — runtime state directory (`bot.pid`, `bot.sock`, `inbound.db`, `server.log`, `attachments/`). Defaults to `~/larry-telegram/` if unset. The telegram_bot.py production process reads the same variable.
-- **`TELEGRAM_SOURCE_DIR`** — directory containing the canonical `server.ts` + `telegram_bot.py` source you deploy from. Required if you want the doctor to verify the plugin-cache copy matches your upstream. If unset, the drift check degrades to a note ("plugin cache: &lt;hash&gt; — set TELEGRAM_SOURCE_DIR to enable drift check").
+- **`TELEGRAM_SOURCE_DIR`** — directory containing the canonical `server.ts` + `telegram_bot.py` source you deploy from. **Defaults to the sibling `server/` subdirectory of this skill when unset.** Override if you're deploying from a different checkout (e.g. an in-flight feature branch elsewhere). The drift check always runs against whichever directory resolves.
+
+### Source layout
+
+```
+skills/harden-telegram/
+├── SKILL.md              # this file (operator runbook)
+├── design.md             # architectural reference, loaded on demand
+├── tools/                # Python diagnostics vendored with the skill
+│   ├── telegram_debug.py # doctor, direct-send, paths inventory
+│   └── watchdog.py       # tmux-driven plugin reload
+└── server/               # canonical Telegram server source (deploy-from)
+    ├── server.ts         # bun MCP bridge (Igor's two-process fork)
+    ├── server.ts.pre-split   # historical reference (pre-split monolith)
+    ├── telegram_bot.py   # Python polling bot (SQLite + Unix socket)
+    ├── package.json
+    ├── bun.lock
+    ├── tsconfig.json
+    ├── hooks/            # log-telegram.py, log-telegram-inbound.py
+    └── tests/            # pytest + bun test suites
+```
+
+**`server/` is the canonical source going forward.** When Tier 2a (Deploy) says `cp "$TELEGRAM_SOURCE_DIR/server.ts" <plugin-path>`, `$TELEGRAM_SOURCE_DIR` now resolves to `skills/harden-telegram/server/` by default — no env var required for the common case. Pre-existing callers that set `TELEGRAM_SOURCE_DIR` (e.g. cron scripts) continue to work unchanged; the override still wins when set.
 
 This skill only helps on machines running the Telegram MCP plugin with the two-process architecture. If you don't have a `telegram_bot.py` process alongside the MCP `server.ts`, the doctor will report the whole chain as missing.
 
