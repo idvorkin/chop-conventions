@@ -1,0 +1,125 @@
+#!/usr/bin/env bash
+# bd-close-gated: bd close wrapper that refuses to close a bead with open children.
+#
+# bd's parent-child dependency is organizational, not gating — `bd close <parent>`
+# succeeds even when children are still open. This wrapper adds a soft gate.
+#
+# Usage:
+#   bd-close-gated <bead-id> [--reason "..."]    # gated close
+#   bd-close-gated <bead-id> --force [...]       # skip gate, pass --force to bd close
+#   bd-close-gated -h | --help                   # show usage
+#
+# Exit codes:
+#   0  success (underlying `bd close` succeeded)
+#   1  gate blocked close (open children found)
+#   2  usage error
+#   *  whatever `bd close` returns on failure
+
+set -euo pipefail
+
+usage() {
+  cat <<'EOF'
+Usage: bd-close-gated <bead-id> [--reason "..."] [--force]
+
+Closes a bd bead, but refuses if it has any open parent-child children.
+Passes --reason/--force through to `bd close`. Unknown flags are forwarded.
+
+Examples:
+  bd-close-gated igor2-1z7.16 --reason "All tax tasks done"
+  bd-close-gated igor2-1z7.16 --force --reason "Abandoning branch"
+EOF
+}
+
+die_usage() {
+  echo "bd-close-gated: $1" >&2
+  echo >&2
+  usage >&2
+  exit 2
+}
+
+# --- parse args -------------------------------------------------------------
+BEAD_ID=""
+FORCE=0
+PASSTHROUGH=()
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    -h|--help)
+      usage
+      exit 0
+      ;;
+    --force|-f)
+      FORCE=1
+      shift
+      ;;
+    --)
+      shift
+      PASSTHROUGH+=("$@")
+      break
+      ;;
+    -*)
+      PASSTHROUGH+=("$1")
+      shift
+      ;;
+    *)
+      if [[ -z "$BEAD_ID" ]]; then
+        BEAD_ID="$1"
+      else
+        PASSTHROUGH+=("$1")
+      fi
+      shift
+      ;;
+  esac
+done
+
+[[ -n "$BEAD_ID" ]] || die_usage "missing bead-id"
+
+# --- sanity: tools we need --------------------------------------------------
+command -v bd >/dev/null 2>&1 || die_usage "bd not found in PATH"
+command -v jq >/dev/null 2>&1 || die_usage "jq not found in PATH"
+
+# --- gate -------------------------------------------------------------------
+if [[ "$FORCE" -eq 0 ]]; then
+  # `bd show <id> --json` returns a JSON array with one issue whose
+  # `dependents` array lists children (plus other reverse-deps). A child
+  # is anything with dependency_type == "parent-child". We only block on
+  # children whose status is open/in_progress/blocked — closed ones are fine.
+  if ! show_json="$(bd show "$BEAD_ID" --json 2>&1)"; then
+    echo "bd-close-gated: \`bd show $BEAD_ID\` failed:" >&2
+    echo "$show_json" >&2
+    exit 2
+  fi
+
+  open_children="$(
+    printf '%s' "$show_json" | jq -r '
+      (if type == "array" then .[0] else . end)
+      | (.dependents // [])
+      | map(select(.dependency_type == "parent-child"))
+      | map(select(.status != "closed"))
+      | .[]
+      | "\(.id)\t\(.status)\t\(.title)"
+    '
+  )"
+
+  if [[ -n "$open_children" ]]; then
+    echo "bd-close-gated: refusing to close $BEAD_ID — open children:" >&2
+    # indent for readability
+    printf '%s\n' "$open_children" | while IFS=$'\t' read -r cid cstatus ctitle; do
+      printf '  %-20s [%s] %s\n' "$cid" "$cstatus" "$ctitle" >&2
+    done
+    echo >&2
+    echo "Resolve (close the children) or rerun with --force to override." >&2
+    exit 1
+  fi
+fi
+
+# --- exec bd close ----------------------------------------------------------
+cmd=(bd close "$BEAD_ID")
+if [[ "$FORCE" -eq 1 ]]; then
+  cmd+=(--force)
+fi
+if [[ ${#PASSTHROUGH[@]} -gt 0 ]]; then
+  cmd+=("${PASSTHROUGH[@]}")
+fi
+
+exec "${cmd[@]}"
