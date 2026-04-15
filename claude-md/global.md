@@ -59,6 +59,7 @@ Just do it - including obvious follow-up actions. Only pause when:
 - **`/reload-plugins` does NOT restart running MCP server processes.** It re-reads plugin config but leaves live MCP servers alone. To deploy new MCP code: `pkill -f '<server>'` first, THEN `/reload-plugins` (the next MCP tool call respawns the server from the plugin cache). Confirmed against Claude Code's telegram plugin 2026-04-12.
 - **Non-interactive `git rebase -i` via scripted editors.** For programmatic squashes in sessions without a human editor, write todo to `/tmp/rebase-todo.txt` and message to `/tmp/rebase-msg.txt`, then `GIT_SEQUENCE_EDITOR="cp /tmp/rebase-todo.txt" GIT_EDITOR="cp /tmp/rebase-msg.txt" git rebase -i <base>`. Supports `pick`/`fixup`/`reword`/`squash` in one pass. Always `git tag backup HEAD` first — reflog expires.
 - **Session token / context usage** — when asked "how many tokens am I using" or "how much context is left," read `~/.claude/statusline_last_input.json` with `jq`. The statusline script dumps the harness JSON there every turn; grab `.context_window.used_percentage`, `.context_window.context_window_size`, `.cost.total_cost_usd`. Don't guess from transcript length.
+- **zsh reserved array vars**: `path`, `PATH`, `manpath`, `cdpath`, `fpath` are tied to shell path resolution. Using them as local string vars fails with "inconsistent type for assignment". Use `wt_path`, `file_path`, `dir` etc. instead.
 
 ## Side-Edit: Preview Files in a Side Pane
 
