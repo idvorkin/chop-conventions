@@ -125,7 +125,12 @@ path="$T/.worktrees/delegated-$slug"
 # branch-independent, per-repo exclude list documented in gitignore(5).
 # It sits in the shared git dir, applies to all worktrees, survives
 # branch switches, and never touches any branch's history.
-git_common=$(git -C "$T" rev-parse --git-common-dir 2>/dev/null)
+# Use --path-format=absolute. Plain `--git-common-dir` returns a path
+# relative to cwd, and the parent skill forbids `cd`, so the append
+# below would land in whatever repo the parent's cwd happens to be
+# in (verified: first dispatch this session wrote to the wrong repo's
+# exclude and required manual cleanup).
+git_common=$(git -C "$T" rev-parse --path-format=absolute --git-common-dir 2>/dev/null)
 exclude_file="$git_common/info/exclude"
 if ! grep -qxF '.worktrees/' "$exclude_file" 2>/dev/null; then
   mkdir -p "$git_common/info"
