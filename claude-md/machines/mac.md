@@ -6,7 +6,6 @@ encode Apple-specific facts live here.
 Loaded via `@~/.claude/claude-md/machine.md`, where the symlink points at
 this file when `classify_machine` returns `"mac"`.
 
-<!-- Content migration from the current flat `~/.claude/CLAUDE.md` is
-     tracked as a follow-up; this file starts near-empty. Typical
-     content: Homebrew paths under `/opt/homebrew/`, `/bin/bash` is
-     3.2, default shell `zsh`. -->
+## Destructive commands: confirm before running
+
+**Never run destructive commands without confirmation** — `rm -rf`, `git reset --hard`, `DROP TABLE`, force-push, etc. Show the command and ask before running.
