@@ -42,7 +42,7 @@ Two env vars parameterize the tool:
 
 ### Source layout
 
-```
+```text
 skills/harden-telegram/
 ├── SKILL.md              # this file (operator runbook)
 ├── design.md             # architectural reference, loaded on demand
