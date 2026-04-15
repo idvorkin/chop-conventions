@@ -8,8 +8,6 @@ Ubuntu with systemd).
 Loaded via `@~/.claude/claude-md/machine.md`, where the symlink points at
 this file when `classify_machine` returns `"orbstack-dev"`.
 
-<!-- Content migration from the current flat `~/.claude/CLAUDE.md` is
-     tracked as a follow-up; this file starts as a stub. Typical
-     content: `ls → eza, du → dua, ps → procs` (flags differ from
-     coreutils; use `\ls`/`\du`/`\ps` to bypass the alias), and the
-     side-edit / side-run workflow via `rmux_helper`. -->
+## Shell aliases
+
+- `ps` is aliased to a **pager wrapper** in this shell — invocations with positional args error with `invalid value for '--pager'`. Use `/bin/ps -f` explicitly, or `pgrep -f <pattern>` for PID lookup.
