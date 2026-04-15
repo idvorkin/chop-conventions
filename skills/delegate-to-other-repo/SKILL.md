@@ -102,8 +102,10 @@ Run `/bin/ls ~/gits/` and present the list. Let the user pick.
 
 Compare the resolved target's toplevel against the current session's toplevel:
 
+```bash
 target_top=$(git -C "$T" rev-parse --show-toplevel)
 session_top=$(git rev-parse --show-toplevel)
+```
 
 If they match, the target is the current repo. Delegation still has value
 (fresh subagent context, isolation from in-session uncommitted work), but
