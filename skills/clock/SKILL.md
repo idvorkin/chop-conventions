@@ -19,6 +19,7 @@ Schedule a recurring task in your session. Reports the current time, then sets u
 ```
 
 **Arguments:**
+
 - **interval** (optional): Duration like `15m`, `30m`, `1h`, `4h`. Default: `15m`
 - **action** (optional): What to do on each tick. Default: `time`
   - `time` — report current time
@@ -46,34 +47,38 @@ Tell the user conversationally:
 > It's 3:45 PM PST, Monday Mar 17.
 
 Then execute the action right now (this IS the first tick — no separate one-shot needed):
+
 - If action is `time`: you just reported it, done.
 - If action is `/skill-name`: invoke the skill now.
 - If action is custom text: show the reminder now.
 
 ### 3. Convert interval to cron expression
 
-| Interval | Cron expression | Notes |
-|----------|----------------|-------|
+| Interval | Cron expression      | Notes                           |
+| -------- | -------------------- | ------------------------------- |
 | `15m`    | `3,18,33,48 * * * *` | At :03, :18, :33, :48 each hour |
-| `20m`    | `7,27,47 * * * *` | At :07, :27, :47 each hour |
-| `30m`    | `7,37 * * * *` | At :07, :37 each hour |
-| `1h`     | `57 * * * *` | At :57 each hour |
-| `2h`     | `57 */2 * * *` | Every 2 hours at :57 |
-| `4h`     | `57 */4 * * *` | Every 4 hours at :57 |
+| `20m`    | `7,27,47 * * * *`    | At :07, :27, :47 each hour      |
+| `30m`    | `7,37 * * * *`       | At :07, :37 each hour           |
+| `1h`     | `57 * * * *`         | At :57 each hour                |
+| `2h`     | `57 */2 * * *`       | Every 2 hours at :57            |
+| `4h`     | `57 */4 * * *`       | Every 4 hours at :57            |
 
 ### 4. Build the cron prompt
 
 **If action is `time`:**
+
 ```
 Report the current time to the user. Run: TZ='America/Los_Angeles' date '+%I:%M %p %Z (%A, %B %d, %Y)' — then tell them the time in one line, e.g. "Clock: It's 4:48 PM PST, Monday Mar 17." Keep it to one line.
 ```
 
 **If action is a `/skill-name`:**
+
 ```
 Run the <skill-name> skill now. Use a background Agent subagent (run_in_background: true) so it doesn't block the main conversation.
 ```
 
 **If action is custom text:**
+
 ```
 Reminder: <the text>. Also report the current time (run: TZ='America/Los_Angeles' date '+%I:%M %p %Z').
 ```
@@ -88,10 +93,14 @@ Reminder: <the text>. Also report the current time (run: TZ='America/Los_Angeles
 
 CronCreate jobs auto-expire after 3 days. Create a one-shot renewal that fires ~70 hours from now and re-invokes `/clock` with the same arguments.
 
-Use `date` to calculate the renewal time reliably:
+Use `date` to calculate the renewal time reliably. GNU vs BSD `date` differ — use whichever works on the host:
 
 ```bash
+# Linux / GNU coreutils
 date -u -d '+70 hours' '+%M %H %d %m *'
+
+# macOS / BSD
+date -u -v +70H '+%M %H %d %m *'
 ```
 
 Use that output directly as the cron expression.
