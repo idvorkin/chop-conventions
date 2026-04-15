@@ -11,7 +11,6 @@ to every opted-in machine automatically.
 
 ## Important Rules
 
-- **Never run destructive commands without confirmation** — `rm -rf`, `git reset --hard`, `DROP TABLE`, force-push, etc. Show the command and ask before running.
 - **Don't use `claude-agent-sdk` for batch/pipeline extraction.** Measured 17× cost + ~50% reliability vs direct `anthropic.AsyncAnthropic` on an 80-entry structured-JSON test. Claude Code auto-loads ~20k tokens of framework context per call and has no stateless-cache path. If `ANTHROPIC_API_KEY` credits exhaust, switch to the Anthropic **batches endpoint** (50% cheaper), not Claude Code SDK.
 - **Agent tool background dispatches cannot be aborted.** `run_in_background: true` is fire-and-forget; no kill mechanism exists. Plan tests assuming you can't stop them mid-flight.
   - **Corollary**: when dispatching a background agent that will **write** to a shared repo (file edit, issue, PR), confirm scope with the user first. You can't undo a write you can't abort.
