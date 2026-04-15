@@ -359,35 +359,25 @@ class TestClassifyMachine(unittest.TestCase):
 
 class TestClassifyDevMachine(unittest.TestCase):
     def test_both_conditions_true(self):
-        dev, reasons = classify_dev_machine(
-            tailscale_present=True, hostname="c-5004"
-        )
+        dev, reasons = classify_dev_machine(tailscale_present=True, hostname="c-5004")
         self.assertTrue(dev)
         self.assertTrue(any("hostname=c-5004" in r for r in reasons))
 
     def test_tailscale_missing(self):
-        dev, _ = classify_dev_machine(
-            tailscale_present=False, hostname="c-5004"
-        )
+        dev, _ = classify_dev_machine(tailscale_present=False, hostname="c-5004")
         self.assertFalse(dev)
 
     def test_hostname_does_not_match(self):
         # Mac with Tailscale installed but human hostname: not a dev machine.
-        dev, _ = classify_dev_machine(
-            tailscale_present=True, hostname="igor-mbp"
-        )
+        dev, _ = classify_dev_machine(tailscale_present=True, hostname="igor-mbp")
         self.assertFalse(dev)
 
     def test_neither_condition(self):
-        dev, _ = classify_dev_machine(
-            tailscale_present=False, hostname="other-host"
-        )
+        dev, _ = classify_dev_machine(tailscale_present=False, hostname="other-host")
         self.assertFalse(dev)
 
     def test_hostname_case_insensitive(self):
-        dev, _ = classify_dev_machine(
-            tailscale_present=True, hostname="C-5004"
-        )
+        dev, _ = classify_dev_machine(tailscale_present=True, hostname="C-5004")
         self.assertTrue(dev)
 
 
@@ -440,15 +430,18 @@ class TestResolveChopRoot(unittest.TestCase):
             root.mkdir()
             home = Path(td) / "home"
             home.mkdir()
-            result = resolve_chop_root(
-                {"CHOP_CONVENTIONS_ROOT": str(root)}, home
-            )
+            result = resolve_chop_root({"CHOP_CONVENTIONS_ROOT": str(root)}, home)
             self.assertIsNone(result)
 
 
 class TestCheckSharedClaudeMd(unittest.TestCase):
-    def _setup(self, td: str, enabled: bool = False, machine: str = "orbstack-dev",
-              dev_machine: bool = True) -> tuple[Path, Path, MachineInfo]:
+    def _setup(
+        self,
+        td: str,
+        enabled: bool = False,
+        machine: str = "orbstack-dev",
+        dev_machine: bool = True,
+    ) -> tuple[Path, Path, MachineInfo]:
         chop = Path(td) / "chop-conventions"
         (chop / "claude-md" / "machines").mkdir(parents=True)
         (chop / "claude-md" / "global.md").write_text("# global", encoding="utf-8")
@@ -533,9 +526,7 @@ class TestCheckSharedClaudeMd(unittest.TestCase):
             )
             block, _ = check_shared_claude_md(chop, home, True, info)
             kinds_by_slot = {a["slot"]: a["kind"] for a in block["actions"]}
-            self.assertEqual(
-                kinds_by_slot["dev_machine"], "remove_obsolete_symlink"
-            )
+            self.assertEqual(kinds_by_slot["dev_machine"], "remove_obsolete_symlink")
 
     def test_partial_installation(self):
         # Only global symlinked; machine + dev_machine missing.
@@ -564,9 +555,7 @@ class TestCheckSharedClaudeMd(unittest.TestCase):
             target = Path(td) / "hostile"
             target.mkdir()
             (home / ".claude" / "claude-md").symlink_to(target)
-            info = MachineInfo(
-                machine="orbstack-dev", dev_machine=True, reasons=[]
-            )
+            info = MachineInfo(machine="orbstack-dev", dev_machine=True, reasons=[])
             _, errors = check_shared_claude_md(chop, home, True, info)
             self.assertTrue(
                 any(e.get("code") == "claude_md_dir_is_symlink" for e in errors)
@@ -636,9 +625,7 @@ class TestCheckPostUpToDate(unittest.TestCase):
             hook.symlink_to(real)
             path, errors = check_post_up_to_date(repo)
             self.assertIsNone(path)
-            self.assertTrue(
-                any(e.get("code") == "hook_is_symlink" for e in errors)
-            )
+            self.assertTrue(any(e.get("code") == "hook_is_symlink" for e in errors))
 
     def test_subdirectory_does_not_affect_resolution(self):
         # The function takes an already-resolved toplevel, so running it
@@ -678,13 +665,21 @@ class TestRunDiagnoseChopRootUnresolved(unittest.TestCase):
             fake_home = Path(td) / "fake-home"
             fake_home.mkdir()
             # Minimal git repo — runtime of `diagnose.py` shells out
-            # to git, so it needs a repo to run against.
+            # to git, so it needs a repo to run against. Scrub GIT_*
+            # env vars so a `GIT_DIR` set by pre-commit runners (prek)
+            # doesn't redirect these subprocess calls into whichever
+            # outer repo is running the hook — that silently pollutes
+            # the host `.git/config` with `user.email = test@test` and
+            # `core.worktree = <tempdir>` and wedges the whole repo.
+            git_env = {k: v for k, v in os.environ.items() if not k.startswith("GIT_")}
+
             def _git(*args: str) -> None:
                 subprocess.run(
                     ["git", *args],
                     cwd=repo,
                     check=True,
                     capture_output=True,
+                    env=git_env,
                 )
 
             _git("init", "-q")
