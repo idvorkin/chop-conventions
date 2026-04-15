@@ -48,6 +48,10 @@ Just do it - including obvious follow-up actions. Only pause when:
 - YAGNI. The best code is no code. Don't add features we don't need.
 - When it doesn't conflict with YAGNI, architect for extensibility.
 
+### GitHub Workflow
+
+- **When filing a GitHub issue or PR in a repo outside `idvorkin/*` or `idvorkin-ai-tools/*`** (upstream library, third-party tool), end the body with a friendly sign-off that tags Igor — e.g. `— Keeping my human friend @idvorkin in the loop!` — so he gets notified without relying on watch settings he doesn't have. Skip this for Igor's own repos, where he already gets notifications.
+
 ## Important Rules
 
 - **Don't use `claude-agent-sdk` for batch/pipeline extraction.** Measured 17× cost + ~50% reliability vs direct `anthropic.AsyncAnthropic` on an 80-entry structured-JSON test. Claude Code auto-loads ~20k tokens of framework context per call and has no stateless-cache path. If `ANTHROPIC_API_KEY` credits exhaust, switch to the Anthropic **batches endpoint** (50% cheaper), not Claude Code SDK.
@@ -59,6 +63,7 @@ Just do it - including obvious follow-up actions. Only pause when:
 - **`/reload-plugins` does NOT restart running MCP server processes.** It re-reads plugin config but leaves live MCP servers alone. To deploy new MCP code: `pkill -f '<server>'` first, THEN `/reload-plugins` (the next MCP tool call respawns the server from the plugin cache). Confirmed against Claude Code's telegram plugin 2026-04-12.
 - **Non-interactive `git rebase -i` via scripted editors.** For programmatic squashes in sessions without a human editor, write todo to `/tmp/rebase-todo.txt` and message to `/tmp/rebase-msg.txt`, then `GIT_SEQUENCE_EDITOR="cp /tmp/rebase-todo.txt" GIT_EDITOR="cp /tmp/rebase-msg.txt" git rebase -i <base>`. Supports `pick`/`fixup`/`reword`/`squash` in one pass. Always `git tag backup HEAD` first — reflog expires.
 - **Session token / context usage** — when asked "how many tokens am I using" or "how much context is left," read `~/.claude/statusline_last_input.json` with `jq`. The statusline script dumps the harness JSON there every turn; grab `.context_window.used_percentage`, `.context_window.context_window_size`, `.cost.total_cost_usd`. Don't guess from transcript length.
+- **zsh reserved array vars**: `path`, `PATH`, `manpath`, `cdpath`, `fpath` are tied to shell path resolution. Using them as local string vars fails with "inconsistent type for assignment". Use `wt_path`, `file_path`, `dir` etc. instead.
 
 ## Side-Edit: Preview Files in a Side Pane
 
