@@ -6,10 +6,11 @@ import sys
 import time
 from pathlib import Path
 
-BOT = Path(__file__).parent / "telegram_bot.py"
+# telegram_bot.py lives in the parent `server/` directory (vendored layout).
+BOT = Path(__file__).resolve().parent.parent / "telegram_bot.py"
 
 # Make telegram_bot importable without executing main()
-sys.path.insert(0, str(Path(__file__).parent))
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 
 def test_singleton_rejects_second_instance(tmp_path):
