@@ -66,7 +66,7 @@ Just do it - including obvious follow-up actions. Only pause when:
 - **Signing GitHub issues and comments on external repos.** When filing issues or comments on repos *outside* `idvorkin/*` and `idvorkin-ai-tools/*` (e.g., upstream projects, third-party libraries), append this signature:
 
   ```
-  @idvorkin — Created w/♥ via [Igor's Claws](https://idvork.in/igors-claws)
+  Created w/♥ by @idvorkin's [Claws](https://idvork.in/igors-claws)
   ```
 
   This tags Igor for notification, makes the AI-agent origin explicit, and deep-links to the page about his claws. **Skip the signature on `idvorkin/*` and `idvorkin-ai-tools/*` repos** — they're self-authored and attribution is implied.
@@ -75,7 +75,7 @@ Just do it - including obvious follow-up actions. Only pause when:
 
   > Confirmed — `--dangerously-skip-permissions` has intentional carve-outs (sensitive-file writes, outside-cwd writes, shell metachars). Worth a docs update since the flag name implies full bypass. Happy to PR if useful.
   >
-  > @idvorkin — Created w/♥ via [Igor's Claws](https://idvork.in/igors-claws)
+  > Created w/♥ by @idvorkin's [Claws](https://idvork.in/igors-claws)
 - **zsh reserved array vars**: `path`, `PATH`, `manpath`, `cdpath`, `fpath` are tied to shell path resolution. Using them as local string vars fails with "inconsistent type for assignment". Use `wt_path`, `file_path`, `dir` etc. instead.
 
 ## Side-Edit: Preview Files in a Side Pane
