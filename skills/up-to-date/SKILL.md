@@ -47,6 +47,11 @@ The JSON output has this shape:
     "uncommitted": ["M  foo.py", ...],
     "stashes": ["stash@{0}: ...", ...]
   },
+  "worktrees": [
+    {"path": "/path/to/repo", "branch": "main", "is_primary": true, "absorbed": false, "unmerged_count": null},
+    {"path": "/path/to/repo/.worktrees/feature", "branch": "feature", "is_primary": false, "absorbed": true, "unmerged_count": 0}
+  ],
+  "absorbable_branches": ["old-feature", ...],
   "pr": {
     "state": "MERGED",
     "number": 42,
@@ -72,7 +77,7 @@ The JSON output has this shape:
 `shared_claude_md` is **omitted entirely** when `diagnose.py` cannot
 resolve a chop-conventions checkout. In that case `errors[]` carries a
 `{subsystem: "shared_claude_md", code: "chop_root_unresolved"}` entry
-and Step 3.5 is skipped without blocking the rest of `/up-to-date`.
+and Step 4 is skipped without blocking the rest of `/up-to-date`.
 
 `post_up_to_date_path` is `null` when no `.claude/post-up-to-date.md`
 exists at the repo toplevel; symlinked hooks are refused and surface as
@@ -195,7 +200,7 @@ If `worktree.stashes` is non-empty, list them and inform the user.
 | Behind source/main | N commits        | Will pull                                    |
 | Stashes            | N stashes        | Listed below                                 |
 
-## Step 3.5 — Shared CLAUDE.md setup / resync
+## Step 4 — Shared CLAUDE.md setup / resync
 
 Consult `shared_claude_md` in the diagnose JSON. Skip this step entirely
 when any `errors[]` entry has `subsystem == "shared_claude_md"` — that
@@ -239,12 +244,12 @@ empty, the user has never opted in on this machine. Offer opt-in:
 
 For each action in `shared_claude_md.actions`:
 
-| Kind                      | Command                 | Auto?        |
-| ------------------------- | ----------------------- | ------------ |
-| `create_symlink`          | `ln -s <target> <path>` | Ask user     |
+| Kind                      | Command                   | Auto?      |
+| ------------------------- | ------------------------- | ---------- |
+| `create_symlink`          | `ln -s <target> <path>`   | Ask user   |
 | `replace_stale_symlink`   | `ln -sfn <target> <path>` | Ask user   |
-| `remove_obsolete_symlink` | report only             | Never auto   |
-| `report_user_file`        | report only             | Never auto   |
+| `remove_obsolete_symlink` | report only               | Never auto |
+| `report_user_file`        | report only               | Never auto |
 
 `create_symlink` uses plain `-s` (NOT `-sfn`) so a race-condition real
 file at `<path>` fails loudly rather than being clobbered. Stay silent
