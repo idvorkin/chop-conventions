@@ -37,16 +37,15 @@ def init_db(conn: sqlite3.Connection):
 
 
 def extract_channel_messages(text: str) -> list[dict]:
-    """Extract all <channel source="plugin:telegram:telegram" ...> blocks."""
+    """Extract all <channel source="plugin:telegram:telegram" ...> blocks.
+
+    Attribute parsing is order-agnostic: we match the opening tag as a blob
+    and then pull named attributes out of it via a second regex pass. This
+    avoids silent drops when an upstream writer reorders tag attributes.
+    """
     pattern = re.compile(
         r'<channel\s+source="plugin:telegram:telegram"'
-        r'(?:\s+chat_id="(?P<chat_id>[^"]*)")?'
-        r'(?:\s+message_id="(?P<message_id>[^"]*)")?'
-        r'(?:\s+user="(?P<user>[^"]*)")?'
-        r'(?:\s+user_id="(?P<user_id>[^"]*)")?'
-        r'(?:\s+ts="(?P<ts>[^"]*)")?'
-        r'(?:\s+(?:image_path|attachment_kind|attachment_file_id|attachment_size|attachment_mime)="[^"]*")*'
-        r"\s*>"
+        r'(?P<attrs>[^>]*)>'
         r"(?P<body>.*?)"
         r"</channel>",
         re.DOTALL,
@@ -54,25 +53,22 @@ def extract_channel_messages(text: str) -> list[dict]:
 
     messages = []
     for match in pattern.finditer(text):
+        attrs = dict(re.findall(r'(\w+)="([^"]*)"', match.group("attrs")))
         msg = {
-            "chat_id": match.group("chat_id"),
-            "message_id": match.group("message_id"),
-            "user": match.group("user"),
-            "user_id": match.group("user_id"),
-            "ts": match.group("ts"),
+            "chat_id": attrs.get("chat_id"),
+            "message_id": attrs.get("message_id"),
+            "user": attrs.get("user"),
+            "user_id": attrs.get("user_id"),
+            "ts": attrs.get("ts"),
             "text": match.group("body").strip(),
         }
-        # Extract optional attributes with a broader search on the tag
-        tag_text = match.group(0)
-        img = re.search(r'image_path="([^"]*)"', tag_text)
-        if img:
-            msg["image_path"] = img.group(1)
-        att_kind = re.search(r'attachment_kind="([^"]*)"', tag_text)
-        if att_kind:
-            msg["attachment_kind"] = att_kind.group(1)
-        att_file = re.search(r'attachment_file_id="([^"]*)"', tag_text)
-        if att_file:
-            msg["attachment_file_id"] = att_file.group(1)
+        # Optional attachment attributes — same attrs dict, no positional regex.
+        if attrs.get("image_path"):
+            msg["image_path"] = attrs["image_path"]
+        if attrs.get("attachment_kind"):
+            msg["attachment_kind"] = attrs["attachment_kind"]
+        if attrs.get("attachment_file_id"):
+            msg["attachment_file_id"] = attrs["attachment_file_id"]
         messages.append(msg)
 
     return messages
@@ -98,11 +94,13 @@ def main():
     now = datetime.now(timezone.utc).isoformat()
 
     for msg in messages:
-        # Check for duplicate (same message_id already logged)
-        if msg.get("message_id"):
+        # Dedupe by (chat_id, message_id). Telegram message_ids are only unique
+        # within a chat — dedupe by message_id alone would silently drop
+        # legitimate messages from different chats that share a message_id.
+        if msg.get("chat_id") and msg.get("message_id"):
             existing = conn.execute(
-                "SELECT id FROM messages WHERE message_id = ? AND direction = 'inbound'",
-                (msg["message_id"],),
+                "SELECT id FROM messages WHERE chat_id = ? AND message_id = ? AND direction = 'inbound'",
+                (msg["chat_id"], msg["message_id"]),
             ).fetchone()
             if existing:
                 continue
