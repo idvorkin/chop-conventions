@@ -62,19 +62,19 @@ Just do it - including obvious follow-up actions. Only pause when:
 - **`git commit` can silently no-op when a pre-commit hook reformats staged files.** The commit aborts (hook exit != 0) but a chained `&& git push` still fires — pushing an empty branch or the unchanged tip. Detection: after `git commit`, scan output for the `[branch sha] commit-message` confirmation line. If missing, the commit didn't land — re-stage the reformatted file and retry. Don't trust the chained-push output alone.
 - **Non-interactive `git rebase -i` via scripted editors.** For programmatic squashes in sessions without a human editor, write todo to `/tmp/rebase-todo.txt` and message to `/tmp/rebase-msg.txt`, then `GIT_SEQUENCE_EDITOR="cp /tmp/rebase-todo.txt" GIT_EDITOR="cp /tmp/rebase-msg.txt" git rebase -i <base>`. Supports `pick`/`fixup`/`reword`/`squash` in one pass. Always `git tag backup HEAD` first — reflog expires.
 - **Session token / context usage** — when asked "how many tokens am I using" or "how much context is left," read `~/.claude/statusline_last_input.json` with `jq`. The statusline script dumps the harness JSON there every turn; grab `.context_window.used_percentage`, `.context_window.context_window_size`, `.cost.total_cost_usd`. Don't guess from transcript length.
-- **Signing GitHub issues and comments on external repos.** When filing issues, PRs, or comments on repos *outside* `idvorkin/*` and `idvorkin-ai-tools/*` (e.g., upstream projects, third-party libraries), end the body with this sign-off so Igor gets tagged and notified without relying on watch settings he doesn't have:
+- **Signing GitHub issues and comments on external repos.** When filing issues, PRs, or comments on repos *outside* `idvorkin/*` and `idvorkin-ai-tools/*` (e.g., upstream projects, third-party libraries), append this signature so Igor gets tagged and notified, the AI-agent origin is explicit, and readers can follow the deep link to Igor's writeup on the "Claws" concept:
 
   ```
-  — Keeping my human friend @idvorkin in the loop!
+  Created w/♥ by @idvorkin's [Claws](https://idvork.in/igors-claws)
   ```
 
-  **Skip the signature on `idvorkin/*` and `idvorkin-ai-tools/*` repos** — he already gets notifications there.
+  **Skip the signature on `idvorkin/*` and `idvorkin-ai-tools/*` repos** — he already gets notifications there and attribution is implied.
 
   **Example issue comment:**
 
   > Confirmed — `--dangerously-skip-permissions` has intentional carve-outs (sensitive-file writes, outside-cwd writes, shell metachars). Worth a docs update since the flag name implies full bypass. Happy to PR if useful.
   >
-  > — Keeping my human friend @idvorkin in the loop!
+  > Created w/♥ by @idvorkin's [Claws](https://idvork.in/igors-claws)
 - **Close PRs and issues you opened that become stale or superseded.** If Claude filed a PR or issue and it's no longer relevant (work redirected, approach pivoted, superseded by another PR, spec changed before review), close it yourself with a clear comment explaining why. Don't leave orphan PRs/issues for Igor to clean up — they accumulate and lose context. Always include a pointer to the replacement work (bead ID, superseding PR, or updated design doc).
 - **zsh reserved array vars**: `path`, `PATH`, `manpath`, `cdpath`, `fpath` are tied to shell path resolution. Using them as local string vars fails with "inconsistent type for assignment". Use `wt_path`, `file_path`, `dir` etc. instead.
 
