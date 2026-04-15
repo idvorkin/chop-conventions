@@ -141,10 +141,14 @@ def remove_background(image_path):
     try:
         result = subprocess.run(
             [
-                magick, image_path,
-                "-fuzz", "30%",
-                "-transparent", "#FF00FF",
-                "-quality", "90",
+                magick,
+                image_path,
+                "-fuzz",
+                "30%",
+                "-transparent",
+                "#FF00FF",
+                "-quality",
+                "90",
                 tmp_path,
             ],
             capture_output=True,
@@ -271,7 +275,7 @@ def main():
         "--transparent",
         action="store_true",
         default=False,
-        help="Generate on magenta greenscreen, then remove background with rembg",
+        help="Generate on magenta chroma-key background, then strip it via ImageMagick -fuzz -transparent",
     )
 
     args = parser.parse_args()
@@ -304,9 +308,7 @@ def main():
     )
 
     if is_single:
-        direction = Direction(
-            scene=args.scene, shirt=args.shirt, output=args.output
-        )
+        direction = Direction(scene=args.scene, shirt=args.shirt, output=args.output)
         result = generate_one(direction, config)
         if not result.success:
             print(f"Error: {result.error}", file=sys.stderr)
@@ -327,7 +329,9 @@ def main():
             print("Error: No directions in batch file", file=sys.stderr)
             sys.exit(1)
 
-        print(f"Generating {len(raw_directions)} images in parallel...", file=sys.stderr)
+        print(
+            f"Generating {len(raw_directions)} images in parallel...", file=sys.stderr
+        )
         failures = []
 
         # Map output filename -> raw dict for augmenting with debug info
@@ -367,9 +371,15 @@ def main():
             json.dump(raw_directions, f, indent=2)
 
         if failures:
-            print(f"\n{len(failures)}/{len(raw_directions)} failed ({batch_duration}s total)", file=sys.stderr)
+            print(
+                f"\n{len(failures)}/{len(raw_directions)} failed ({batch_duration}s total)",
+                file=sys.stderr,
+            )
             sys.exit(1)
-        print(f"\nAll {len(raw_directions)} images generated ({batch_duration}s total)", file=sys.stderr)
+        print(
+            f"\nAll {len(raw_directions)} images generated ({batch_duration}s total)",
+            file=sys.stderr,
+        )
 
 
 if __name__ == "__main__":

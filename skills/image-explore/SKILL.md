@@ -17,7 +17,7 @@ Parse the user's input for:
 - **`--count N`**: Number of directions to brainstorm and generate (default: 5, max: 8)
 - **`--variants N`**: Number of minor variants per direction (default: 1, max: 3). Each variant tweaks the scene (different angle, lighting, composition) while keeping the same concept and shirt text.
 - **`--style 'description'`**: Override the default illustration style (passed through to gen-image)
-- **`--aspect 'W:H'`**: Aspect ratio (default: 3:4). Valid: `1:1`, `2:3`, `3:2`, `3:4`, `4:3`, `9:16`, `16:9`
+- **`--aspect 'W:H'`**: Aspect ratio (default: 3:4). Valid: `1:1`, `2:3`, `3:2`, `3:4`, `4:3`, `4:5`, `5:4`, `9:16`, `16:9`, `21:9`
 - **`--ref 'path'`**: Override reference image (default: raccoon canonical ref)
 
 ## Workflow
@@ -172,7 +172,7 @@ After generation, **verify each image actually matches its scene description** b
 3. **Write verification results back to the directions JSON** — for each entry, add:
    - `_verification`: `"pass"` or `"fail"`
    - `_verification_reason`: short explanation (e.g., "Solo raccoon portrait, no soccer field or group scene")
-   These fields are rendered in the comparison page's collapsible debug details.
+     These fields are rendered in the comparison page's collapsible debug details.
 4. For any **failures**, retry up to 2 times:
    - Strengthen the scene description (be more explicit, add emphasis)
    - Re-run `generate.py` for just the failed entries (write a temporary batch JSON)
@@ -181,11 +181,13 @@ After generation, **verify each image actually matches its scene description** b
 5. After retries, report any still-failing images to the user rather than silently including bad results
 
 **What counts as a failure:**
+
 - Single character when scene calls for a group (or vice versa)
 - Missing the core concept entirely (e.g., "split-screen" rendered as single scene)
 - Wrong setting (indoor when outdoor was specified)
 
 **What does NOT count as a failure:**
+
 - Shirt text slightly wrong (Gemini often struggles with exact text)
 - Style differences from the reference
 - Minor composition differences (angle, lighting)
@@ -256,9 +258,10 @@ If the user picks a winner, offer to:
 
 ## Default Raccoon Style
 
-When no `--style` is given, use this base style (same as gen-image):
-
-> Cute anthropomorphic raccoon character with chibi proportions (oversized head, small body), dark raccoon mask markings around eyes, big friendly dark eyes, small black nose, round brown ears with lighter inner ear, soft brown felt/plush fur, striped ringed tail with brown and dark brown bands. Wearing big round rainbow-colored glasses (frames cycle through red, orange, yellow, green, blue, purple), green t-shirt with bold white text, blue denim shorts, IMPORTANT: mismatched Crocs shoes — one BLUE Croc on the left foot and one YELLOW Croc on the right foot (never the same color on both feet). Soft plush 3D/vinyl toy illustration style, studio softbox lighting, clean warm pastel background, subtle vintage film grain, children's book style. Full body.
+When no `--style` is given, `generate.py` reads the canonical style from
+[`../gen-image/raccoon-style.txt`](../gen-image/raccoon-style.txt). Edit that
+file to change the default for both `gen-image` and `image-explore` — do not
+duplicate the style text here (drifted copies rot silently).
 
 ## Error Handling
 
