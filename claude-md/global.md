@@ -75,6 +75,7 @@ Just do it - including obvious follow-up actions. Only pause when:
   > Confirmed — `--dangerously-skip-permissions` has intentional carve-outs (sensitive-file writes, outside-cwd writes, shell metachars). Worth a docs update since the flag name implies full bypass. Happy to PR if useful.
   >
   > — Keeping my human friend @idvorkin in the loop!
+- **Close PRs and issues you opened that become stale or superseded.** If Claude filed a PR or issue and it's no longer relevant (work redirected, approach pivoted, superseded by another PR, spec changed before review), close it yourself with a clear comment explaining why. Don't leave orphan PRs/issues for Igor to clean up — they accumulate and lose context. Always include a pointer to the replacement work (bead ID, superseding PR, or updated design doc).
 - **zsh reserved array vars**: `path`, `PATH`, `manpath`, `cdpath`, `fpath` are tied to shell path resolution. Using them as local string vars fails with "inconsistent type for assignment". Use `wt_path`, `file_path`, `dir` etc. instead.
 
 ## Side-Edit: Preview Files in a Side Pane
