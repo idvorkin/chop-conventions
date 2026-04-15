@@ -48,6 +48,10 @@ Just do it - including obvious follow-up actions. Only pause when:
 - YAGNI. The best code is no code. Don't add features we don't need.
 - When it doesn't conflict with YAGNI, architect for extensibility.
 
+### GitHub Workflow
+
+- **When filing a GitHub issue or PR in a repo outside `idvorkin/*` or `idvorkin-ai-tools/*`** (upstream library, third-party tool), end the body with a friendly sign-off that tags Igor — e.g. `— Keeping my human friend @idvorkin in the loop!` — so he gets notified without relying on watch settings he doesn't have. Skip this for Igor's own repos, where he already gets notifications.
+
 ## Important Rules
 
 - **Don't use `claude-agent-sdk` for batch/pipeline extraction.** Measured 17× cost + ~50% reliability vs direct `anthropic.AsyncAnthropic` on an 80-entry structured-JSON test. Claude Code auto-loads ~20k tokens of framework context per call and has no stateless-cache path. If `ANTHROPIC_API_KEY` credits exhaust, switch to the Anthropic **batches endpoint** (50% cheaper), not Claude Code SDK.
