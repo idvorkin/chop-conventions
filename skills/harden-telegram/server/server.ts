@@ -955,8 +955,10 @@ function shutdown(): void {
     inboundDb.close()
   } catch {}
   // No bot.stop() — we never started polling.
+  // 2s forced-exit fallback in case a pending async (socket close, db flush,
+  // stdout flush of this log line) keeps the event loop alive. .unref() so
+  // the timer itself doesn't hold the loop open if everything settles first.
   setTimeout(() => process.exit(0), 2000).unref()
-  process.exit(0)
 }
 process.stdin.on('end', shutdown)
 process.stdin.on('close', shutdown)
