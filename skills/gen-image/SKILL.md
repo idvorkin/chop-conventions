@@ -1,7 +1,7 @@
 ---
 name: gen-image
 description: "Analyze content and generate illustrations via Gemini image API"
-argument-hint: "<post-or-topic> [--style 'description'] [--ref 'image-path'] [--api-url 'gemini-endpoint']"
+argument-hint: "<post-or-topic> [--count N] [--aspect W:H] [--style '...'] [--ref path] [--transparent] [--api-url url]"
 allowed-tools: Bash, Read, Write, Glob, Grep, AskUserQuestion, WebFetch
 ---
 
