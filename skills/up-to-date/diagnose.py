@@ -671,8 +671,8 @@ def gh_pr_view_json(fields: str) -> dict[str, Any] | None:
         return None
 
 
-def gh_pr_list_merged_heads(limit: int = 200) -> list[str]:
-    """Return headRefNames of MERGED PRs for the current repo context.
+def gh_pr_list_merged_heads(limit: int = 200) -> dict[str, str]:
+    """Return {headRefName: headRefOid} for MERGED PRs in the current repo.
 
     Closes the squash-merge blind spot in patch-id absorption: a squash
     merge rewrites the diff into one commit whose patch-id differs from
@@ -680,7 +680,13 @@ def gh_pr_list_merged_heads(limit: int = 200) -> list[str]:
     unique work even though the PR landed. Querying `gh pr list` for
     MERGED PRs is the authoritative fallback.
 
-    Returns `[]` on any failure (no gh auth, network error, not a GitHub
+    Returning the OID (not just the name) lets callers verify that the
+    local branch tip still matches the SHA that was merged — protecting
+    the case where the user added post-merge commits to a branch whose
+    PR already landed. Newest-first ordering from `gh pr list`; first
+    occurrence wins when multiple PRs share a headRefName.
+
+    Returns `{}` on any failure (no gh auth, network error, not a GitHub
     repo) — callers should treat empty as "no extra absorption signal".
     """
     proc = _run(
@@ -693,19 +699,27 @@ def gh_pr_list_merged_heads(limit: int = 200) -> list[str]:
             "--limit",
             str(limit),
             "--json",
-            "headRefName",
+            "headRefName,headRefOid",
         ],
         check=False,
     )
     if proc.returncode != 0:
-        return []
+        return {}
     try:
         entries = json.loads(proc.stdout)
     except json.JSONDecodeError:
-        return []
+        return {}
     if not isinstance(entries, list):
-        return []
-    return [e["headRefName"] for e in entries if isinstance(e, dict) and "headRefName" in e]
+        return {}
+    result: dict[str, str] = {}
+    for e in entries:
+        if not isinstance(e, dict):
+            continue
+        name = e.get("headRefName")
+        oid = e.get("headRefOid")
+        if isinstance(name, str) and isinstance(oid, str):
+            result.setdefault(name, oid)
+    return result
 
 
 def detect_default_branch(src: str) -> str:
@@ -767,7 +781,7 @@ def run_diagnose() -> dict[str, Any]:
         merged_heads_fut = pool.submit(gh_pr_list_merged_heads)
         fetch_proc = fetch_fut.result()
         pr_data = pr_fut.result()
-        merged_pr_heads = set(merged_heads_fut.result())
+        merged_pr_heads = merged_heads_fut.result()
 
     if fetch_proc.returncode != 0:
         errors.append(f"git fetch failed: {fetch_proc.stderr.strip()}")
@@ -798,7 +812,11 @@ def run_diagnose() -> dict[str, Any]:
             git_proc, "worktree", "list", "--porcelain", check=False
         )
         local_branches_fut = pool.submit(
-            git_proc, "branch", "--format=%(refname:short)", check=False
+            git_proc,
+            "for-each-ref",
+            "refs/heads/",
+            "--format=%(refname:short)\t%(objectname)",
+            check=False,
         )
         branch_name_proc = branch_name_fut.result()
         divergence_proc = divergence_fut.result()
@@ -855,15 +873,23 @@ def run_diagnose() -> dict[str, Any]:
     behind_commits = [ln for ln in behind_commits_raw.splitlines() if ln][:10]
 
     # Local branches to check for absorption (skip the default branch, skip empty).
+    # Each line is `<name>\t<sha>`. We need SHAs to detect the post-merge-work
+    # case: a branch whose PR merged (in merged_pr_heads) but whose local tip
+    # has advanced past the merged head — unsafe to auto-absorb.
+    local_branch_shas: dict[str, str] = {}
     if local_branches_proc.returncode != 0:
         errors.append(
-            f"git branch --format failed: {local_branches_proc.stderr.strip()}"
+            f"git for-each-ref refs/heads/ failed: {local_branches_proc.stderr.strip()}"
         )
         local_branch_names: list[str] = []
     else:
-        local_branch_names = [
-            ln for ln in local_branches_proc.stdout.splitlines() if ln
-        ]
+        for ln in local_branches_proc.stdout.splitlines():
+            if not ln:
+                continue
+            name, _, sha = ln.partition("\t")
+            if name and sha:
+                local_branch_shas[name] = sha
+        local_branch_names = sorted(local_branch_shas.keys())
 
     # Parse worktree porcelain output. Primary is the first entry.
     if worktree_proc.returncode != 0:
@@ -914,15 +940,21 @@ def run_diagnose() -> dict[str, Any]:
 
     # Absorbable branches: local branches whose work is fully in $src_default,
     # caught via either (a) zero unique patch-ids from `git cherry`, or
-    # (b) a MERGED PR with the branch as head. (b) catches squash-merges
-    # that (a) misses — the squashed commit's patch-id differs from the
-    # branch's commits.
+    # (b) a MERGED PR whose recorded head SHA still matches the local
+    # branch tip. (b) catches squash-merges that (a) misses — the squashed
+    # commit's patch-id differs from the branch's commits. Requiring the
+    # SHA match protects the post-merge-work case: if the user added
+    # commits to the branch AFTER the PR merged, the local tip has
+    # advanced past `headRefOid` and the branch still holds unsynced
+    # work; we classify it as `squash_merged_diverged_branches` and do
+    # NOT mark it absorbable.
     #
     # Excludes the currently checked-out branch since deleting it requires
     # switching away first — callers should surface it separately if they
     # want that.
     absorbable_branches: list[str] = []
     squash_absorbed: set[str] = set()
+    squash_diverged: set[str] = set()
     for b in sorted(local_branch_names):
         if b == default_branch:
             continue
@@ -932,11 +964,20 @@ def run_diagnose() -> dict[str, Any]:
         patch_absorbed = (
             analysis_for_b is not None and not analysis_for_b.unique_commits
         )
-        pr_merged = b in merged_pr_heads
-        if patch_absorbed or pr_merged:
+        merged_head_sha = merged_pr_heads.get(b)
+        local_sha = local_branch_shas.get(b)
+        if merged_head_sha is not None and local_sha is not None:
+            pr_merged_safe = merged_head_sha == local_sha
+            pr_merged_diverged = not pr_merged_safe
+        else:
+            pr_merged_safe = False
+            pr_merged_diverged = False
+        if patch_absorbed or pr_merged_safe:
             absorbable_branches.append(b)
-        if pr_merged and not patch_absorbed:
+        if pr_merged_safe and not patch_absorbed:
             squash_absorbed.add(b)
+        if pr_merged_diverged and not patch_absorbed:
+            squash_diverged.add(b)
 
     # Worktree classification: first entry is primary, rest are linked.
     # For each linked worktree, flag "absorbed" if its branch has zero
@@ -953,20 +994,34 @@ def run_diagnose() -> dict[str, Any]:
             unmerged_count: int | None = None
         elif analysis_for_wt is None:
             # No cherry result (branch skipped because it's main, or errored).
-            # Conservative: treat as not-absorbed unless a merged PR says
-            # otherwise.
-            pr_merged = wt.branch in merged_pr_heads
-            absorbed = pr_merged
-            unmerged_count = 0 if pr_merged else None
+            # Conservative: treat as not-absorbed unless a merged PR's head
+            # SHA still matches the local branch tip.
+            merged_head_sha = merged_pr_heads.get(wt.branch)
+            local_sha = local_branch_shas.get(wt.branch)
+            pr_merged_safe = (
+                merged_head_sha is not None
+                and local_sha is not None
+                and merged_head_sha == local_sha
+            )
+            absorbed = pr_merged_safe
+            unmerged_count = 0 if pr_merged_safe else None
         else:
             unique = analysis_for_wt.unique_commits
             patch_absorbed = len(unique) == 0
-            pr_merged = wt.branch in merged_pr_heads
-            absorbed = patch_absorbed or pr_merged
-            # When the PR merged via squash, the branch's commits are still
-            # patch-id-unique, but the work is in main. Report 0 unmerged
-            # to reflect semantic state rather than patch-id state.
-            unmerged_count = 0 if pr_merged else len(unique)
+            merged_head_sha = merged_pr_heads.get(wt.branch)
+            local_sha = local_branch_shas.get(wt.branch)
+            pr_merged_safe = (
+                merged_head_sha is not None
+                and local_sha is not None
+                and merged_head_sha == local_sha
+            )
+            absorbed = patch_absorbed or pr_merged_safe
+            # When the PR merged via squash AND the local tip still matches
+            # the merged head, the branch's commits are still patch-id-unique
+            # but the work is fully in main — report 0 unmerged. When the
+            # local tip has advanced past the merged head, the branch has
+            # post-merge work; fall through to len(unique) to reflect it.
+            unmerged_count = 0 if pr_merged_safe else len(unique)
         worktrees_out.append(
             {
                 "path": wt.path,
@@ -1067,6 +1122,7 @@ def run_diagnose() -> dict[str, Any]:
         "worktrees": worktrees_out,
         "absorbable_branches": absorbable_branches,
         "squash_merged_branches": sorted(squash_absorbed),
+        "squash_merged_diverged_branches": sorted(squash_diverged),
         "pr": pr_block,
         "post_up_to_date_path": post_up_to_date_path,
         "errors": errors,

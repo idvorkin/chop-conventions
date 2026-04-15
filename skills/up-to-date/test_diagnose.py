@@ -731,8 +731,9 @@ class TestGhPrListMergedHeads(unittest.TestCase):
     """Unit tests for the squash-merge absorption fallback.
 
     `gh_pr_list_merged_heads` calls `gh pr list --state merged` and
-    returns the `headRefName` values. We stub `diagnose._run` so no
-    real `gh` process fires.
+    returns a `{headRefName: headRefOid}` dict. The OID lets callers
+    detect branches that have advanced past the PR-merge point (post-
+    merge work). We stub `diagnose._run` so no real `gh` process fires.
     """
 
     def _stub_run(self, stdout: str = "", returncode: int = 0):
@@ -744,12 +745,12 @@ class TestGhPrListMergedHeads(unittest.TestCase):
 
         return fake_run
 
-    def test_returns_head_names_on_success(self):
+    def test_returns_name_to_oid_mapping_on_success(self):
         payload = json.dumps(
             [
-                {"headRefName": "feat/a"},
-                {"headRefName": "fix/b"},
-                {"headRefName": "delegated/c"},
+                {"headRefName": "feat/a", "headRefOid": "aaa111"},
+                {"headRefName": "fix/b", "headRefOid": "bbb222"},
+                {"headRefName": "delegated/c", "headRefOid": "ccc333"},
             ]
         )
         original = diagnose._run
@@ -758,7 +759,26 @@ class TestGhPrListMergedHeads(unittest.TestCase):
             result = gh_pr_list_merged_heads()
         finally:
             diagnose._run = original
-        self.assertEqual(result, ["feat/a", "fix/b", "delegated/c"])
+        self.assertEqual(
+            result,
+            {"feat/a": "aaa111", "fix/b": "bbb222", "delegated/c": "ccc333"},
+        )
+
+    def test_duplicate_headRefName_keeps_first_occurrence(self):
+        """Newest-first ordering: the most recently-merged PR wins."""
+        payload = json.dumps(
+            [
+                {"headRefName": "dup", "headRefOid": "newer"},
+                {"headRefName": "dup", "headRefOid": "older"},
+            ]
+        )
+        original = diagnose._run
+        diagnose._run = self._stub_run(stdout=payload)
+        try:
+            result = gh_pr_list_merged_heads()
+        finally:
+            diagnose._run = original
+        self.assertEqual(result, {"dup": "newer"})
 
     def test_nonzero_returncode_returns_empty(self):
         original = diagnose._run
@@ -767,7 +787,7 @@ class TestGhPrListMergedHeads(unittest.TestCase):
             result = gh_pr_list_merged_heads()
         finally:
             diagnose._run = original
-        self.assertEqual(result, [])
+        self.assertEqual(result, {})
 
     def test_malformed_json_returns_empty(self):
         original = diagnose._run
@@ -776,7 +796,7 @@ class TestGhPrListMergedHeads(unittest.TestCase):
             result = gh_pr_list_merged_heads()
         finally:
             diagnose._run = original
-        self.assertEqual(result, [])
+        self.assertEqual(result, {})
 
     def test_non_list_json_returns_empty(self):
         """Defensive: if gh's JSON shape changes (e.g. error object), fail closed."""
@@ -786,14 +806,16 @@ class TestGhPrListMergedHeads(unittest.TestCase):
             result = gh_pr_list_merged_heads()
         finally:
             diagnose._run = original
-        self.assertEqual(result, [])
+        self.assertEqual(result, {})
 
-    def test_entries_without_headRefName_are_skipped(self):
+    def test_entries_missing_name_or_oid_are_skipped(self):
         payload = json.dumps(
             [
-                {"headRefName": "kept"},
+                {"headRefName": "kept", "headRefOid": "sha1"},
                 {"other": "skip"},
-                {"headRefName": "also-kept"},
+                {"headRefName": "also-kept", "headRefOid": "sha2"},
+                {"headRefName": "name-only"},  # no oid
+                {"headRefOid": "oid-only"},  # no name
             ]
         )
         original = diagnose._run
@@ -802,7 +824,7 @@ class TestGhPrListMergedHeads(unittest.TestCase):
             result = gh_pr_list_merged_heads()
         finally:
             diagnose._run = original
-        self.assertEqual(result, ["kept", "also-kept"])
+        self.assertEqual(result, {"kept": "sha1", "also-kept": "sha2"})
 
 
 if __name__ == "__main__":
