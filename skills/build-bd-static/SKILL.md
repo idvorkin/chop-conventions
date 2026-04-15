@@ -39,11 +39,13 @@ Use this skill only when Homebrew is unavailable, or when the packaged `bd` is n
 
 3. If already on the latest version, report that and stop. Otherwise, proceed to build the static fallback binary.
 
-4. Build the latest version statically with CGO disabled (use the version from step 2):
+4. Build the latest version statically with CGO disabled:
 
    ```bash
    CGO_ENABLED=0 go install github.com/steveyegge/beads/cmd/bd@latest
    ```
+
+   `@latest` resolves at install time, so there's no need to pass the version from step 2 — that step is just for the "already on latest?" gate.
 
    `CGO_ENABLED=0` forces pure-Go alternatives for all dependencies (ICU regex, SQLite, etc.), producing a binary with zero shared library dependencies.
 
