@@ -543,6 +543,13 @@ class TestReactionWhitelist(unittest.TestCase):
         for emoji in ("👍", "🎉", "👀", "🫡", "🔥", "❤"):
             self.assertIn(emoji, REACTION_WHITELIST)
 
+    def test_contains_larry_bead_consumer_reactions(self):
+        # These three are used by larry-bead (igor2) — capture (✍), close (🏆),
+        # cancel (🗑). Regressing any of them is a silent consumer break since
+        # the client-side rejection fires before any Bot API round-trip.
+        for emoji in ("\u270d", "\U0001f3c6", "\U0001f5d1"):  # ✍ 🏆 🗑
+            self.assertIn(emoji, REACTION_WHITELIST)
+
 
 class TestParseSentMessageId(unittest.TestCase):
     def test_happy_path(self):
