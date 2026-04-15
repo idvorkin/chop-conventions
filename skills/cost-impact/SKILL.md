@@ -33,6 +33,23 @@ If the user names a specific day ("yesterday", "last Friday"), compute the
 integer offset from today and pass that — the underlying script is
 window-based, not date-based.
 
+## Ask destination FIRST
+
+**Before running `_impl.py`, ask the user where the report should go:**
+
+> "Where should this go — public gist, or local save to
+> `~/tmp/cost-impact-YYYY-MM-DD.md`?"
+
+Ask this up front so (a) the user doesn't have to context-switch after
+waiting for the script, and (b) the privacy guard below can short-circuit
+the run if a gist is selected and the content is sensitive. The destination
+answer is the only thing that gates how the script's output is routed — it
+does NOT change what `_impl.py` computes.
+
+If the user already has a cost-impact gist they want updated in place, ask
+which gist ID (see "Updating an existing gist" below). Treat an in-place
+edit as a gist publish for the purposes of the privacy guard.
+
 ## How to run
 
 ```bash
@@ -64,15 +81,13 @@ Repos: 11, top 3: activation-energy-game, settings, blog4
 If you see `Actual: $0.00` the window is probably wrong — check that
 `date` shows today and that session JSONLs have fresh timestamps.
 
-## Output destination
+## Routing the output
 
-**After the script writes `/tmp/cost-impact.md`, ask the user** where
-they want it:
+Destination was chosen up front (see "Ask destination FIRST"). After
+`_impl.py` writes `/tmp/cost-impact.md`:
 
-> "Report is in `/tmp/cost-impact.md`. Post to a public gist or save
-> locally to `~/tmp/cost-impact-YYYY-MM-DD.md`?"
-
-**Gist path** (user says gist / g / post it / share it):
+**If the user chose gist: run the privacy guard first (see below). Only if
+the guard passes, publish:**
 
 ```bash
 gh gist create --public \
@@ -82,7 +97,8 @@ gh gist create --public \
 
 Relay the gist URL back.
 
-**Local path** (user says local / l / save / file):
+**If the user chose local save** (always allowed — it's their own disk, no
+privacy check needed):
 
 ```bash
 mkdir -p ~/tmp
@@ -91,16 +107,51 @@ cp /tmp/cost-impact.md ~/tmp/cost-impact-$(date +%Y-%m-%d).md
 
 Relay the absolute path back.
 
+### Updating an existing gist
+
 **If the user already has a cost-impact gist** and the new report
 supersedes it, prefer `gh gist edit <id> /tmp/cost-impact.md` to update
 in place so shared links don't break. Ask which gist to update if you
-don't know the ID.
+don't know the ID. Run the privacy guard before editing — an in-place
+edit to a public gist is a publish.
+
+## Privacy guard (gist destinations only)
+
+Before running `gh gist create` or `gh gist edit` against a public gist,
+**read `/tmp/cost-impact.md` and judge whether the content would leak
+information the user wouldn't want public.** This is assistant judgment, not
+a mechanical check. Look for:
+
+- Repo names that identify private, client, or unreleased projects
+  (anything not already visible on the user's public GitHub profile)
+- PR URLs pointing at private repos
+- Session UUIDs that could correlate with private incidents if cross-referenced
+- Session titles or PR titles that reference secrets, credentials, internal
+  codenames, or people by name
+- Hostnames that reveal internal network naming conventions beyond the
+  user's already-public setup
+
+**If the report looks sensitive: STOP the gist upload.** Do NOT publish.
+Tell the user *what specifically* looked sensitive (cite the repo name,
+PR URL, or line), and offer the local-save path instead:
+
+> "Holding off on the gist — I see `<specific thing>` in the report which
+> looks like it'd expose a private project. Saving locally to
+> `~/tmp/cost-impact-YYYY-MM-DD.md` instead, or want to scrub and retry?"
+
+**Local save is always allowed regardless of sensitivity** — the user's own
+disk is not a publication surface.
+
+When in doubt, prefer refusing the gist. A false-positive refusal costs the
+user one prompt ("go ahead, it's fine") — a false-negative publish can't be
+unsent once the gist URL is indexed.
 
 ## What the report contains
 
 1. **Summary table** — total $, total duration, total turns (main/sub/total),
-   sessions in window, cost breakdown (input/output/cache writes/reads),
-   without-cache reference, cache savings %
+   sessions in window, host (from `socket.gethostname()` — load-bearing
+   provenance when the report is shared out of context), cost breakdown
+   (input/output/cache writes/reads), without-cache reference, cache savings %
 2. **Cost by model** — each model's share of the total
 3. **Per day** — actual $, sessions, main+sub turns, no-cache reference, plus
    a separate daily details table splitting input, output, 1h cache
@@ -129,14 +180,17 @@ Update the table if Anthropic changes published rates.
 ## Hard rules
 
 - **Do NOT** modify `_impl.py` to bake in a specific user's values
-  (repo list, gist ID, plan cost). Keep it generic.
-- **Do NOT** post the report to a gist without asking the user — the
-  report contains session names that may identify private repos.
+  (repo list, gist ID, plan cost, hostname). Keep it generic — the
+  hostname comes from `socket.gethostname()` at runtime, not a constant.
+- **Do NOT** post the report to a gist without running the privacy guard
+  (see "Privacy guard" above). The report contains session names, PR
+  URLs, and repo paths that may identify private projects.
 - **Do NOT** run this on a machine that isn't the user's — it reads
   `~/.claude/projects/` which contains conversation history.
 - **Ask before updating an existing gist in place** — the previous
   version of the report may have been shared with someone, and
   editing it in place will change what they see next time they load it.
+  In-place edits are subject to the same privacy guard as new publishes.
 
 ## Known caveats (surfaced in the report's footnotes)
 

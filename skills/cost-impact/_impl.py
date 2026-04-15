@@ -10,6 +10,7 @@ import argparse
 import concurrent.futures
 import json
 import re
+import socket
 import subprocess
 import sys
 from collections import defaultdict
@@ -293,11 +294,12 @@ def build_report(entries, bucket_meta, days_back, start_date, today, titles):
       tot_actual, tot_naive, tot_comps, tot_by_model, tot_dur_min,
       tot_main_turns, tot_sub_turns, per_day, by_repo, repo_totals, unknown_models
     """
+    hostname = socket.gethostname()
     L = []
     L.append(f"# Claude Cost Impact — {start_date} → {today}")
     L.append("")
     L.append(
-        f"*Generated {datetime.now().strftime('%Y-%m-%d %H:%M')} · "
+        f"*Generated {datetime.now().strftime('%Y-%m-%d %H:%M')} on `{hostname}` · "
         f"{days_back}-day window · Includes main sessions + subagents · "
         f"Pricing from [platform.claude.com/docs/en/about-claude/pricing](https://platform.claude.com/docs/en/about-claude/pricing)*"
     )
@@ -322,6 +324,7 @@ def build_report(entries, bucket_meta, days_back, start_date, today, titles):
         L.append(
             f"- Window: {start_date} → {today} ({days_back} day{'s' if days_back != 1 else ''})"
         )
+        L.append(f"- Host: `{hostname}`")
         if unknown_models:
             L.append(
                 f"- ⚠ Saw {sum(unknown_models.values())} turn(s) with unpriced models: "
@@ -339,6 +342,7 @@ def build_report(entries, bucket_meta, days_back, start_date, today, titles):
         f"| **Total turns** (main / sub / total) | **{tot_main_turns:,} / {tot_sub_turns:,} / {tot_main_turns + tot_sub_turns:,}** |"
     )
     L.append(f"| Sessions in window | {len(entries)} |")
+    L.append(f"| Host | `{hostname}` |")
     L.append(f"| — Input | ${tot_comps['inp']:,.2f} |")
     L.append(f"| — Output | ${tot_comps['out']:,.2f} |")
     L.append(f"| — Cache writes (1h TTL) | ${tot_comps['c1h']:,.2f} |")
