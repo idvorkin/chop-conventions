@@ -11,7 +11,7 @@
  *   ALLOW: <base>/attachments/             (echo/re-send of inbound files)
  *   ALLOW: any other path                  (outside both server-owned trees)
  *
- * Run:  bun telegram-server/test_assert_sendable.ts
+ * Run:  bun skills/harden-telegram/server/tests/test_assert_sendable.ts
  * Exit: 0 on pass, 1 on failure.
  */
 import { mkdirSync, writeFileSync, realpathSync, rmSync, symlinkSync } from 'fs'

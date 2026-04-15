@@ -48,12 +48,15 @@ from pathlib import Path
 
 import pytest
 
-sys.path.insert(0, str(Path(__file__).parent))
+# telegram_bot.py lives in the parent `server/` directory, not the tests/ dir.
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from telegram_bot import init_db_sync  # noqa: E402
 
+# After vendoring into the skill, server.ts is a sibling of tests/ — not under
+# a `telegram-server/` subdirectory anymore.
 REPO_ROOT = Path(__file__).resolve().parent.parent
-SERVER_TS = REPO_ROOT / "telegram-server" / "server.ts"
+SERVER_TS = REPO_ROOT / "server.ts"
 
 # Phase budgets (seconds). Catch-up runs on the 2s fallback poll interval, so
 # 10s gives us at least 4 poll ticks of slack before failing the assertion.

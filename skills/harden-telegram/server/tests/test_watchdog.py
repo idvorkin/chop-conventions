@@ -8,32 +8,44 @@ import tempfile
 import unittest
 from unittest.mock import MagicMock, patch
 
-# Import the watchdog module from the same directory
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-import watchdog
+# Import the watchdog module from the skill's tools/ directory.
+# Layout: skills/harden-telegram/{tools/watchdog.py, server/tests/test_watchdog.py}
+_TOOLS_DIR = os.path.abspath(
+    os.path.join(os.path.dirname(__file__), "..", "..", "tools")
+)
+sys.path.insert(0, _TOOLS_DIR)
+import watchdog  # noqa: E402
 
 
 class TestIsProcessAlive(unittest.TestCase):
-    """Tests for the is_pid_alive function."""
+    """Tests for the is_pid_alive function.
 
-    def test_own_process_is_alive(self):
-        """Our own PID should be alive."""
-        self.assertTrue(watchdog.is_pid_alive(os.getpid()))
+    These tests mock `os.kill` rather than hitting the real process table —
+    signalling real PIDs from a test suite is unsafe on a shared box.
+    """
 
-    def test_nonexistent_pid_is_dead(self):
-        """A PID that doesn't exist should be dead."""
-        # Use a very high PID unlikely to exist
+    @patch("watchdog.os.kill")
+    def test_own_process_is_alive(self, mock_kill):
+        """A PID that os.kill(pid, 0) accepts should be reported alive."""
+        mock_kill.return_value = None
+        self.assertTrue(watchdog.is_pid_alive(12345))
+
+    @patch("watchdog.os.kill", side_effect=ProcessLookupError)
+    def test_nonexistent_pid_is_dead(self, mock_kill):
+        """ProcessLookupError from os.kill means the PID is dead."""
         self.assertFalse(watchdog.is_pid_alive(4_000_000))
 
-    def test_pid_zero_handling(self):
-        """PID 0 should not raise."""
-        # os.kill(0, 0) sends signal to entire process group — it will succeed.
-        # The function should handle this without crashing.
+    @patch("watchdog.os.kill")
+    def test_pid_zero_handling(self, mock_kill):
+        """PID 0 should not raise; function must return a bool."""
+        mock_kill.return_value = None
         result = watchdog.is_pid_alive(0)
         self.assertIsInstance(result, bool)
 
-    def test_init_process(self):
-        """PID 1 (init) should be alive."""
+    @patch("watchdog.os.kill")
+    def test_init_process(self, mock_kill):
+        """PID 1 (init) — simulated alive via a non-raising os.kill."""
+        mock_kill.return_value = None
         self.assertTrue(watchdog.is_pid_alive(1))
 
 
