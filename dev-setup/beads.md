@@ -230,6 +230,42 @@ bd sync                     # Bidirectional git sync
 bd sync --status            # Check sync status
 ```
 
+## `bd-close-gated` wrapper (opt-in)
+
+`bd`'s `parent-child` dependency is organizational, not gating — `bd close
+<parent>` succeeds even when children are still open. That's by design (epics
+often close with trailing admin children), but for beads tracking real
+sequential work it's a foot-gun: you close the parent, forget the children,
+and work goes silent.
+
+[`bd-close-gated`](./bd-close-gated) is a small bash wrapper that refuses to
+close a bead with open parent-child children, printing their IDs so you can
+decide to close them first or rerun with `--force`.
+
+**Usage**
+
+```bash
+bd-close-gated <bead-id> [--reason "..."]    # gated close
+bd-close-gated <bead-id> --force [...]       # bypass gate, pass --force through
+bd-close-gated -h | --help
+```
+
+Exit codes: `0` success, `1` gate blocked, `2` usage error.
+
+**Install (opt-in alias)**
+
+```bash
+# In ~/.zshrc or ~/.bashrc
+alias bd-close="$HOME/gits/chop-conventions/dev-setup/bd-close-gated"
+```
+
+Leave `bd close` as-is for the unshadowed escape hatch. Use `bd-close` when
+you want the gate.
+
+**Tests** — run `bash dev-setup/test_bd_close_gated.sh`. Creates a temp
+beads DB, exercises happy / blocked / force / usage-error paths, tears down
+on exit.
+
 ## Troubleshooting
 
 **Worktree error: "branch is already checked out"**
