@@ -32,7 +32,9 @@ a subagent for cross-repo work in `<target>`."
 **Do NOT use** when:
 
 - The task needs back-and-forth with the user during the work
-- The current repo and the "other" repo are the same
+- The user picks "branch" in the same-repo prompt (see Phase 1c-bis
+  below) — in that case tell them to create a feature branch
+  in-session and exit
 - The user explicitly said "just do it in this session"
 - The target isn't under `~/gits/` yet — tell the user to run
   `gh repo clone owner/repo ~/gits/repo` first
@@ -60,6 +62,10 @@ Parent (you)                             Subagent (fresh context)
 8. Offer lesson follow-up
    (if present)
 ```
+
+Note: if the resolved target is the SAME repo as the current session, the
+flow branches at Phase 1c-bis — the user picks worktree (continue) or
+branch (abort and proceed in-session).
 
 ## Phase 1: Resolve the target repo
 
@@ -91,6 +97,35 @@ If multiple candidates or no match, fall through to 1c.
 ### 1c. Ask
 
 Run `/bin/ls ~/gits/` and present the list. Let the user pick.
+
+### 1c-bis. Same-repo handling
+
+Compare the resolved target's toplevel against the current session's toplevel:
+
+target_top=$(git -C "$T" rev-parse --show-toplevel)
+session_top=$(git rev-parse --show-toplevel)
+
+If they match, the target is the current repo. Delegation still has value
+(fresh subagent context, isolation from in-session uncommitted work), but
+the user may prefer to just branch in-session. Ask:
+
+> "Target resolves to the current repo. Two options:
+>
+> 1. **worktree** — create a fresh worktree off upstream/main and
+>    dispatch a subagent in isolation (normal flow)
+> 2. **branch** — skip delegation; create a feature branch in the
+>    current session and proceed here
+>    Which?"
+
+On "worktree" → continue to Phase 1d unchanged. The worktree isolation
+still applies; the subagent will run in a fresh context.
+
+On "branch" → abort this skill. Print:
+
+> "Not delegating. Create a feature branch with
+> `git checkout -b <slug>` and proceed in-session."
+
+Do NOT create a worktree, do NOT dispatch a subagent. End the skill cleanly.
 
 ### 1d. Validate the resolved target
 
@@ -440,6 +475,8 @@ the brief uses plain-text formatting for all embedded structure
 - You're about to commit a drafted lesson to the work PR
 - You're about to dispatch without confirming an inferred target
 - The target slug is non-ASCII and you're about to use it unfiltered
+- You're about to dispatch a subagent to the same repo without first
+  asking worktree-or-branch (see Phase 1c-bis)
 
 ## Related
 
