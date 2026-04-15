@@ -14,28 +14,35 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent))
 
 from telegram_debug import (  # noqa: E402
+    REACTION_WHITELIST,
     _default_chat_id,
     _find_owning_claude,
     _read_bot_token,
     _redact,
     build_direct_request,
+    build_react_request,
+    build_reply_request,
     classify_bridges,
     parse_env_token,
     parse_proc_stat,
+    parse_sent_message_id,
     session_subscribed_to_telegram,
 )
 
 
 def make_stat_reader(table: dict[int, tuple[str, int]]):
     """Build a fake stat reader from a {pid: (comm, ppid)} table."""
+
     def reader(pid: int):
         return table.get(pid)
+
     return reader
 
 
 def make_alive(alive_pids: set[int]):
     def is_alive(pid: int) -> bool:
         return pid in alive_pids
+
     return is_alive
 
 
@@ -85,7 +92,9 @@ class TestFindOwningClaude(unittest.TestCase):
             100: ("bun", 99),
             99: ("claude", 1),
         }
-        self.assertEqual(_find_owning_claude(100, stat_reader=make_stat_reader(table)), 99)
+        self.assertEqual(
+            _find_owning_claude(100, stat_reader=make_stat_reader(table)), 99
+        )
 
     def test_grandchild_through_shell(self):
         table = {
@@ -93,7 +102,9 @@ class TestFindOwningClaude(unittest.TestCase):
             150: ("bash", 99),
             99: ("claude", 1),
         }
-        self.assertEqual(_find_owning_claude(200, stat_reader=make_stat_reader(table)), 99)
+        self.assertEqual(
+            _find_owning_claude(200, stat_reader=make_stat_reader(table)), 99
+        )
 
     def test_no_claude_ancestor(self):
         table = {
@@ -118,7 +129,9 @@ class TestFindOwningClaude(unittest.TestCase):
             200: ("bash", 100),
             100: ("claude", 1),
         }
-        self.assertEqual(_find_owning_claude(300, stat_reader=make_stat_reader(table)), 250)
+        self.assertEqual(
+            _find_owning_claude(300, stat_reader=make_stat_reader(table)), 250
+        )
 
     def test_matches_claude_code_shim(self):
         # Linux truncates comm to 15 chars; launchers like `claude-code` or
@@ -127,7 +140,9 @@ class TestFindOwningClaude(unittest.TestCase):
             100: ("bun", 99),
             99: ("claude-code", 1),
         }
-        self.assertEqual(_find_owning_claude(100, stat_reader=make_stat_reader(table)), 99)
+        self.assertEqual(
+            _find_owning_claude(100, stat_reader=make_stat_reader(table)), 99
+        )
 
     def test_loop_guard(self):
         # Impossible in practice, but a pid-reuse race could in theory produce
@@ -254,9 +269,7 @@ class TestClassifyBridges(unittest.TestCase):
 class TestSessionSubscribedToTelegram(unittest.TestCase):
     def test_plain_claude_is_not_subscribed(self):
         self.assertFalse(
-            session_subscribed_to_telegram(
-                ["claude", "--dangerously-skip-permissions"]
-            )
+            session_subscribed_to_telegram(["claude", "--dangerously-skip-permissions"])
         )
 
     def test_channels_flag_with_telegram_plugin(self):
@@ -305,9 +318,7 @@ class TestSessionSubscribedToTelegram(unittest.TestCase):
 
     def test_channels_flag_with_no_value_is_ignored(self):
         # Trailing --channels with nothing after it shouldn't crash or match.
-        self.assertFalse(
-            session_subscribed_to_telegram(["claude", "--channels"])
-        )
+        self.assertFalse(session_subscribed_to_telegram(["claude", "--channels"]))
 
     def test_empty_argv(self):
         self.assertFalse(session_subscribed_to_telegram([]))
@@ -318,14 +329,10 @@ class TestParseEnvToken(unittest.TestCase):
         self.assertEqual(parse_env_token("TELEGRAM_BOT_TOKEN=123:abc\n"), "123:abc")
 
     def test_double_quoted(self):
-        self.assertEqual(
-            parse_env_token('TELEGRAM_BOT_TOKEN="123:abc"\n'), "123:abc"
-        )
+        self.assertEqual(parse_env_token('TELEGRAM_BOT_TOKEN="123:abc"\n'), "123:abc")
 
     def test_single_quoted(self):
-        self.assertEqual(
-            parse_env_token("TELEGRAM_BOT_TOKEN='123:abc'\n"), "123:abc"
-        )
+        self.assertEqual(parse_env_token("TELEGRAM_BOT_TOKEN='123:abc'\n"), "123:abc")
 
     def test_export_prefix(self):
         # `.env` files copied from shell profiles often carry `export`.
@@ -334,9 +341,7 @@ class TestParseEnvToken(unittest.TestCase):
         )
 
     def test_trailing_whitespace(self):
-        self.assertEqual(
-            parse_env_token("TELEGRAM_BOT_TOKEN=123:abc   \n"), "123:abc"
-        )
+        self.assertEqual(parse_env_token("TELEGRAM_BOT_TOKEN=123:abc   \n"), "123:abc")
 
     def test_inline_comment_unquoted(self):
         # Unquoted values take a `#` as an inline comment boundary.
@@ -347,9 +352,7 @@ class TestParseEnvToken(unittest.TestCase):
 
     def test_hash_inside_quoted_value_kept(self):
         # Quoted values are literal — no comment stripping.
-        self.assertEqual(
-            parse_env_token('TELEGRAM_BOT_TOKEN="abc#def"\n'), "abc#def"
-        )
+        self.assertEqual(parse_env_token('TELEGRAM_BOT_TOKEN="abc#def"\n'), "abc#def")
 
     def test_ignores_comment_lines_before_match(self):
         text = "# leading comment\nOTHER_VAR=foo\nTELEGRAM_BOT_TOKEN=123:abc\n"
@@ -357,9 +360,7 @@ class TestParseEnvToken(unittest.TestCase):
 
     def test_substring_collision_rejected(self):
         # A different var whose name *contains* TELEGRAM_BOT_TOKEN must not match.
-        self.assertIsNone(
-            parse_env_token("OLD_TELEGRAM_BOT_TOKEN=stale\n")
-        )
+        self.assertIsNone(parse_env_token("OLD_TELEGRAM_BOT_TOKEN=stale\n"))
 
     def test_missing_returns_none(self):
         self.assertIsNone(parse_env_token("OTHER=x\n"))
@@ -397,9 +398,7 @@ class TestDefaultChatId(unittest.TestCase):
         tmp = tempfile.TemporaryDirectory()
         db = Path(tmp.name) / "inbound.db"
         con = sqlite3.connect(db)
-        con.execute(
-            "CREATE TABLE inbound (id INTEGER PRIMARY KEY, chat_id INTEGER)"
-        )
+        con.execute("CREATE TABLE inbound (id INTEGER PRIMARY KEY, chat_id INTEGER)")
         con.executemany("INSERT INTO inbound (chat_id) VALUES (?)", rows)
         con.commit()
         con.close()
@@ -464,6 +463,7 @@ class TestBuildDirectRequest(unittest.TestCase):
         _, body = build_direct_request("T", "1", "héllo 🚨")
         # Body must decode back to the same string after urldecode.
         import urllib.parse
+
         decoded = dict(urllib.parse.parse_qsl(body.decode()))
         self.assertEqual(decoded["text"], "[direct-send] héllo 🚨")
 
@@ -487,6 +487,243 @@ class TestRedact(unittest.TestCase):
 
     def test_empty_token_is_noop(self):
         self.assertEqual(_redact("anything", ""), "anything")
+
+
+class TestBuildReplyRequest(unittest.TestCase):
+    def test_url_shape(self):
+        url, _ = build_reply_request("T0KEN", "123", "hi", 42)
+        self.assertEqual(url, "https://api.telegram.org/botT0KEN/sendMessage")
+
+    def test_no_direct_send_tag(self):
+        # Unlike build_direct_request, --send-reply must NOT auto-tag. This
+        # is a contract: replies route through the normal conversation.
+        _, body = build_reply_request("T", "123", "hello", 42)
+        self.assertNotIn(b"direct-send", body)
+        self.assertIn(b"text=hello", body)
+
+    def test_reply_to_message_id_present(self):
+        _, body = build_reply_request("T", "123", "hi", 42)
+        self.assertIn(b"reply_to_message_id=42", body)
+
+    def test_reply_to_coerced_to_int(self):
+        # Guards against accidentally allowing arbitrary strings through
+        # as reply_to_message_id — int() will raise on bad input.
+        with self.assertRaises((TypeError, ValueError)):
+            build_reply_request("T", "1", "hi", "not-an-int")  # type: ignore[arg-type]
+
+    def test_unicode_roundtrips(self):
+        import urllib.parse
+
+        _, body = build_reply_request("T", "1", "héllo 🎉", 7)
+        decoded = dict(urllib.parse.parse_qsl(body.decode()))
+        self.assertEqual(decoded["text"], "héllo 🎉")
+
+
+class TestBuildReactRequest(unittest.TestCase):
+    def test_url_shape(self):
+        url, _ = build_react_request("T0KEN", "123", 42, "👍")
+        self.assertEqual(url, "https://api.telegram.org/botT0KEN/setMessageReaction")
+
+    def test_reaction_json_shape(self):
+        import urllib.parse
+
+        _, body = build_react_request("T", "123", 42, "🔥")
+        decoded = dict(urllib.parse.parse_qsl(body.decode()))
+        self.assertEqual(decoded["chat_id"], "123")
+        self.assertEqual(decoded["message_id"], "42")
+        # `reaction` is a JSON-encoded list per Bot API.
+        import json as _json
+
+        reaction = _json.loads(decoded["reaction"])
+        self.assertEqual(reaction, [{"type": "emoji", "emoji": "🔥"}])
+
+
+class TestReactionWhitelist(unittest.TestCase):
+    def test_contains_common_reactions(self):
+        for emoji in ("👍", "🎉", "👀", "🫡", "🔥", "❤"):
+            self.assertIn(emoji, REACTION_WHITELIST)
+
+
+class TestParseSentMessageId(unittest.TestCase):
+    def test_happy_path(self):
+        body = '{"ok":true,"result":{"message_id":555,"date":1}}'
+        self.assertEqual(parse_sent_message_id(body), 555)
+
+    def test_missing_result(self):
+        self.assertIsNone(parse_sent_message_id('{"ok":false}'))
+
+    def test_missing_message_id(self):
+        self.assertIsNone(parse_sent_message_id('{"ok":true,"result":{}}'))
+
+    def test_malformed_json(self):
+        self.assertIsNone(parse_sent_message_id("not-json"))
+
+    def test_empty_string(self):
+        self.assertIsNone(parse_sent_message_id(""))
+
+
+class _FakeResponse:
+    """Minimal stand-in for the object urllib.request.urlopen yields."""
+
+    def __init__(self, *, status: int = 200, body: str = "{}"):
+        self.status = status
+        self._body = body.encode()
+
+    def read(self):
+        return self._body
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+
+def _patch_token(monkey_env: dict, token: str = "T0KEN"):
+    """Write a .env file and point HOME at it for _read_bot_token to find."""
+    tmp = tempfile.TemporaryDirectory()
+    home = Path(tmp.name)
+    env_dir = home / ".claude" / "channels" / "telegram"
+    env_dir.mkdir(parents=True)
+    (env_dir / ".env").write_text(f"TELEGRAM_BOT_TOKEN={token}\n")
+    monkey_env["HOME"] = str(home)
+    return tmp
+
+
+class TestSendReply(unittest.TestCase):
+    def setUp(self):
+        self._old_home = os.environ.get("HOME")
+        self._tmp = _patch_token(os.environ)
+
+    def tearDown(self):
+        self._tmp.cleanup()
+        if self._old_home is None:
+            os.environ.pop("HOME", None)
+        else:
+            os.environ["HOME"] = self._old_home
+
+    def test_success_prints_new_message_id(self):
+        import io
+        import telegram_debug as td
+
+        captured = {}
+
+        def fake_urlopen(url, data=None, timeout=0):
+            captured["url"] = url
+            captured["data"] = data
+            return _FakeResponse(
+                status=200,
+                body='{"ok":true,"result":{"message_id":777,"date":1}}',
+            )
+
+        old_urlopen = __import__("urllib.request").request.urlopen
+        __import__("urllib.request").request.urlopen = fake_urlopen
+        try:
+            buf = io.StringIO()
+            old_stdout = sys.stdout
+            sys.stdout = buf
+            try:
+                rc = td.send_reply("hi there", chat_id="999", reply_to=42)
+            finally:
+                sys.stdout = old_stdout
+        finally:
+            __import__("urllib.request").request.urlopen = old_urlopen
+
+        self.assertEqual(rc, 0)
+        self.assertEqual(buf.getvalue().strip(), "777")
+        # Sanity: the token was read and the URL includes sendMessage.
+        self.assertIn("/sendMessage", captured["url"])
+        self.assertIn(b"reply_to_message_id=42", captured["data"])
+
+    def test_missing_token_fails(self):
+        import telegram_debug as td
+
+        # Point HOME at an empty dir so _read_bot_token raises.
+        empty = tempfile.TemporaryDirectory()
+        old_home = os.environ["HOME"]
+        os.environ["HOME"] = empty.name
+        try:
+            rc = td.send_reply("hi", chat_id="999", reply_to=1)
+        finally:
+            os.environ["HOME"] = old_home
+            empty.cleanup()
+        self.assertEqual(rc, 1)
+
+    def test_missing_chat_id_fails(self):
+        import telegram_debug as td
+
+        rc = td.send_reply("hi", chat_id="", reply_to=1)
+        self.assertEqual(rc, 1)
+
+
+class TestSetReaction(unittest.TestCase):
+    def setUp(self):
+        self._old_home = os.environ.get("HOME")
+        self._tmp = _patch_token(os.environ)
+
+    def tearDown(self):
+        self._tmp.cleanup()
+        if self._old_home is None:
+            os.environ.pop("HOME", None)
+        else:
+            os.environ["HOME"] = self._old_home
+
+    def test_success_path(self):
+        import telegram_debug as td
+
+        captured = {}
+
+        def fake_urlopen(url, data=None, timeout=0):
+            captured["url"] = url
+            captured["data"] = data
+            return _FakeResponse(status=200, body='{"ok":true,"result":true}')
+
+        old_urlopen = __import__("urllib.request").request.urlopen
+        __import__("urllib.request").request.urlopen = fake_urlopen
+        try:
+            rc = td.set_reaction("👍", chat_id="999", message_id=42)
+        finally:
+            __import__("urllib.request").request.urlopen = old_urlopen
+
+        self.assertEqual(rc, 0)
+        self.assertIn("/setMessageReaction", captured["url"])
+
+    def test_emoji_not_in_whitelist_fails_before_network(self):
+        import telegram_debug as td
+
+        # If this ever reaches the network, it means whitelist validation
+        # was skipped — guard that by making urlopen explode.
+        def poison(*a, **k):
+            raise AssertionError("urlopen must not be called for whitelist rejection")
+
+        old_urlopen = __import__("urllib.request").request.urlopen
+        __import__("urllib.request").request.urlopen = poison
+        try:
+            # Picked a plausible but non-whitelisted emoji.
+            rc = td.set_reaction("🧇", chat_id="999", message_id=42)
+        finally:
+            __import__("urllib.request").request.urlopen = old_urlopen
+
+        self.assertEqual(rc, 1)
+
+    def test_missing_token_fails(self):
+        import telegram_debug as td
+
+        empty = tempfile.TemporaryDirectory()
+        old_home = os.environ["HOME"]
+        os.environ["HOME"] = empty.name
+        try:
+            rc = td.set_reaction("👍", chat_id="999", message_id=42)
+        finally:
+            os.environ["HOME"] = old_home
+            empty.cleanup()
+        self.assertEqual(rc, 1)
+
+    def test_missing_chat_id_fails(self):
+        import telegram_debug as td
+
+        rc = td.set_reaction("👍", chat_id="", message_id=42)
+        self.assertEqual(rc, 1)
 
 
 if __name__ == "__main__":
