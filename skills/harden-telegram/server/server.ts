@@ -562,7 +562,10 @@ CREATE TABLE IF NOT EXISTS inbound (
     callback_data TEXT,
     gate_action TEXT NOT NULL,
     delivered INTEGER DEFAULT 0,
-    error TEXT
+    error TEXT,
+    previous_text TEXT,
+    edit_count INTEGER NOT NULL DEFAULT 0,
+    edited_at TEXT
 );
 
 CREATE INDEX IF NOT EXISTS idx_inbound_undelivered ON inbound(delivered, id) WHERE delivered = 0;
@@ -589,6 +592,9 @@ type InboundRow = {
   gate_action: string
   delivered: number
   error: string | null
+  previous_text: string | null
+  edit_count: number
+  edited_at: string | null
 }
 
 // Ensure the base directory exists — telegram_bot.py normally creates it,
@@ -621,7 +627,8 @@ try {
 const selectUndelivered = inboundDb.query<InboundRow, []>(
   `SELECT id, ts, chat_id, message_id, user_id, username, message_type, text,
           attachment_kind, attachment_path, attachment_file_id, attachment_size,
-          attachment_mime, attachment_name, callback_data, gate_action, delivered, error
+          attachment_mime, attachment_name, callback_data, gate_action, delivered, error,
+          previous_text, edit_count, edited_at
    FROM inbound
    WHERE delivered = 0 AND gate_action = 'allow'
    ORDER BY id`,
@@ -721,6 +728,21 @@ async function deliverRow(row: InboundRow): Promise<void> {
   log(`telegram channel: delivered id=${row.id} type=${row.message_type}`)
 }
 
+// Escape a string for safe inclusion as an XML/HTML tag attribute value.
+// The harness renders meta entries as key="value" inside the <channel> tag,
+// so any "/&/newline/CR in the raw text would break the tag. Matches the
+// minimal XML attribute escape set: &, <, >, ", ', newline, carriage return.
+function escapeAttr(s: string): string {
+  return s
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;')
+    .replace(/\r/g, '&#13;')
+    .replace(/\n/g, '&#10;')
+}
+
 async function deliverMessage(row: InboundRow): Promise<void> {
   // Reconstruct the exact meta shape the legacy server.ts emitted so Claude's
   // <channel> tag parser keeps working without a format migration.
@@ -740,6 +762,19 @@ async function deliverMessage(row: InboundRow): Promise<void> {
     if (row.attachment_size != null) meta.attachment_size = String(row.attachment_size)
     if (row.attachment_mime) meta.attachment_mime = row.attachment_mime
     if (row.attachment_name) meta.attachment_name = row.attachment_name
+  }
+
+  // Edit history — only surface when the message has actually been edited.
+  // Keeps the noise-floor clean for fresh messages (the vast majority).
+  // previous_text is escaped for XML-attribute safety because it can
+  // contain quotes, ampersands, and newlines; the other fields are
+  // bot-generated scalars and don't need escaping.
+  if (row.edit_count > 0) {
+    meta.edit_count = String(row.edit_count)
+    if (row.previous_text != null) {
+      meta.previous_text = escapeAttr(row.previous_text)
+    }
+    if (row.edited_at) meta.edited_at = row.edited_at
   }
 
   await mcp.notification({
