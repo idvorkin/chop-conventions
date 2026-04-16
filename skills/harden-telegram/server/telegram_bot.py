@@ -986,11 +986,20 @@ async def handle_any_message(
     new text, and bumps `edit_count` + `edited_at`. Only the most-recent
     pre-edit version is preserved — full history is out of scope.
     """
-    # Distinguish edits from new messages. `update.edited_message` is set for
-    # edits; `update.message` is set for fresh messages. `effective_message`
-    # collapses both, which is the right source for the content but NOT for
-    # deciding whether this is an edit.
-    is_edit = update.edited_message is not None and update.message is None
+    # Distinguish edits from new messages. PTB surfaces edits as one of
+    # `update.edited_message` (DM/group) or `update.edited_channel_post`
+    # (broadcast channel). `update.message` / `update.channel_post` are the
+    # fresh-message counterparts. `effective_message` collapses all four,
+    # which is the right source for the content but NOT for deciding whether
+    # this is an edit. We treat "the edit counterpart is set AND the fresh
+    # counterpart is None" as the edit signal — guarding against weird
+    # shapes where PTB might populate both (hasn't been observed, but the
+    # cost of the extra `is None` check is zero).
+    is_edit = (
+        update.edited_message is not None and update.message is None
+    ) or (
+        update.edited_channel_post is not None and update.channel_post is None
+    )
     msg = update.effective_message
     if msg is None:
         return
@@ -1023,8 +1032,16 @@ async def handle_any_message(
     # `previous_text` and bump counters. If we don't find one (bot was down
     # when the original was sent, or the DB was wiped), fall through to the
     # INSERT path — a fresh row for the edit is strictly better than dropping
-    # the message entirely, and `edit_count=0` just marks it as "first time
-    # this server has seen this message_id."
+    # the message entirely. In that fallback the row gets `edit_count = 1`
+    # with `previous_text = NULL`, so Claude sees "edited, prior unseen" via
+    # the server.ts meta — more informative than treating it as fresh.
+    #
+    # Re-delivery is gated on the CURRENT gate result: only bump delivered=0
+    # when gate says 'allow'. If the sender's access was revoked between the
+    # original message and the edit, we still UPDATE the row (preserving the
+    # diff for post-hoc inspection) but do NOT reset `delivered` — that would
+    # smuggle a newly-unauthorized edit through the allowlist because the
+    # existing row's gate_action is 'allow'.
     row_id: int | None = None
     edited_at_iso: str | None = None
     if is_edit:
@@ -1038,22 +1055,40 @@ async def handle_any_message(
         )
         if existing:
             prior_id, prior_text = existing[0]
+            # Only re-deliver if the CURRENT gate still says allow. Drop/pair
+            # leaves the row UPDATE-d (for audit) but delivered unchanged.
+            reset_delivered = gate_res["action"] == "allow"
             await db.execute("BEGIN IMMEDIATE")
-            await db.execute(
-                """UPDATE inbound
-                   SET previous_text = ?,
-                       text = ?,
-                       edit_count = COALESCE(edit_count, 0) + 1,
-                       edited_at = ?,
-                       delivered = 0
-                   WHERE id = ?""",
-                (prior_text, evt["text"], edited_at_iso, prior_id),
-            )
+            if reset_delivered:
+                await db.execute(
+                    """UPDATE inbound
+                       SET previous_text = ?,
+                           text = ?,
+                           edit_count = COALESCE(edit_count, 0) + 1,
+                           edited_at = ?,
+                           delivered = 0
+                       WHERE id = ?""",
+                    (prior_text, evt["text"], edited_at_iso, prior_id),
+                )
+            else:
+                await db.execute(
+                    """UPDATE inbound
+                       SET previous_text = ?,
+                           text = ?,
+                           edit_count = COALESCE(edit_count, 0) + 1,
+                           edited_at = ?
+                       WHERE id = ?""",
+                    (prior_text, evt["text"], edited_at_iso, prior_id),
+                )
             await db.commit()
             row_id = int(prior_id)
+            prev_len = len(prior_text or "")
+            new_len = len(evt["text"] or "")
+            delivery_tag = "re-delivering" if reset_delivered else f"gate={gate_res['action']} no-redeliver"
             log(
                 f"inbound edit: {evt['username'] or evt['from_id']}: "
-                f"msg_id={evt['message_id']} → row={row_id} (re-delivering)"
+                f"msg_id={evt['message_id']} → row={row_id} "
+                f"prev_len={prev_len} new_len={new_len} ({delivery_tag})"
             )
 
     if row_id is None:
