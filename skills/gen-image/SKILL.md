@@ -19,7 +19,37 @@ Parse the user's input for:
 - **`--api-url 'url'`**: Override the Gemini API endpoint (default below)
 - **`--count N`**: Max number of images to generate (default: 3)
 - **`--aspect 'W:H'`**: Aspect ratio via `imageConfig` (default: 3:4, portrait). Valid values: `1:1`, `2:3`, `3:2`, `3:4`, `4:3`, `4:5`, `5:4`, `9:16`, `16:9`, `21:9`
-- **`--transparent`**: Generate on magenta chroma-key background (`#FF00FF`), then strip it via ImageMagick **border-seeded flood fill**. The scanner samples pixels along every image edge and keeps only the ones that are actually near `#FF00FF` as flood seeds — so shots where Gemini rendered grass/scenery into some corners (which broke the earlier 4-corners-only approach when flood-fill started from grass at 30% fuzz and ate the subject) still strip cleanly. Only magenta pixels reachable from the image edges are made transparent; interior magenta-tinted pixels (pink fur highlights, glass reflections, lobster-claw reds) are preserved automatically. Fast (sub-second) and pixel-accurate — no ML needed. Requires `magick` (ImageMagick). If the subject fills the frame and no border pixel is near-magenta, the strip is skipped with an error rather than producing a swiss-cheese result.
+- **`--transparent`**: Generate on magenta chroma-key background (`#FF00FF`), then strip it via ImageMagick **border-seeded flood fill**. The scanner samples pixels along every image edge and keeps only the ones that are actually near `#FF00FF` as flood seeds — so shots where Gemini rendered grass/scenery into some corners (which broke the earlier 4-corners-only approach when flood-fill started from grass at 30% fuzz and ate the subject) still strip cleanly. Only magenta pixels reachable from the image edges are made transparent; interior magenta-tinted pixels (pink fur highlights, glass reflections, lobster-claw reds) are preserved automatically. Fast (sub-second) and pixel-accurate — no ML needed. Requires `magick` (ImageMagick). If the subject fills the frame and no border pixel is near-magenta, the strip is skipped with an error rather than producing a swiss-cheese result. After the strip, two layered evals auto-run — see **Automatic eval** below.
+- **`--no-eval`**: Skip the alpha-mask eval pass that looks for interior holes, residual magenta, and edge fringe (needs numpy/pillow/scipy — the `uv run --script` shebang installs them automatically, but plain `python3` invocations without `uv` may need this flag). The alpha-mean signal still runs.
+- **`--eval-strict`**: Exit nonzero when any alpha-mask eval threshold trips. Useful when a calling agent wants to retry or fail loudly instead of silently shipping a broken alpha mask.
+
+### Automatic eval
+
+When `--transparent` is active, `generate.py` runs two complementary evals on the output and prints metrics to stderr.
+
+**(1) Alpha-mean signal** (`evaluate_strip`, always on — same thresholds `test_generate.py` asserts):
+
+- Status `healthy` — alpha mean in 15–85% band.
+- Status `subject_eaten` — alpha mean below 15%; the strip ate the subject. Regenerate with a magenta border on all four sides.
+- Status `nothing_stripped` — alpha mean above 85%; subject fills the frame. Widen the crop.
+
+**(2) Alpha-mask quality signal** (`eval_alpha`, opt-out via `--no-eval`):
+
+- `interior_hole_px` — transparent pixels enclosed by opaque (signals interior damage the alpha-mean misses: Swiss-cheese holes that read as shading on a colored preview background).
+- `residual_magenta_px` — opaque pixels still near chroma color (signals trapped magenta pockets corner-seeded flood couldn't reach).
+- `edge_fringe_px` — partial-alpha pixels (signals halo).
+
+Output format:
+
+```
+eval [healthy] out.webp: alpha=51.3% size=74.0KB
+[eval] /tmp/out.webp: holes=84, residual=132, fringe=0   [OK]
+[eval] /tmp/out.webp: holes=9687, residual=0, fringe=0   [WARN: interior damage likely — check alpha mask]
+```
+
+Thresholds for the mask-quality signal are conservative by default (holes > 200, residual > 500, fringe > 2000). Pass `--no-eval` to skip it. Pass `--eval-strict` to exit nonzero when a mask-quality threshold trips.
+
+**Why:** visual inspection on a light or dark background hides interior damage (holes read as shadow/shading). The alpha mask is the ground truth. Baking both evals into the skill makes them the default, so a silently-broken output can't ship. See [/hill-climbing](https://idvork.in/hill-climbing) for the "eval becomes regression guard" pattern.
 
 ## Configuration
 
@@ -88,7 +118,7 @@ Use `generate.py` from the `image-explore` skill. It handles env loading (`~/.en
    uv run "$GEN" single --scene "Raccoon lifting kettlebell in a gym" --shirt "FIT" --output raccoon-kettlebell.webp
    ```
 
-   Pass `--aspect`, `--ref`, or `--style` to override defaults.
+   The script's PEP 723 shebang auto-installs deps (typer + numpy/pillow/scipy for the `--transparent` eval). Pass `--aspect`, `--ref`, or `--style` to override defaults. Under `--transparent`, pass `--no-eval` to skip the mask-quality eval on stock python3 callers without numpy/scipy, and `--eval-strict` to exit nonzero when any eval threshold trips.
 
 3. **Multiple images (parallel):** Write a JSON file and use batch mode:
 
@@ -115,7 +145,7 @@ Use `generate.py` from the `image-explore` skill. It handles env loading (`~/.en
 
 5. If generation fails, report the error and ask if the user wants to retry with a modified prompt or skip.
 
-**Auto-eval runs on every generation.** When `--transparent` is set, `generate.py` runs `evaluate_strip()` on the output right after the chroma-key pass and prints a one-line metrics card to stderr (alpha mean %, file size, status). Status is one of `healthy` (in the 15–85% alpha band), `subject_eaten` (below 15% — strip invariant was violated; regenerate with a magenta border on all four sides), or `nothing_stripped` (above 85% — subject fills the frame; widen the crop). The thresholds are the same ones asserted in `test_generate.py`'s integration suite, so the eval that guards the test suite is the same eval that guards every runtime output — see [/hill-climbing](https://idvork.in/hill-climbing) for the pattern.
+**Auto-eval runs on every generation.** When `--transparent` is set, `generate.py` runs two complementary evals right after the chroma-key pass — the alpha-mean signal (always) and the alpha-mask quality signal (interior holes, residual magenta, edge fringe; opt-out via `--no-eval`). Details and thresholds in the **Automatic eval** subsection above. See [/hill-climbing](https://idvork.in/hill-climbing) for the "eval becomes regression guard" pattern.
 
 **Verifying transparent output.** Don't judge chroma-key quality by compositing on a solid background — interior holes read as the background color. Extract the alpha channel as a mask: `magick out.webp -alpha extract mask.png`. A clean mask is a solid silhouette; swiss-cheese holes mean the chroma ate interior color data.
 
