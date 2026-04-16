@@ -47,7 +47,7 @@ const BOT_SOCK_PATH = join(BASE_DIR, 'bot.sock')
 const ATTACHMENTS_DIR = join(BASE_DIR, 'attachments')
 
 // server.log lives in BASE_DIR alongside the bot's own log entries, so
-// telegram_debug.py --doctor sees both [bot] and [mcp] lines in one file.
+// telegram_debug.py doctor sees both [bot] and [mcp] lines in one file.
 const LOG_FILE = join(BASE_DIR, 'server.log')
 const LOG_MAX_BYTES = 5 * 1024 * 1024 // 5MB
 

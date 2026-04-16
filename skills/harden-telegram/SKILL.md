@@ -10,16 +10,16 @@ Diagnose and repair the two-process Telegram MCP channel. Three tiers:
 
 | Invocation | Scope |
 |---|---|
-| `/harden-telegram doctor` | Quick health check via `telegram_debug.py --doctor` |
+| `/harden-telegram doctor` | Quick health check via `telegram_debug.py doctor` |
 | `/harden-telegram reload` | Hot redeploy + reload plugins without dropping MCP |
 | `/harden-telegram deep` | Walk known failure modes if the doctor is clean but the channel is still broken |
-| **`--direct-send "..."`** | **Emergency escape hatch** — POST straight to Telegram Bot API, bypass MCP entirely. Use when `server.ts` is dead and you still need to reach Igor. Message is auto-prefixed with `[direct-send]` so it's visually distinct. See §Emergency Direct-Send below. |
+| **`telegram_debug.py direct-send "..."`** | **Emergency escape hatch** — POST straight to Telegram Bot API, bypass MCP entirely. Use when `server.ts` is dead and you still need to reach Igor. Message is auto-prefixed with `[direct-send]` so it's visually distinct. See §Emergency Direct-Send below. |
 
 ## 🧭 Principle: diagnostics live in code, not here
 
 **Before adding any "check X, grep Y" prose to this skill, ask: can it go in `telegram_debug.py` instead?**
 
-Skills describe **WHEN** to run diagnostics and **HOW** to recover. Code describes **WHAT** to check. Paths move — code errors loudly, prose rots silently. If you catch yourself listing file paths, grep patterns, or "does process X exist" checks here, STOP and add them to `telegram_debug.py --doctor` instead, then run it from this skill.
+Skills describe **WHEN** to run diagnostics and **HOW** to recover. Code describes **WHAT** to check. Paths move — code errors loudly, prose rots silently. If you catch yourself listing file paths, grep patterns, or "does process X exist" checks here, STOP and add them to `telegram_debug.py doctor` instead, then run it from this skill.
 
 Full principle in [`../../CLAUDE.md`](../../CLAUDE.md) §"Diagnostics: Code Over Prose".
 
@@ -69,10 +69,10 @@ This skill only helps on machines running the Telegram MCP plugin with the two-p
 ## Tier 1: Doctor (`/harden-telegram doctor`)
 
 ```bash
-python3 ~/.claude/skills/harden-telegram/tools/telegram_debug.py --doctor
+~/.claude/skills/harden-telegram/tools/telegram_debug.py doctor
 ```
 
-Runs every check, prints ✅/⚠️/❌ per section, tails `server.log`, shows source/plugin hash drift, exits non-zero on failure. JSON mode: `--json`. Legacy human-readable summary (pre-doctor): plain invocation with no flags.
+Runs every check, prints ✅/⚠️/❌ per section, tails `server.log`, shows source/plugin hash drift, exits non-zero on failure. The script is a Typer CLI with a `uv run` shebang — subcommands are `doctor`, `paths`, `direct-send`, `send-reply`, `react`, `undelivered`. Run with no subcommand for the legacy human-readable summary; `--json` / `--tail N` options apply to that mode. Run `telegram_debug.py --help` for the current command list.
 
 Read the output top-to-bottom. If everything is green, say so and stop. If anything is red, proceed to Tier 2 for redeploys or Tier 3 for known failure modes.
 
@@ -87,11 +87,9 @@ Two processes share the Telegram MCP responsibility. `telegram_bot.py` is the pe
 When the doctor is red, the MCP `reply` tool may be unavailable — you can't use the thing you're trying to fix. Use the escape hatch:
 
 ```bash
-python3 ~/.claude/skills/harden-telegram/tools/telegram_debug.py --direct-send "your message here"
-# --send is accepted as a shorter alias
-python3 ~/.claude/skills/harden-telegram/tools/telegram_debug.py --send "short form"
+~/.claude/skills/harden-telegram/tools/telegram_debug.py direct-send "your message here"
 # Override the default chat_id:
-python3 ~/.claude/skills/harden-telegram/tools/telegram_debug.py --direct-send "..." --chat-id 12345
+~/.claude/skills/harden-telegram/tools/telegram_debug.py direct-send "..." --chat-id 12345
 ```
 
 How it works:
@@ -111,19 +109,19 @@ The watchdog cron scheduled by `/startup-larry` step 3 item 4 uses this exclusiv
 
 When an interactive Claude session detects the Telegram MCP has died — `mcp__plugin_telegram_telegram__*` tools vanish from the available tool list, or a `reply` call fails, or the doctor shows red — **follow this order. Do not skip the first direct-send.**
 
-1. **Ping Igor's phone FIRST via `--direct-send`, before diagnosing.** One second of cost, guarantees Igor knows something is happening even if he's on Telegram-only and not watching the terminal:
+1. **Ping Igor's phone FIRST via `direct-send`, before diagnosing.** One second of cost, guarantees Igor knows something is happening even if he's on Telegram-only and not watching the terminal:
    ```bash
-   python3 ~/.claude/skills/harden-telegram/tools/telegram_debug.py \
-     --direct-send "⚠️ Larry: Telegram MCP down. Starting recovery."
+   ~/.claude/skills/harden-telegram/tools/telegram_debug.py \
+     direct-send "⚠️ Larry: Telegram MCP down. Starting recovery."
    ```
 
-2. **Diagnose.** Run `telegram_debug.py --doctor` (or `--doctor --json` if parsing). Identify the specific failure mode.
+2. **Diagnose.** Run `telegram_debug.py doctor`. Identify the specific failure mode.
 
 3. **Walk Tier 2 recovery.** Kill stale process if needed, restart, fire `/reload-plugins` (via the background watchdog pattern — never foreground).
 
 4. **Ping again on outcome** — same direct-send path:
-   - Success: `--direct-send "✅ Recovered — <what was fixed>"`
-   - Failure: `--direct-send "❌ Still broken — <details>"` AND append a timestamped line to `/tmp/larry_telegram_recovery.log`
+   - Success: `direct-send "✅ Recovered — <what was fixed>"`
+   - Failure: `direct-send "❌ Still broken — <details>"` AND append a timestamped line to `/tmp/larry_telegram_recovery.log`
 
 5. **Verify via an untagged MCP reply.** After MCP comes back, send a normal `reply` tool call to confirm the bridge is live. The **absence** of the `[direct-send]` prefix on the next message Igor sees proves MCP is back — that's the semantic signal.
 
@@ -133,7 +131,7 @@ When an interactive Claude session detects the Telegram MCP has died — `mcp__p
 - System-reminder arrives saying `plugin:telegram:telegram` has disconnected
 - `mcp__plugin_telegram_telegram__reply` or related tools are no longer in the tool list
 - A reply-tool call returns a "tool not available" or transport error
-- `telegram_debug.py --doctor` shows any red section
+- `telegram_debug.py doctor` shows any red section
 
 Any one of these triggers the protocol. Do not wait for confirmation across multiple signals — ping first, confirm after.
 
@@ -166,7 +164,7 @@ Doctor catches source/plugin drift automatically via sha256 compare when `TELEGR
 **Fix:** kill ONLY this session's bridge, then reload — the next MCP request respawns from the plugin cache. Run the doctor first to find the bridge owned by this session (look for the `SERVER.TS` line that prints `pid=<n> (claude=<your-claude-pid>)`):
 
 ```bash
-python3 ~/.claude/skills/harden-telegram/tools/telegram_debug.py --doctor
+~/.claude/skills/harden-telegram/tools/telegram_debug.py doctor
 kill -TERM <pid-from-doctor>
 # Then run /reload-plugins from another context (or via the watchdog below).
 ```
@@ -205,7 +203,7 @@ nohup "$TELEGRAM_SOURCE_DIR/telegram_bot.py" \
 disown
 ```
 
-The `flock` singleton inside the script prevents double-launch — safe to run when already alive. Verify with `telegram_debug.py --doctor`.
+The `flock` singleton inside the script prevents double-launch — safe to run when already alive. Verify with `telegram_debug.py doctor`.
 
 ### 2e. Full restart (nuclear)
 
@@ -303,5 +301,5 @@ Without one of these, the watchdog's default recovery path (redeploy source → 
 - `igor2-bgt.2` — Integration kill-test
 - `igor2-bgt.3` — Post-cutover code review findings
 - `igor2-bgt.4` — This skill's migration from igor2 to chop-conventions
-- `igor2-cr1` — telegram_debug.py --doctor mode
+- `igor2-cr1` — telegram_debug.py doctor mode
 - `igor2-ddn` — Telegram watchdog auto-recover via tmux send-keys

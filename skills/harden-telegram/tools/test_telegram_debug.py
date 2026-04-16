@@ -495,7 +495,7 @@ class TestBuildReplyRequest(unittest.TestCase):
         self.assertEqual(url, "https://api.telegram.org/botT0KEN/sendMessage")
 
     def test_no_direct_send_tag(self):
-        # Unlike build_direct_request, --send-reply must NOT auto-tag. This
+        # Unlike build_direct_request, send-reply must NOT auto-tag. This
         # is a contract: replies route through the normal conversation.
         _, body = build_reply_request("T", "123", "hello", 42)
         self.assertNotIn(b"direct-send", body)
