@@ -115,13 +115,14 @@ def discover_audio_files(dir_path: Path) -> list[Path]:
 def default_output_path(input_path: Path, json_mode: bool, output_dir: Path | None) -> Path:
     """Compute the transcript destination for an input audio file.
 
-    By default, writes <input>.txt (or .json) in the same directory. If
-    --output-dir is given, writes <input stem>.txt in that dir instead.
+    By default, writes <stem>.txt (or .json) alongside the input — the audio
+    suffix is replaced, not appended, so `clip.wav` becomes `clip.txt`. This
+    matches the --output-dir behaviour so single- and batch-mode layouts are
+    consistent.
     """
     suffix = ".json" if json_mode else ".txt"
-    if output_dir is not None:
-        return output_dir / f"{input_path.stem}{suffix}"
-    return input_path.with_suffix(input_path.suffix + suffix)
+    target_dir = output_dir if output_dir is not None else input_path.parent
+    return target_dir / f"{input_path.stem}{suffix}"
 
 
 def main():
@@ -166,8 +167,11 @@ def main():
     parser.add_argument(
         "--max-workers",
         type=int,
-        default=2,
-        help="Parallel batch worker count (default: 2; keep low — Parakeet is CPU-heavy)",
+        default=1,
+        help=(
+            "Parallel batch worker count (default: 1 — empirically faster than 2 "
+            "on consumer CPUs because OMP_NUM_THREADS=2 × N_workers still thrashes)."
+        ),
     )
 
     args = parser.parse_args()
@@ -213,7 +217,11 @@ def main():
         if not result.success:
             print(f"Error: {result.error}", file=sys.stderr)
             sys.exit(1)
-        print(result.output_path)
+        # Stdout contract matches parakeet-stt.sh: transcript text (or JSON) goes
+        # to stdout so the tool composes in pipelines, e.g. `TEXT=$(generate-stt.py --input x.wav)`.
+        # The saved path is echoed to stderr instead.
+        print(result.text or "")
+        print(f"Saved: {result.output_path}", file=sys.stderr)
         print(f"Transcribed in {result.elapsed_s}s", file=sys.stderr)
         return
 
@@ -239,6 +247,20 @@ def main():
                 print(f"Error: batch file not found: {p}", file=sys.stderr)
                 sys.exit(1)
             inputs.append(p)
+        if not inputs:
+            print(
+                "Error: --batch-files was empty (comma-separated list has no "
+                "non-empty entries)",
+                file=sys.stderr,
+            )
+            sys.exit(2)
+
+    if args.max_workers < 1:
+        print(
+            f"Error: --max-workers must be >= 1 (got {args.max_workers})",
+            file=sys.stderr,
+        )
+        sys.exit(2)
 
     jobs: list[STTJob] = [
         STTJob(
