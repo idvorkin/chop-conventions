@@ -67,12 +67,12 @@ Simon Willison's 2026-04-15 write-up. Use either approach; they compose.
 
 30 prebuilt voices ship with the model. Ones we've found useful:
 
-| Voice | Vibe | Use for |
-| --- | --- | --- |
-| `Charon` (default) | Deeper storyteller baritone | Larry-style grounding, long-form narration |
-| `Kore` | Firm, observer-coach (reads feminine) | Review reads when that vibe fits |
-| `Puck` | Upbeat, playful | Kickoff messages, celebratory clips |
-| `Aoede` | Warm, soft | Empathic/comfort lines |
+| Voice              | Vibe                                  | Use for                                    |
+| ------------------ | ------------------------------------- | ------------------------------------------ |
+| `Charon` (default) | Deeper storyteller baritone           | Larry-style grounding, long-form narration |
+| `Kore`             | Firm, observer-coach (reads feminine) | Review reads when that vibe fits           |
+| `Puck`             | Upbeat, playful                       | Kickoff messages, celebratory clips        |
+| `Aoede`            | Warm, soft                            | Empathic/comfort lines                     |
 
 Full catalog in `tts-voice.txt`. To lock in a named preset separately
 from the default, drop `voices/<name>.txt` next to this file with the
@@ -83,8 +83,8 @@ literal voiceName on its first non-comment line.
 Files in `voices/` serve two distinct purposes:
 
 1. **Single-line voice-ID alias** — first non-comment line is a literal
-   Gemini voice name (`Kore`, `Charon`, `Puck`, etc.). Used via `--voice
-   <name>`. The rest of the file is commentary on when to pick it.
+   Gemini voice name (`Kore`, `Charon`, `Puck`, etc.). Used via
+   `--voice <name>`. The rest of the file is commentary on when to pick it.
 2. **Multi-line style directive** — a character/tone description
    (Freud's Viennese pacing, Tony Soprano's gravel, etc.). Used via
    `--style-preset <name>`. Comment lines are stripped; the body is
@@ -128,10 +128,23 @@ Write a JSON file:
 
 ```json
 [
-  { "text": "Good morning. [short pause] Ready to start?", "output": "/tmp/morning.wav", "voice": "Kore" },
-  { "text": "[excited] You nailed that workout!", "output": "/tmp/celebrate.wav", "voice": "Puck" },
+  {
+    "text": "Good morning. [short pause] Ready to start?",
+    "output": "/tmp/morning.wav",
+    "voice": "Kore"
+  },
+  {
+    "text": "[excited] You nailed that workout!",
+    "output": "/tmp/celebrate.wav",
+    "voice": "Puck"
+  },
   { "text": "[whisper] Time to wind down.", "output": "/tmp/bedtime.wav" },
-  { "text": "Tell me about your father.", "output": "/tmp/freud.wav", "voice": "Charon", "style_preset": "freud" }
+  {
+    "text": "Tell me about your father.",
+    "output": "/tmp/freud.wav",
+    "voice": "Charon",
+    "style_preset": "freud"
+  }
 ]
 ```
 
