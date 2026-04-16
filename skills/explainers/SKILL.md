@@ -112,6 +112,9 @@ High-level checklist:
 - **One page, one URL, one repo.** No npm unless you need it.
 - **Scenarios are runnable.** If you can't `./run-all.sh` the demos, the
   explainer isn't self-sufficient.
+- **Shared footer.** Every explainer ends with a footer linking back to
+  the source repo, this skill, and `idvork.in/explainers`. Baked into
+  `templates/plain-html/index.html` — swap `OWNER/REPO` per project.
 - **Respect N=2.** Four archetype reference repos ≠ four sub-templates.
   Read the reference live; do not extract a framework.
 
