@@ -234,6 +234,22 @@ Diagnosis order:
 **Cause:** `server.ts`'s `deliverRow` stamped the outer 🫡 on every delivered row. Free-tier reactions *replace* rather than *stack*, so the outer 🫡 clobbered `telegram_bot.py`'s outcome glyph.
 **Fix:** Gate the outer reaction on `row.message_type === 'message'` in `deliverRow`. (Closed: igor2-bgt.3.3.)
 
+### DB has values but app reads NULL for specific columns
+
+**Symptom:** sqlite3 CLI shows the row with populated values; the app (via bun:sqlite or similar) reads NULL for a subset of columns — typically the ones populated by a second write.
+**Cause:** Producer does INSERT (partial row) → notify consumer → UPDATE remaining columns. Consumer reads BEFORE the UPDATE commits, marks row delivered, never re-reads after the UPDATE. Classic race in split-write producer/consumer setups.
+**Fix:** Defer the wakeup (`notify_clients()` or socket notify) until AFTER all column writes are committed. Or use a single compound INSERT that writes all columns at once. For telegram_bot.py this was shipped in PR #136 — same pattern applies to any split-write producer.
+**How to diagnose:** if sqlite3 CLI sees the columns but the consumer sees NULL, don't chase SQLite/ORM bugs. Check the producer's INSERT vs notify vs UPDATE ordering FIRST.
+
+### Debug build deployed to plugin cache — watchdog drift noise
+
+When `cp`-ing an intentional debug build of `server.ts` into `~/.claude/plugins/cache/claude-plugins-official/telegram/<version>/server.ts`, the hourly watchdog's source/plugin hash check flags drift every run. Two options:
+
+1. **Revert cache to pristine source when done debugging** (`cp "$TELEGRAM_SOURCE_DIR/server.ts" <cache-path>`). Clean state, watchdog quiet.
+2. **Update the watchdog cron prompt to ignore drift during the debug window** — pass explicit "hash drift is expected, do not recover" instructions in the prompt.
+
+Without one of these, the watchdog's default recovery path (redeploy source → cache) will clobber the live debug build mid-diagnostic. Seen during the 2026-04-15 session when the race condition debug required multiple server.ts iterations.
+
 ---
 
 ## Safety Rules
