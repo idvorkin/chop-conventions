@@ -17,6 +17,14 @@ produces slop. The path that works every time:
 If you cannot do step 1 yet, you cannot do step 3 yet. Research is not
 optional and not delegable to a reader.
 
+## Narrative structure: back up further than you think
+
+Lead from what the reader doesn't know, not from the mechanism
+that makes this explainer interesting. For each concept you'll
+reference, add a "what is it" / "why does it need this property"
+/ "why doesn't the obvious fix work" section above it. Repeat
+until you hit vocabulary a cold reader already owns.
+
 ## Archetypes, in depth
 
 ### Catalog / artifact-browser
@@ -170,6 +178,13 @@ diagrams are what compress an argument enough to keep them there.
 
 If the topic has runnable demos (shell commands, HTTP flows, SQL
 queries), ship them as `scripts/NN-scenario-name.sh` files in the repo:
+
+**Offline-first scenarios when the topic is a remote.** If the
+mechanism involves a remote server (GitHub, DoltHub, S3), model
+it locally with a bare git repo (`git init --bare`) or a
+`file://` URL. Removes auth, rate limits, cleanup. Keep a live
+variant (e.g. `06b-*-live.sh`) for the real-network sanity check;
+default to offline.
 
 - Each script is standalone: sources a shared `lib.sh`, wipes its own
   run directory under `runs/`, sets up fresh state, runs the demo,
