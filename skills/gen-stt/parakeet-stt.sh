@@ -127,14 +127,33 @@ fi
 
 echo "Running Parakeet ASR (model=$MODEL)..." >&2
 T0=$(date +%s)
-# onnx-asr writes the transcript to stdout; warnings (cpuid etc.) go to stderr.
+# onnx-asr writes the transcript to stdout; warnings (cpuid etc.) and progress
+# go to stderr. Capture stderr so we can surface it only on failure instead of
+# silently swallowing genuine errors.
+ASR_ERR="$WORK_DIR/asr.err"
+set +e
 TRANSCRIPT=$("${NICE_PREFIX[@]}" uvx --with onnxruntime --with huggingface_hub \
-    onnx-asr "$MODEL" "$WAV_FILE" 2>/dev/null)
+    onnx-asr "$MODEL" "$WAV_FILE" 2>"$ASR_ERR")
+ASR_RC=$?
+set -e
 T1=$(date +%s)
 ELAPSED=$(( T1 - T0 ))
 
+if [[ "$ASR_RC" -ne 0 ]]; then
+    echo "Error: onnx-asr exited $ASR_RC" >&2
+    if [[ -s "$ASR_ERR" ]]; then
+        echo "--- onnx-asr stderr (last 2KB) ---" >&2
+        tail -c 2048 "$ASR_ERR" >&2
+    fi
+    exit 1
+fi
+
 if [[ -z "$TRANSCRIPT" ]]; then
     echo "Error: Parakeet returned empty transcript" >&2
+    if [[ -s "$ASR_ERR" ]]; then
+        echo "--- onnx-asr stderr (last 2KB) ---" >&2
+        tail -c 2048 "$ASR_ERR" >&2
+    fi
     exit 1
 fi
 
