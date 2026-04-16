@@ -1,11 +1,16 @@
-#!/usr/bin/env python3
-# ABOUTME: Wrapper around gemini-tts.sh for TTS generation (single or batch).
-# ABOUTME: Handles env loading, voice preset resolution, and parallel batch execution.
+#!/usr/bin/env -S uv run --script
+# /// script
+# requires-python = ">=3.11"
+# dependencies = []
+# ///
+# ABOUTME: Python-only Gemini 3.1 Flash TTS generator — single clip or parallel batch.
+# ABOUTME: Stdlib-only (urllib, wave, struct); no requests/httpx/jq/curl deps.
 # ABOUTME: In batch mode, augments the input JSON with _duration_s debug fields.
 #
 # Single mode:
 #   generate-tts.py --text "Hello [short pause] world." --output greeting.wav
 #   generate-tts.py --text-file script.txt --output read.wav --voice Kore
+#   echo "piped text" | generate-tts.py --output out.wav
 #
 # Batch mode (parallel):
 #   generate-tts.py --batch lines.json
@@ -16,18 +21,34 @@
 from __future__ import annotations
 
 import argparse
+import base64
 import json
 import os
-import subprocess
+import struct
 import sys
 import time
+import urllib.error
+import urllib.request
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from pathlib import Path
 
 DEFAULT_VOICE = "Charon"  # Deeper storyteller baritone; matches Larry's vibe.
-# Kept in sync with tts-voice.txt and gemini-tts.sh. If you change the shipped
-# default voice, change all three and mention it in SKILL.md's voice table.
+# Kept in sync with tts-voice.txt. If you change the shipped default voice,
+# change both and mention it in SKILL.md's voice table.
+
+DEFAULT_API_URL = (
+    "https://generativelanguage.googleapis.com/v1beta/models/"
+    "gemini-3.1-flash-tts-preview:generateContent"
+)
+
+# Gemini TTS returns PCM: 16-bit signed little-endian, 24kHz, mono by default.
+DEFAULT_SAMPLE_RATE = 24000
+DEFAULT_CHANNELS = 1
+DEFAULT_BITS_PER_SAMPLE = 16
+
+
+# ----- Data types ---------------------------------------------------------
 
 
 @dataclass
@@ -46,22 +67,15 @@ class TTSResult:
     duration_s: float
 
 
-def resolve_chop_root():
-    """Resolve CHOP_ROOT from this script's location in the repo."""
-    script_dir = Path(__file__).resolve().parent
-    result = subprocess.run(
-        ["git", "rev-parse", "--show-toplevel"],
-        capture_output=True,
-        text=True,
-        cwd=script_dir,
-    )
-    if result.returncode != 0:
-        print("Error: Could not resolve CHOP_ROOT via git", file=sys.stderr)
-        sys.exit(1)
-    return Path(result.stdout.strip())
+# ----- Environment --------------------------------------------------------
 
 
-def load_env(env_file="~/.env"):
+def resolve_skill_dir() -> Path:
+    """Return this script's directory — canonical location for tts-voice.txt and voices/."""
+    return Path(__file__).resolve().parent
+
+
+def load_env(env_file: str = "~/.env") -> None:
     """Load KEY=VALUE pairs from env file into os.environ (does not override existing)."""
     path = Path(env_file).expanduser()
     if not path.exists():
@@ -73,6 +87,9 @@ def load_env(env_file="~/.env"):
                 continue
             key, _, value = line.partition("=")
             os.environ.setdefault(key.strip(), value.strip())
+
+
+# ----- Voice + style resolution ------------------------------------------
 
 
 def read_default_voice(skill_dir: Path) -> str:
@@ -147,39 +164,294 @@ def _read_style_body(path: Path) -> str:
     return " ".join(body_lines)
 
 
-def generate_one(job: TTSJob, gemini_script: str) -> TTSResult:
-    """Generate a single audio file via the bash helper."""
-    cmd = [
-        "bash",
-        gemini_script,
-        job.text,
-        "--output",
-        job.output,
-        "--voice",
-        job.voice,
-    ]
-    if job.style_prompt:
-        cmd.extend(["--style-prompt", job.style_prompt])
+def compose_prompt(text: str, style: str | None) -> str:
+    """Prepend the style directive to the text as a director's-note prefix.
 
-    style_tag = " +style" if job.style_prompt else ""
-    print(f"Generating: {job.output} (voice={job.voice}{style_tag})", file=sys.stderr)
-    t0 = time.monotonic()
-    result = subprocess.run(cmd, capture_output=True, text=True)
-    duration_s = round(time.monotonic() - t0, 1)
+    Matches the shape the bash layer used — a blank line between the style
+    paragraph and `Spoken text: <text>`. Gemini honors this as director's
+    notes separate from the spoken content.
+    """
+    if not style:
+        return text
+    return f"{style}\n\nSpoken text: {text}"
 
-    if result.returncode != 0:
-        err = result.stderr.strip() or result.stdout.strip() or "unknown error"
-        return TTSResult(
-            output=job.output, success=False, error=err, duration_s=duration_s
+
+# ----- HTTP + response parsing -------------------------------------------
+
+
+class TTSError(Exception):
+    """Caller-facing TTS failure — message should be printable as-is."""
+
+
+def _extract_sample_rate(mime_type: str) -> int:
+    """Parse sample rate from a mime type like 'audio/L16;codec=pcm;rate=24000'."""
+    if "rate=" not in mime_type:
+        return DEFAULT_SAMPLE_RATE
+    tail = mime_type.split("rate=", 1)[1]
+    candidate = tail.split(";", 1)[0].strip()
+    if candidate.isdigit():
+        return int(candidate)
+    return DEFAULT_SAMPLE_RATE
+
+
+def _find_audio_part(response: dict) -> tuple[str, str] | None:
+    """Return (base64_data, mime_type) for the first inlineData audio part, or None."""
+    candidates = response.get("candidates") or []
+    if not candidates:
+        return None
+    content = candidates[0].get("content") or {}
+    for part in content.get("parts") or []:
+        inline = part.get("inlineData") or {}
+        mime = inline.get("mimeType") or ""
+        if mime.startswith("audio/"):
+            data = inline.get("data") or ""
+            if data:
+                return data, mime
+    return None
+
+
+def _format_api_error(response: dict) -> str | None:
+    """If the response describes an error condition, return a user-facing message.
+
+    Distinguishes three error shapes the bash layer surfaced separately:
+      1. Top-level `error.message` — classic 4xx/5xx API error.
+      2. `promptFeedback.blockReason` — input-side safety filter.
+      3. `candidates[0].finishReason` of SAFETY / PROHIBITED_CONTENT /
+         RECITATION / LANGUAGE / OTHER — output-side safety / truncation.
+    """
+    error = response.get("error") or {}
+    if error.get("message"):
+        return f"API Error: {error['message']}"
+
+    block_reason = (response.get("promptFeedback") or {}).get("blockReason")
+    candidates = response.get("candidates") or []
+    finish_reason = candidates[0].get("finishReason") if candidates else None
+
+    # finishReason check — only error on the abnormal ones.
+    if finish_reason and finish_reason not in ("STOP", "MAX_TOKENS"):
+        msg = (
+            f"Gemini TTS refused to generate audio (finishReason={finish_reason})"
+        )
+        if block_reason:
+            msg += f"\n  promptFeedback.blockReason={block_reason}"
+        msg += (
+            "\n  Most common cause: prosody tags like [excited] / [whisper]"
+            "\n  combined with certain content trip the safety filter."
+            "\n  Try retrying without the directorial tag, or rephrase."
+        )
+        return msg
+
+    if block_reason:
+        msg = f"Gemini TTS refused the prompt (blockReason={block_reason})"
+        ratings = (response.get("promptFeedback") or {}).get("safetyRatings")
+        if ratings:
+            msg += f"\n  safetyRatings={json.dumps(ratings, separators=(',', ':'))}"
+        return msg
+
+    return None
+
+
+def _post_tts(api_url: str, payload: bytes, api_key: str, timeout: float) -> tuple[int, bytes]:
+    """POST JSON payload, return (http_status, body_bytes).
+
+    Auth via x-goog-api-key header (not ?key= query string) so the key never
+    leaks into URL access logs, shell traces, or proxy logs.
+    """
+    req = urllib.request.Request(
+        api_url,
+        data=payload,
+        method="POST",
+        headers={
+            "Content-Type": "application/json",
+            "x-goog-api-key": api_key,
+        },
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            return resp.status, resp.read()
+    except urllib.error.HTTPError as e:
+        # HTTPError is a Response-like — read body for the error parser.
+        body = e.read() if hasattr(e, "read") else b""
+        return e.code, body
+
+
+def call_gemini_tts(
+    text: str,
+    voice: str,
+    api_url: str,
+    api_key: str,
+    timeout: float = 120.0,
+) -> tuple[bytes, int]:
+    """Call the Gemini TTS API and return (raw_pcm_bytes, sample_rate).
+
+    Retries once on transient network errors / HTTP 5xx, matching what the
+    bash layer did. Raises TTSError with a caller-facing message on failure.
+    """
+    body = {
+        "contents": [{"parts": [{"text": text}]}],
+        "generationConfig": {
+            "responseModalities": ["AUDIO"],
+            "speechConfig": {
+                "voiceConfig": {
+                    "prebuiltVoiceConfig": {"voiceName": voice},
+                }
+            },
+        },
+    }
+    payload = json.dumps(body).encode("utf-8")
+
+    last_err: str | None = None
+    status = 0
+    raw = b""
+    for attempt in (1, 2):
+        try:
+            status, raw = _post_tts(api_url, payload, api_key, timeout)
+            # Retry on transient 5xx only; 4xx is a hard error.
+            if 500 <= status < 600 and attempt == 1:
+                print(
+                    f"Transient HTTP {status}, retrying after 2s...",
+                    file=sys.stderr,
+                )
+                time.sleep(2.0)
+                continue
+            break
+        except (urllib.error.URLError, TimeoutError, ConnectionError) as e:
+            last_err = str(e)
+            if attempt == 1:
+                print(
+                    f"Transient network error ({last_err}), retrying after 2s...",
+                    file=sys.stderr,
+                )
+                time.sleep(2.0)
+                continue
+            raise TTSError(f"HTTP request failed after retry: {last_err}") from e
+
+    # Parse body as JSON; the API always returns JSON even on error.
+    try:
+        response = json.loads(raw.decode("utf-8", errors="replace"))
+    except json.JSONDecodeError:
+        preview = raw[:2048].decode("utf-8", errors="replace")
+        raise TTSError(f"HTTP {status}: non-JSON response\n{preview}")
+
+    # Structured-error checks (priority over raw status when body parses).
+    api_err = _format_api_error(response)
+    if api_err:
+        raise TTSError(api_err)
+
+    # Non-2xx with no structured error — raise with raw body preview.
+    if not (200 <= status < 300):
+        preview = json.dumps(response)[:2048]
+        raise TTSError(f"HTTP {status} from Gemini TTS\n{preview}")
+
+    # Extract audio.
+    found = _find_audio_part(response)
+    if not found:
+        finish_reason = ""
+        candidates = response.get("candidates") or []
+        if candidates:
+            finish_reason = candidates[0].get("finishReason") or ""
+        preview = json.dumps(response)[:2048]
+        raise TTSError(
+            f"No audio data in response (finishReason={finish_reason or '<none>'})\n{preview}"
         )
 
-    if result.stderr:
-        print(result.stderr, file=sys.stderr)
+    b64_data, mime_type = found
+    try:
+        pcm_bytes = base64.b64decode(b64_data)
+    except Exception as e:
+        raise TTSError(f"Failed to base64-decode audio: {e}")
 
+    if len(pcm_bytes) < 1000:
+        raise TTSError(
+            f"Decoded audio is only {len(pcm_bytes)} bytes — likely truncated or empty"
+        )
+
+    return pcm_bytes, _extract_sample_rate(mime_type)
+
+
+# ----- WAV assembly ------------------------------------------------------
+
+
+def pcm_to_wav(
+    pcm_bytes: bytes,
+    output_path: str,
+    sample_rate: int,
+    channels: int = DEFAULT_CHANNELS,
+    bits_per_sample: int = DEFAULT_BITS_PER_SAMPLE,
+) -> None:
+    """Wrap raw PCM in a canonical little-endian WAV header.
+
+    WAV header is 44 bytes for PCM:
+      RIFF<size>WAVEfmt <16><1><channels><rate><byterate><blockalign><bps>data<size>
+    Using struct directly (not `wave` module) so we control the exact bytes
+    and match what the bash layer produced.
+    """
+    byte_rate = sample_rate * channels * bits_per_sample // 8
+    block_align = channels * bits_per_sample // 8
+    data_size = len(pcm_bytes)
+
+    header = b"RIFF" + struct.pack("<I", data_size + 36) + b"WAVE"
+    header += b"fmt " + struct.pack(
+        "<IHHIIHH",
+        16,  # fmt chunk size
+        1,  # PCM format
+        channels,
+        sample_rate,
+        byte_rate,
+        block_align,
+        bits_per_sample,
+    )
+    header += b"data" + struct.pack("<I", data_size)
+
+    with open(output_path, "wb") as f:
+        f.write(header + pcm_bytes)
+
+
+# ----- Single-job driver -------------------------------------------------
+
+
+def generate_one(job: TTSJob, api_url: str, api_key: str) -> TTSResult:
+    """Generate a single audio file end-to-end (API call + WAV wrap)."""
+    style_tag = " +style" if job.style_prompt else ""
+    print(
+        f"Generating: {job.output} (voice={job.voice}{style_tag})",
+        file=sys.stderr,
+    )
+    t0 = time.monotonic()
+    try:
+        text = compose_prompt(job.text, job.style_prompt)
+        pcm_bytes, sample_rate = call_gemini_tts(text, job.voice, api_url, api_key)
+        pcm_to_wav(pcm_bytes, job.output, sample_rate)
+    except TTSError as e:
+        duration_s = round(time.monotonic() - t0, 1)
+        return TTSResult(
+            output=job.output, success=False, error=str(e), duration_s=duration_s
+        )
+    except OSError as e:
+        duration_s = round(time.monotonic() - t0, 1)
+        return TTSResult(
+            output=job.output,
+            success=False,
+            error=f"I/O error writing {job.output}: {e}",
+            duration_s=duration_s,
+        )
+
+    duration_s = round(time.monotonic() - t0, 1)
+    wav_bytes = os.path.getsize(job.output)
+    byte_rate = sample_rate * DEFAULT_CHANNELS * DEFAULT_BITS_PER_SAMPLE // 8
+    audio_seconds = round(len(pcm_bytes) / byte_rate, 2) if byte_rate else 0.0
+    print(
+        f"Saved: {job.output} ({wav_bytes} bytes, ~{audio_seconds}s, "
+        f"{sample_rate}Hz mono {DEFAULT_BITS_PER_SAMPLE}-bit)",
+        file=sys.stderr,
+    )
     return TTSResult(output=job.output, success=True, error=None, duration_s=duration_s)
 
 
-def main():
+# ----- CLI ---------------------------------------------------------------
+
+
+def main() -> None:
     parser = argparse.ArgumentParser(
         description="Generate speech audio via Gemini 3.1 Flash TTS (single or batch)",
     )
@@ -207,22 +479,40 @@ def main():
     parser.add_argument(
         "--voice",
         default=None,
-        help="Voice preset name (resolves voices/<name>.txt single-line) or literal Gemini voice (e.g. Kore, Puck, Charon). Default: read tts-voice.txt",
+        help=(
+            "Voice preset name (resolves voices/<name>.txt single-line) or "
+            "literal Gemini voice (e.g. Kore, Puck, Charon). Default: read "
+            "tts-voice.txt"
+        ),
     )
     parser.add_argument(
         "--style-prompt",
         default=None,
-        help="Director's-notes style prefix prepended to the text (e.g. 'Speak in a warm Newcastle accent.')",
+        help=(
+            "Director's-notes style prefix prepended to the text (e.g. "
+            "'Speak in a warm Newcastle accent.')"
+        ),
     )
     parser.add_argument(
         "--style-preset",
         default=None,
-        help="Name of a multi-line style file under voices/<name>.txt (e.g. freud, soprano). Mutually exclusive with --style-prompt / --style-file",
+        help=(
+            "Name of a multi-line style file under voices/<name>.txt (e.g. "
+            "freud, soprano). Mutually exclusive with --style-prompt / --style-file"
+        ),
     )
     parser.add_argument(
         "--style-file",
         default=None,
-        help="Path to a multi-line style-directive file (comment lines stripped). Mutually exclusive with --style-prompt / --style-preset",
+        help=(
+            "Path to a multi-line style-directive file (comment lines stripped). "
+            "Mutually exclusive with --style-prompt / --style-preset"
+        ),
+    )
+    parser.add_argument(
+        "--api-url",
+        default=DEFAULT_API_URL,
+        help="Override Gemini endpoint URL",
     )
     parser.add_argument(
         "--max-workers",
@@ -234,13 +524,11 @@ def main():
     args = parser.parse_args()
 
     is_batch = args.batch is not None
-    is_single = args.text is not None or args.text_file is not None
-    if not is_batch and not is_single:
-        parser.error("Provide --batch JSON or --text/--text-file plus --output")
-    if is_batch and is_single:
+    is_single = (
+        args.text is not None or args.text_file is not None or not sys.stdin.isatty()
+    )
+    if is_batch and (args.text is not None or args.text_file is not None):
         parser.error("Cannot combine --batch with --text/--text-file")
-    if is_single and not args.output:
-        parser.error("Single mode requires --output")
     if args.text and args.text_file:
         parser.error("Use either --text or --text-file, not both")
 
@@ -250,24 +538,38 @@ def main():
             "Pass at most one of --style-prompt / --style-preset / --style-file"
         )
 
-    chop_root = resolve_chop_root()
-    skill_dir = chop_root / "skills" / "gen-tts"
-    gemini_script = str(skill_dir / "gemini-tts.sh")
-
+    skill_dir = resolve_skill_dir()
     load_env()
 
-    if not os.environ.get("GOOGLE_API_KEY"):
+    api_key = os.environ.get("GOOGLE_API_KEY")
+    if not api_key:
         print(
             "Error: GOOGLE_API_KEY not found in environment or ~/.env",
             file=sys.stderr,
         )
         sys.exit(1)
 
-    if is_single:
-        if args.text_file:
-            text = Path(args.text_file).read_text().strip()
-        else:
+    # ----- Single mode (includes stdin-piped input) -----
+    if not is_batch:
+        # Resolve text: --text > --text-file > stdin
+        if args.text is not None:
             text = args.text
+        elif args.text_file is not None:
+            text = Path(args.text_file).read_text().strip()
+        elif not sys.stdin.isatty():
+            text = sys.stdin.read().strip()
+        else:
+            parser.error(
+                "Provide --batch JSON, --text/--text-file, or pipe text on stdin"
+            )
+            return  # unreachable — parser.error calls sys.exit
+
+        if not text:
+            print("Error: no text provided (pass as arg or via stdin)", file=sys.stderr)
+            sys.exit(2)
+        if not args.output:
+            parser.error("Single mode requires --output")
+
         voice = resolve_voice_preset(skill_dir, args.voice)
         try:
             style_prompt = resolve_style(
@@ -276,10 +578,14 @@ def main():
         except FileNotFoundError as e:
             print(f"Error: {e}", file=sys.stderr)
             sys.exit(2)
+
         job = TTSJob(
-            text=text, output=args.output, voice=voice, style_prompt=style_prompt
+            text=text,
+            output=args.output,
+            voice=voice,
+            style_prompt=style_prompt,
         )
-        result = generate_one(job, gemini_script)
+        result = generate_one(job, args.api_url, api_key)
         if not result.success:
             print(f"Error: {result.error}", file=sys.stderr)
             sys.exit(1)
@@ -287,7 +593,7 @@ def main():
         print(f"Generated in {result.duration_s}s", file=sys.stderr)
         return
 
-    # Batch mode
+    # ----- Batch mode -----
     batch_path = Path(args.batch)
     if not batch_path.exists():
         print(f"Error: Batch file not found: {batch_path}", file=sys.stderr)
@@ -341,7 +647,9 @@ def main():
     batch_t0 = time.monotonic()
     workers = min(args.max_workers, len(jobs))
     with ThreadPoolExecutor(max_workers=workers) as pool:
-        futures = {pool.submit(generate_one, j, gemini_script): j for j in jobs}
+        futures = {
+            pool.submit(generate_one, j, args.api_url, api_key): j for j in jobs
+        }
         for future in as_completed(futures):
             result = future.result()
             if result.output in job_by_output:
