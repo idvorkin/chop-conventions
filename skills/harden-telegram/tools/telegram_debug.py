@@ -1630,6 +1630,32 @@ def send_reply(text: str, chat_id: str, reply_to: int) -> int:
     return 0
 
 
+def show_undelivered() -> int:
+    """Print undelivered inbound rows from inbound.db as JSON.
+
+    Used by emergency-comms-mode polling when the MCP bridge is dead —
+    surfaces messages that telegram_bot.py captured but server.ts hasn't
+    delivered to Claude. Does NOT mark rows delivered (the bridge handles
+    that on reconnect; duplicates are harmless).
+    """
+    base = Path(os.environ.get("LARRY_TELEGRAM_DIR", str(Path.home() / "larry-telegram")))
+    db_path = base / "inbound.db"
+    if not db_path.exists():
+        print(f"inbound.db not found at {db_path}", file=sys.stderr)
+        return 1
+    conn = sqlite3.connect(str(db_path))
+    conn.row_factory = sqlite3.Row
+    rows = conn.execute(
+        "SELECT id, ts, chat_id, message_id, user_id, username, message_type, text,"
+        " attachment_kind, attachment_file_id, attachment_mime, attachment_name"
+        " FROM inbound WHERE delivered = 0 ORDER BY id"
+    ).fetchall()
+    result = [dict(r) for r in rows]
+    print(json.dumps(result, indent=2, default=str))
+    conn.close()
+    return 0
+
+
 def set_reaction(emoji: str, chat_id: str, message_id: int) -> int:
     """Set a single-emoji reaction on a message via Bot API.
 
@@ -1694,6 +1720,11 @@ def main():
         help="Print every file the two-process chain cares about, with existence check",
     )
     parser.add_argument(
+        "--undelivered",
+        action="store_true",
+        help="Print undelivered inbound rows from inbound.db as JSON. Used for emergency-comms-mode polling when MCP bridge is dead.",
+    )
+    parser.add_argument(
         "--direct-send",
         "--send",
         dest="direct_send",
@@ -1738,6 +1769,7 @@ def main():
         "--paths": args.paths,
         "--direct-send": args.direct_send is not None,
         "--send-reply": args.send_reply is not None,
+        "--undelivered": args.undelivered,
         "--react": args.react is not None,
     }
     active = [name for name, on in actions.items() if on]
@@ -1755,6 +1787,9 @@ def main():
         sys.exit(
             send_reply(args.send_reply, chat_id=args.chat_id, reply_to=args.reply_to)
         )
+
+    if args.undelivered:
+        sys.exit(show_undelivered())
 
     if args.react is not None:
         if args.message_id is None:
