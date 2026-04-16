@@ -167,6 +167,34 @@ if [[ -n "$ERROR" ]]; then
     exit 1
 fi
 
+# Safety-filter rejection: Gemini returns HTTP 200 with no audio parts and
+# either promptFeedback.blockReason (input blocked) or candidates[0].finishReason
+# set to SAFETY / PROHIBITED_CONTENT / OTHER (output blocked). These used to
+# surface as a generic "No audio data in response" — unhelpful for the caller
+# because nothing is wrong with the code or network.
+BLOCK_REASON=$(jq -r '.promptFeedback.blockReason // empty' "$RESPONSE_FILE" 2>/dev/null)
+FINISH_REASON=$(jq -r '.candidates[0].finishReason // empty' "$RESPONSE_FILE" 2>/dev/null)
+case "$FINISH_REASON" in
+    STOP|MAX_TOKENS|"") ;;  # normal / truncated-but-ok / absent
+    *)
+        # SAFETY / PROHIBITED_CONTENT / RECITATION / LANGUAGE / OTHER etc.
+        echo "Error: Gemini TTS refused to generate audio (finishReason=$FINISH_REASON)" >&2
+        if [[ -n "$BLOCK_REASON" ]]; then
+            echo "  promptFeedback.blockReason=$BLOCK_REASON" >&2
+        fi
+        echo "  Most common cause: prosody tags like [excited] / [whisper]" >&2
+        echo "  combined with certain content trip the safety filter." >&2
+        echo "  Try retrying without the directorial tag, or rephrase." >&2
+        exit 1
+        ;;
+esac
+if [[ -n "$BLOCK_REASON" ]]; then
+    echo "Error: Gemini TTS refused the prompt (blockReason=$BLOCK_REASON)" >&2
+    RATINGS=$(jq -c '.promptFeedback.safetyRatings // []' "$RESPONSE_FILE" 2>/dev/null)
+    [[ -n "$RATINGS" && "$RATINGS" != "[]" ]] && echo "  safetyRatings=$RATINGS" >&2
+    exit 1
+fi
+
 # Extract base64 audio data — find the first inlineData part with an audio mime type
 AUDIO_DATA=$(jq -r '
     [.candidates[0].content.parts[]? | select((.inlineData.mimeType // "") | startswith("audio/"))]
@@ -177,7 +205,7 @@ MIME_TYPE=$(jq -r '
     | first | .inlineData.mimeType // "audio/pcm"' "$RESPONSE_FILE")
 
 if [[ -z "$AUDIO_DATA" ]]; then
-    echo "Error: No audio data in response" >&2
+    echo "Error: No audio data in response (finishReason=${FINISH_REASON:-<none>})" >&2
     echo "Response preview:" >&2
     jq '.candidates[0] // .' "$RESPONSE_FILE" 2>/dev/null | head -40 >&2 || head -c 2048 "$RESPONSE_FILE" >&2
     exit 1

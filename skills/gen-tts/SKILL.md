@@ -158,6 +158,7 @@ echo "piped text" | bash .../gemini-tts.sh --output /tmp/out.wav
 
 - **Missing API key**: `generate-tts.py` auto-loads from `~/.env`. If still unset, set `GOOGLE_API_KEY` in env or `~/.env`.
 - **API error**: The bash script prints the JSON error body and exits 1. Common causes: billing not enabled for the API key, TTS preview not enabled in the GCP project, quota exhausted.
+- **Safety-filter rejection**: If Gemini returns `promptFeedback.blockReason` (input blocked) or `candidates[0].finishReason` of `SAFETY` / `PROHIBITED_CONTENT` / `RECITATION` / `OTHER` (output blocked), the bash script prints the specific reason and exits 1. Most common trigger: certain prosody tags (`[excited]`, `[whisper]`) combined with flavorful content trip the filter. Retry without the tag or rephrase the text.
 - **Empty audio**: If the decoded PCM is < 1KB, the script fails fast rather than emitting a useless WAV.
 - **Missing deps**: Requires `jq`, `base64`, `curl`, `python3`.
 
