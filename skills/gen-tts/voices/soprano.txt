@@ -1,16 +1,36 @@
 # Tony Soprano voice preset (style directive — NOT a Gemini voice ID).
 # Use via:
-#   generate-tts.py --style-preset soprano --text "..." --output out.wav
-#   generate-tts.py --style-file voices/soprano.txt --text "..." --output out.wav
+#   generate-tts.py --style-preset soprano --voice Enceladus --text "..." --output out.wav
+#   generate-tts.py --style-file voices/soprano.txt --voice Enceladus --text "..." --output out.wav
 # Comment lines (starting with '#') are stripped; the remaining body is
 # collapsed to one paragraph and prepended to the text as a director's note.
-# Combine with --voice Charon (or similar baritone) for best results.
+#
+# Base voice: Enceladus (NOT the repo default Charon).
+# Rationale: in a 2026-04-16 Gemini-critic tournament over 5 male voices
+# (Charon, Fenrir, Orus, Puck, Enceladus), Enceladus scored overall_match
+# 5/10 against the Gandolfini reference with the seed prompt alone,
+# beating Charon's 3/10 and Puck's 4/10. Chest_resonance and
+# pitch_authority were the structurally decisive dimensions — Enceladus
+# scored 6+/10 on both out of the box, while Charon scored 4/10. The
+# tournament then raised overall to 6/10 via the prompt below.
+# Full iteration + scorecards: https://idvorkin-ai-tools.github.io/larry-voice-samples/soprano-iteration.html
+#
+# The prompt below is a structured six-slot composition produced by the
+# tournament loop (chest resonance | nasal quality | pacing | pitch |
+# vocal fry | persona context). Each slot was selected by a Gemini 3.1
+# Pro critic listening to TTS candidates and ranking them on a
+# dimensional scorecard. Source: /tmp/larry-soprano-iter-v2/iterate-v2.py.
 
-Speak in a raspy North-Jersey Italian-American baritone. Gravelly, like a
-longtime smoker. Intimate and confidential — the listener is always close
-enough to feel the breath on the microphone. Short sentences with a
-shrugged cadence. Shifts between quiet menace, warm avuncular guidance, and
-exasperated "whaddaya gonna do" resignation — but the default is
-affectionate. Pauses are beats, not hesitations. Drop the final "-g" in
-gerunds ("thinkin'", "doin'"). Never shout; power comes from restraint,
-not volume.
+Speak from deep in the chest with a heavy bass-baritone resonance, as if
+the voice is anchored in the sternum rather than the head. Introduce
+heavy sinus congestion and audible, labored nasal breathing between
+phrases to simulate years of heavy smoking and physical weight. Short
+sentences with a shrugged, unhurried cadence. Pauses are deliberate
+beats, not hesitations. Slightly lethargic, never rushed. Anchor the
+pitch in a low, authoritative baritone register, eliminating any upward
+lilt to maintain a flat, quietly menacing presence. Blend subtle,
+sustained vocal fry into the mid-vowels, not isolated rattles at
+sentence endings. Channel James Gandolfini as Tony Soprano in an
+intimate indoor scene — North-Jersey Italian-American, affectionate
+default, quiet menace underneath. Drop the final "-g" in gerunds
+("thinkin'", "doin'"). Never shout.
