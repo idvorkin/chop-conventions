@@ -121,19 +121,37 @@ def read_default_style(chop_root):
 
 
 def remove_background(image_path):
-    """Strip the magenta chroma-key background using ImageMagick.
+    """Strip the magenta chroma-key background using edge-connected flood fill.
 
-    Since images are generated on a KNOWN solid #FF00FF background, exact
-    color-based transparency with ImageMagick's -fuzz is pixel-accurate,
-    fast, and dependency-free. This beat rembg in testing: rembg left
-    purple halos around character edges and required a heavy ML install.
+    Images are generated on a KNOWN solid #FF00FF background, so chroma-key
+    stripping is pixel-accurate without ML. The earlier approach used
+    `-fuzz 30% -transparent #FF00FF`, which kills ALL magenta-ish pixels
+    globally — including magenta-tinted highlights *inside* the character
+    (pink fur, specular glass reflections, lobster-claw reds). That leaves
+    swiss-cheese holes in the alpha mask.
 
-    Fuzz of 30% handles edge antialiasing (where magenta blends into the
-    subject outline) without bleeding into red/pink character colors.
+    Flood-fill from all 4 corners only reaches the contiguous background
+    region; interior pixels are protected by the character's own silhouette
+    and preserved automatically. Fuzz of 30% still handles edge antialiasing
+    where magenta blends into the subject outline.
     """
     magick = shutil.which("magick") or shutil.which("convert")
     if not magick:
         return False, "magick not found — install ImageMagick"
+
+    # Pre-query image dimensions so we can flood-fill from each corner.
+    probe = subprocess.run(
+        [magick, "identify", "-format", "%w %h", image_path],
+        capture_output=True,
+        text=True,
+    )
+    if probe.returncode != 0:
+        return False, f"magick identify failed: {probe.stderr.strip()}"
+    try:
+        w, h = (int(x) for x in probe.stdout.split())
+    except ValueError:
+        return False, f"could not parse image dimensions: {probe.stdout!r}"
+    w1, h1 = w - 1, h - 1
 
     with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as tmp:
         tmp_path = tmp.name
@@ -143,10 +161,20 @@ def remove_background(image_path):
             [
                 magick,
                 image_path,
+                "-alpha",
+                "set",
                 "-fuzz",
                 "30%",
-                "-transparent",
-                "#FF00FF",
+                "-fill",
+                "none",
+                "-draw",
+                "color 0,0 floodfill",
+                "-draw",
+                f"color {w1},0 floodfill",
+                "-draw",
+                f"color 0,{h1} floodfill",
+                "-draw",
+                f"color {w1},{h1} floodfill",
                 "-quality",
                 "90",
                 tmp_path,
@@ -155,7 +183,7 @@ def remove_background(image_path):
             text=True,
         )
         if result.returncode != 0:
-            return False, f"magick -transparent failed: {result.stderr.strip()}"
+            return False, f"magick flood-fill failed: {result.stderr.strip()}"
 
         ext = Path(image_path).suffix.lower()
         if ext == ".webp":
@@ -275,7 +303,7 @@ def main():
         "--transparent",
         action="store_true",
         default=False,
-        help="Generate on magenta chroma-key background, then strip it via ImageMagick -fuzz -transparent",
+        help="Generate on magenta chroma-key background, then strip it via ImageMagick edge-connected flood fill from the 4 corners (preserves interior magenta-tinted pixels)",
     )
 
     args = parser.parse_args()

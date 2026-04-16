@@ -19,7 +19,7 @@ Parse the user's input for:
 - **`--api-url 'url'`**: Override the Gemini API endpoint (default below)
 - **`--count N`**: Max number of images to generate (default: 3)
 - **`--aspect 'W:H'`**: Aspect ratio via `imageConfig` (default: 3:4, portrait). Valid values: `1:1`, `2:3`, `3:2`, `3:4`, `4:3`, `4:5`, `5:4`, `9:16`, `16:9`, `21:9`
-- **`--transparent`**: Generate on magenta chroma-key background (`#FF00FF`), then strip it with ImageMagick's `-fuzz 30% -transparent` to produce a PNG/webp with real alpha transparency. Fast (sub-second) and pixel-accurate — no ML needed. Requires `magick` (ImageMagick).
+- **`--transparent`**: Generate on magenta chroma-key background (`#FF00FF`), then strip it via ImageMagick **edge-connected flood fill** from all 4 corners. Only magenta pixels reachable from the image edges are made transparent — interior magenta-tinted pixels (pink fur highlights, glass reflections, lobster-claw reds) are preserved automatically. Fast (sub-second) and pixel-accurate — no ML needed. Requires `magick` (ImageMagick).
 
 ## Configuration
 
