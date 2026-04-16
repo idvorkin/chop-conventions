@@ -34,8 +34,11 @@ Parse the user's input for:
 - **`--keep-wav`** (bash only): Retain the intermediate transcoded WAV
   for debugging.
 - **`--max-workers N`** (Python only): Parallel batch workers. Default
-  **2** — Parakeet is CPU-heavy, and `max-workers` is an additional
-  multiplier on top of the per-process thread cap. Raise cautiously.
+  **1** (serial). Aggregate CPU = `max_workers × per-process thread cap (2)`,
+  so `--max-workers=2` already drives 4 threads and often runs *slower per
+  file* than serial on consumer CPUs (measured 2026-04-16: 3 files at
+  `--max-workers=2` took 114s vs ~60s projected serial). Only raise on a
+  box with spare cores where wall-clock matters more than per-file latency.
 
 ## Configuration
 
@@ -105,8 +108,9 @@ python3 "$GEN_STT" --batch-dir /tmp/voice-memos --output-dir /tmp/transcripts
 ```
 
 Every audio file under `/tmp/voice-memos` gets a `<stem>.txt` in
-`/tmp/transcripts`. With `--json`, writes `<stem>.json` and emits a
-summary JSON on stdout.
+`/tmp/transcripts` (suffix is replaced, not appended). With `--json`,
+writes `<stem>.json` and emits a summary JSON on stdout. Without
+`--output-dir`, transcripts land alongside each input as `<stem>.txt`.
 
 ### Batch — explicit file list
 
@@ -151,9 +155,11 @@ cat /tmp/roundtrip.txt
 - **Empty transcript**: If `onnx-asr` returns nothing (silent audio,
   unsupported encoding that ffmpeg salvaged into unusable WAV), the
   bash helper exits 1 rather than writing an empty file.
-- **CPU saturation**: If `--max-workers` is raised above 2, the
-  per-process thread cap (2 threads) still applies, so aggregate
-  CPU = `max_workers × 2`. Keep `max_workers ≤ cores/2`.
+- **CPU saturation**: Default `--max-workers=1` (serial). Raising it is
+  rarely a win: the per-process thread cap stays at 2, so aggregate CPU is
+  `max_workers × 2`, and onnxruntime cold-start overhead per worker means
+  parallel runs often finish slower per file than serial. Keep
+  `max_workers ≤ cores/2` if you do raise it.
 
 ## Safety
 
