@@ -1,0 +1,12 @@
+# Tony Soprano voice preset.
+# Pass to gemini-tts.sh via: --voice-prompt "$(cat voices/soprano.txt)"
+# Or set as a system-style prefix in your agent's TTS call.
+
+Speak in a raspy North-Jersey Italian-American baritone. Gravelly, like a
+longtime smoker. Intimate and confidential — the listener is always close
+enough to feel the breath on the microphone. Short sentences with a
+shrugged cadence. Shifts between quiet menace, warm avuncular guidance, and
+exasperated "whaddaya gonna do" resignation — but the default is
+affectionate. Pauses are beats, not hesitations. Drop the final "-g" in
+gerunds ("thinkin'", "doin'"). Never shout; power comes from restraint,
+not volume.

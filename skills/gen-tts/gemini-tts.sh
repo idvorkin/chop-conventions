@@ -17,7 +17,7 @@ set -euo pipefail
 
 TEXT=""
 OUTPUT=""
-VOICE="Kore"
+VOICE="Charon"
 API_URL="https://generativelanguage.googleapis.com/v1beta/models/gemini-3.1-flash-tts-preview:generateContent"
 
 while [[ $# -gt 0 ]]; do

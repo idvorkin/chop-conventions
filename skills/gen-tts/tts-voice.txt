@@ -8,7 +8,12 @@
 #   Laomedeia Achernar Alnilam Schedar Gacrux Pulcherrima Achird
 #   Zubenelgenubi Vindemiatrix Sadachbia Sadaltager Sulafat
 #
-# "Kore" is a firm, steady, observer-coach voice — fits Larry's vibe
-# (calm, grounded, non-performative). Swap to "Charon" for a deeper
-# storyteller tone, "Puck" for upbeat playfulness, "Aoede" for warmth.
-Kore
+# "Charon" — deeper storyteller baritone, male-coded. Fits Larry's vibe as
+# a calm, grounded observer-coach without reading feminine. Swap to "Kore"
+# for a firm neutral-to-feminine reading, "Puck" for upbeat playfulness,
+# "Aoede" for warmth, "Fenrir" for a louder/excitable baritone.
+#
+# History: this default was "Kore" initially (described in Google's catalog
+# as "firm observer-coach") but the actual output read clearly feminine in
+# Igor's ears — swapped to Charon 2026-04-16.
+Charon
