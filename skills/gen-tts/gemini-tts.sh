@@ -279,17 +279,15 @@ case "$MIME_TYPE" in
         ;;
 esac
 
-# Wrap PCM in a WAV container.
+# Wrap PCM in a WAV container via Python (portable little-endian header pack;
+# avoids `printf` byte-order surprises across bash/macOS versions).
 # WAV header: 44 bytes for PCM mono 16-bit.
 #   RIFF<size>WAVEfmt <16><1><1><rate><byterate><blockalign><16>data<size>
 CHANNELS=1
 BITS_PER_SAMPLE=16
 BYTE_RATE=$(( SAMPLE_RATE * CHANNELS * BITS_PER_SAMPLE / 8 ))
-BLOCK_ALIGN=$(( CHANNELS * BITS_PER_SAMPLE / 8 ))
 DATA_SIZE=$PCM_BYTES
-RIFF_SIZE=$(( DATA_SIZE + 36 ))
 
-# Use python for little-endian header pack — portable across bash versions and no `printf` byte-order surprises.
 python3 - "$OUTPUT" "$PCM_FILE" "$SAMPLE_RATE" "$CHANNELS" "$BITS_PER_SAMPLE" <<'PYEOF'
 import struct
 import sys

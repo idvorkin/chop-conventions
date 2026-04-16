@@ -352,8 +352,27 @@ def main():
 
     batch_duration = round(time.monotonic() - batch_t0, 1)
 
-    with open(batch_path, "w") as f:
-        json.dump(raw_jobs, f, indent=2)
+    # Atomic write: tempfile in same dir + os.replace, so a crash mid-write
+    # leaves the original batch file intact rather than a half-written one.
+    tmp_fd, tmp_path = None, None
+    try:
+        import tempfile
+
+        tmp_fd, tmp_path = tempfile.mkstemp(
+            dir=batch_path.parent, prefix=batch_path.name + ".", suffix=".tmp"
+        )
+        with os.fdopen(tmp_fd, "w") as f:
+            tmp_fd = None  # fdopen took ownership
+            json.dump(raw_jobs, f, indent=2)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp_path, batch_path)
+        tmp_path = None
+    finally:
+        if tmp_fd is not None:
+            os.close(tmp_fd)
+        if tmp_path is not None and os.path.exists(tmp_path):
+            os.unlink(tmp_path)
 
     if failures:
         print(
