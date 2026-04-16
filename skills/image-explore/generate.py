@@ -1,8 +1,11 @@
 #!/usr/bin/env -S uv run --script
 # /// script
-# requires-python = ">=3.10"
+# requires-python = ">=3.13"
 # dependencies = [
 #     "typer>=0.12",
+#     "numpy",
+#     "pillow",
+#     "scipy",
 # ]
 # ///
 # ABOUTME: Wrapper around gemini-image.sh for image generation (single or batch).
@@ -17,6 +20,12 @@
 #
 # directions.json format:
 #   [{"scene": "...", "shirt": "TEXT", "output": "file.webp"}, ...]
+#
+# Numpy/Pillow/Scipy power the --transparent post-strip eval_alpha()
+# pathway (interior holes / residual magenta / edge fringe) and are
+# lazy-imported there. The `uv run --script` shebang auto-installs them;
+# running via plain `python3` works as long as --transparent is off or
+# --no-eval is set.
 
 import json
 import os
@@ -50,6 +59,10 @@ class GenerateConfig:
     ref_image: str | None
     aspect: str
     transparent: bool = False
+    # Layered alpha-mask eval on top of evaluate_strip's alpha-mean signal.
+    # Detects interior holes, residual magenta pockets, and edge fringe.
+    eval_alpha: bool = True
+    eval_strict: bool = False
 
 
 @dataclass
@@ -59,6 +72,21 @@ class GenerationResult:
     error: str | None
     prompt: str
     duration_s: float
+    eval_metrics: dict | None = None
+    eval_warnings: list | None = None
+
+
+# Alpha-mask eval thresholds for eval_alpha(). Tuned conservatively on
+# typical output so clean images don't false-alarm. Exceeding any one
+# triggers a [WARN] on the eval line (and, under --eval-strict, a
+# nonzero exit). These complement evaluate_strip's alpha-mean signal —
+# the mean catches "strip ate the subject" / "nothing stripped"; these
+# catch "Swiss-cheese holes", "trapped magenta pockets", and "halo".
+EVAL_ALPHA_THRESHOLDS = {
+    "interior_hole_px": 200,
+    "residual_magenta_px": 500,
+    "edge_fringe_px": 2000,
+}
 
 
 def resolve_chop_root():
@@ -400,6 +428,95 @@ def _format_eval_card(image_path, metrics, warning):
     return line
 
 
+def eval_alpha(image_path, chroma_rgb=(255, 0, 255), tolerance=20):
+    """Compute alpha-mask quality metrics for a post-chroma RGBA image.
+
+    Detects failure modes orthogonal to evaluate_strip's alpha-mean signal:
+      * interior_hole_px — transparent pixels NOT connected to the image
+        border. These are "eaten" interiors: highlights/glass the flood-fill
+        or fuzzy chroma chewed through and left as holes. On a light preview
+        background these holes read as shading and hide silently — the alpha
+        mask is the only ground truth.
+      * residual_magenta_px — opaque pixels still near the chroma color.
+        Trapped magenta pockets between characters or inside enclosed
+        negative space the flood-fill couldn't reach from the corners.
+      * edge_fringe_px — partial-alpha pixels. Large counts suggest halo.
+
+    Deps (numpy, pillow, scipy) are lazy-imported so callers that pass
+    --no-eval (or don't touch --transparent) never hit an ImportError on
+    a stock python3.
+    """
+    import numpy as np  # noqa: PLC0415 — lazy import, see module header
+    from PIL import Image  # noqa: PLC0415
+    from scipy.ndimage import label  # noqa: PLC0415
+
+    arr = np.asarray(Image.open(image_path).convert("RGBA"))
+    rgb, a = arr[:, :, :3], arr[:, :, 3]
+    opaque = a > 128
+    transparent = a < 16
+
+    # Residual magenta: opaque pixels whose RGB is still within tolerance
+    # of the chroma color. L1 distance on int16 to avoid uint8 overflow.
+    chroma = np.array(chroma_rgb, dtype=np.int16)
+    dist = np.abs(rgb.astype(np.int16) - chroma).sum(axis=2)
+    residual = int((opaque & (dist <= tolerance)).sum())
+
+    # Interior holes: label connected components of transparent pixels,
+    # then subtract every component that touches the image border.
+    # What remains is transparent regions fully enclosed by opaque — the
+    # "Swiss-cheese" damage we care about.
+    labeled, _ = label(transparent)
+    border = set()
+    border.update(labeled[0, :].tolist())
+    border.update(labeled[-1, :].tolist())
+    border.update(labeled[:, 0].tolist())
+    border.update(labeled[:, -1].tolist())
+    border.discard(0)  # 0 is the non-transparent background in the labeling
+    interior = int(transparent.sum() - np.isin(labeled, list(border)).sum())
+
+    # Edge fringe: partial alpha. Some is expected (antialiasing); a lot
+    # suggests the chroma removal left a halo.
+    edge = int(((~opaque) & (~transparent)).sum())
+
+    return {
+        "interior_hole_px": interior,
+        "residual_magenta_px": residual,
+        "edge_fringe_px": edge,
+    }
+
+
+def format_eval_line(image_path, metrics, warnings):
+    """Render the eval_alpha line printed to stderr."""
+    status = f"[WARN: {'; '.join(warnings)}]" if warnings else "[OK]"
+    return (
+        f"[eval] {image_path}: "
+        f"holes={metrics['interior_hole_px']}, "
+        f"residual={metrics['residual_magenta_px']}, "
+        f"fringe={metrics['edge_fringe_px']}   {status}"
+    )
+
+
+def check_eval_thresholds(metrics, thresholds=EVAL_ALPHA_THRESHOLDS):
+    """Return a list of human-readable warnings for tripped thresholds."""
+    warnings = []
+    if metrics["interior_hole_px"] > thresholds["interior_hole_px"]:
+        warnings.append(
+            f"interior damage likely (holes={metrics['interior_hole_px']} "
+            f"> {thresholds['interior_hole_px']}) — check alpha mask"
+        )
+    if metrics["residual_magenta_px"] > thresholds["residual_magenta_px"]:
+        warnings.append(
+            f"residual magenta (residual={metrics['residual_magenta_px']} "
+            f"> {thresholds['residual_magenta_px']}) — trapped pocket"
+        )
+    if metrics["edge_fringe_px"] > thresholds["edge_fringe_px"]:
+        warnings.append(
+            f"edge fringe (fringe={metrics['edge_fringe_px']} "
+            f"> {thresholds['edge_fringe_px']}) — possible halo"
+        )
+    return warnings
+
+
 def generate_one(direction: Direction, config: GenerateConfig) -> GenerationResult:
     """Generate a single image.
 
@@ -451,6 +568,8 @@ def generate_one(direction: Direction, config: GenerateConfig) -> GenerationResu
     if result.stderr:
         print(result.stderr, file=sys.stderr)
 
+    eval_alpha_metrics = None
+    eval_alpha_warnings = None
     if config.transparent:
         print(f"Removing background: {direction.output}", file=sys.stderr)
         success, err = remove_background(direction.output)
@@ -472,12 +591,40 @@ def generate_one(direction: Direction, config: GenerateConfig) -> GenerationResu
             file=sys.stderr,
         )
 
+        # Layered alpha-mask eval — catches interior holes, trapped
+        # magenta pockets, and halo fringe that the alpha-mean signal
+        # above can't detect. Best-effort: missing deps or errors log
+        # and continue rather than failing the generation.
+        if config.eval_alpha:
+            try:
+                eval_alpha_metrics = eval_alpha(direction.output)
+                eval_alpha_warnings = check_eval_thresholds(eval_alpha_metrics)
+                print(
+                    format_eval_line(
+                        direction.output, eval_alpha_metrics, eval_alpha_warnings
+                    ),
+                    file=sys.stderr,
+                )
+            except ImportError as e:
+                print(
+                    f"[eval] {direction.output}: skipped (missing deps: {e}); "
+                    f"run via 'uv run --script' or pass --no-eval",
+                    file=sys.stderr,
+                )
+            except Exception as e:  # noqa: BLE001 — eval is best-effort
+                print(
+                    f"[eval] {direction.output}: skipped (error: {e})",
+                    file=sys.stderr,
+                )
+
     return GenerationResult(
         output=direction.output,
         success=True,
         error=None,
         prompt=full_prompt,
         duration_s=duration_s,
+        eval_metrics=eval_alpha_metrics,
+        eval_warnings=eval_alpha_warnings,
     )
 
 
@@ -505,6 +652,16 @@ def _build_app():
             False,
             help="Generate on magenta chroma-key background, then strip it via ImageMagick edge-connected flood fill from the 4 corners (preserves interior magenta-tinted pixels)",
         ),
+        no_eval: bool = typer.Option(
+            False,
+            "--no-eval",
+            help="Skip the post-chroma alpha-mask eval (interior holes, residual magenta, edge fringe). Needs numpy/pillow/scipy — the uv shebang installs them, but bare python3 callers may need this.",
+        ),
+        eval_strict: bool = typer.Option(
+            False,
+            "--eval-strict",
+            help="Exit 2 if any eval threshold trips (interior holes, residual magenta, edge fringe). Useful for CI / calling agents that want to retry or fail loudly.",
+        ),
     ) -> None:
         """Generate a single raccoon image."""
         chop_root = resolve_chop_root()
@@ -523,6 +680,8 @@ def _build_app():
             ref_image=ref or resolve_ref_image(),
             aspect=aspect,
             transparent=transparent,
+            eval_alpha=not no_eval,
+            eval_strict=eval_strict,
         )
 
         direction = Direction(scene=scene, shirt=shirt, output=output)
@@ -532,6 +691,12 @@ def _build_app():
             raise typer.Exit(1)
         print(result.output)
         print(f"Generated in {result.duration_s}s", file=sys.stderr)
+        if config.eval_strict and result.eval_warnings:
+            print(
+                f"Error: --eval-strict tripped on {result.output}",
+                file=sys.stderr,
+            )
+            raise typer.Exit(2)
 
     @app.command()
     def batch(
@@ -544,6 +709,16 @@ def _build_app():
         transparent: bool = typer.Option(
             False,
             help="Generate on magenta chroma-key background, then strip it via ImageMagick edge-connected flood fill from the 4 corners (preserves interior magenta-tinted pixels)",
+        ),
+        no_eval: bool = typer.Option(
+            False,
+            "--no-eval",
+            help="Skip the post-chroma alpha-mask eval (interior holes, residual magenta, edge fringe). Needs numpy/pillow/scipy — the uv shebang installs them, but bare python3 callers may need this.",
+        ),
+        eval_strict: bool = typer.Option(
+            False,
+            "--eval-strict",
+            help="Exit 2 if any eval threshold trips on any image. Useful for CI / calling agents that want to retry or fail loudly.",
         ),
     ) -> None:
         """Generate images in parallel from a JSON manifest."""
@@ -563,6 +738,8 @@ def _build_app():
             ref_image=ref or resolve_ref_image(),
             aspect=aspect,
             transparent=transparent,
+            eval_alpha=not no_eval,
+            eval_strict=eval_strict,
         )
 
         batch_path = Path(json_file)
@@ -581,6 +758,7 @@ def _build_app():
             f"Generating {len(raw_directions)} images in parallel...", file=sys.stderr
         )
         failures = []
+        eval_tripped = []
 
         # Map output filename -> raw dict for augmenting with debug info
         dir_by_output = {d["output"]: d for d in raw_directions}
@@ -606,8 +784,12 @@ def _build_app():
                 if result.output in dir_by_output:
                     dir_by_output[result.output]["_prompt"] = result.prompt
                     dir_by_output[result.output]["_duration_s"] = result.duration_s
+                    if result.eval_metrics is not None:
+                        dir_by_output[result.output]["_eval"] = result.eval_metrics
                 if result.success:
                     print(result.output)
+                    if result.eval_warnings:
+                        eval_tripped.append(result.output)
                 else:
                     failures.append((result.output, result.error))
                     print(f"FAILED: {result.output} — {result.error}", file=sys.stderr)
@@ -628,6 +810,13 @@ def _build_app():
             f"\nAll {len(raw_directions)} images generated ({batch_duration}s total)",
             file=sys.stderr,
         )
+        if config.eval_strict and eval_tripped:
+            print(
+                f"\nError: --eval-strict tripped on {len(eval_tripped)} image(s): "
+                f"{', '.join(eval_tripped)}",
+                file=sys.stderr,
+            )
+            raise typer.Exit(2)
 
     return app
 
