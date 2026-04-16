@@ -51,14 +51,16 @@ Parent (you)                             Subagent (fresh context)
 4. Build brief (template +
    substitutions)
 5. Agent tool dispatch  ─────────────►   1. cd <worktree>
-                                         2. Read CLAUDE.md / AGENTS.md
+                                         2. Read CLAUDE.md greedily
                                          3. Enumerate skills/
                                          4. Do the task
                                          5. Detect fork vs direct
-                                         6. Commit, push, PR
-                                         7. Reflect on lessons
-6. Receive final message ◄───────────    8. Return PR: / Summary: /
-7. Relay to user                            (optional) Lessons:
+                                         6. Commit code, push, PR
+                                         7. Commit reasoning doc
+                                            separately
+                                         8. Reflect on lessons
+6. Receive final message ◄───────────    9. Return PR: / Summary: /
+7. Relay to user                            Notes: / (optional) Lessons:
 8. Offer lesson follow-up
    (if present)
 ```
@@ -292,13 +294,17 @@ The subagent returns a final message with:
 
 1. **`PR:` URL** — on its own line
 2. **`Summary:` 3–5 bullets** — what changed and why
-3. **`Lessons:` block** (optional) — draft CLAUDE.md insertions the
+3. **`Notes:` pointer** — `<hostname>:/tmp/agent-notes/YYYY-MM-DD-<slug>.md`
+   on the parent's machine. Same string appears as a `Reasoning:`
+   trailer in the work commit. Required.
+4. **`Lessons:` block** (optional) — draft CLAUDE.md insertions the
    subagent thinks are worth capturing
 
 ### Happy path
 
-Relay all three sections verbatim to the user. Add a note with the
-worktree path and the cleanup command:
+Relay the sections the subagent returned verbatim to the user
+(`PR:`, `Summary:`, `Notes:`, and `Lessons:` if present). Add a
+note with the worktree path and the cleanup command:
 
 > "Worktree preserved at `<path>`. Delete with `git worktree remove <path>` when you're done iterating on it."
 
@@ -321,15 +327,17 @@ Rejected lessons are NOT a failure.
 
 ### If the subagent's final message doesn't match the contract
 
-Missing `PR:` line → treat as failure. Show the user the subagent's
-last message and ask:
+Missing `PR:` line OR missing `Notes:` line → treat as failure.
+Show the user the subagent's last message and ask:
 
 - **Retry** with the same brief?
 - **Abandon** — delete the worktree and stop?
 - **Take over in-session** — you (parent) `cd` into the worktree and
   continue the work manually?
 
-No automatic retry loop.
+If the code pushed but `/tmp/agent-notes/<file>` is missing or
+unwritten, re-write the file locally and amend the `Reasoning:`
+trailer into the commit message. No auto-retry.
 
 ## Fork workflow detection (reference)
 
@@ -350,6 +358,42 @@ then classifies into:
   `--repo <parent-from-gh-json>`
 - **Case D** — one remote, canonical origin NOT matching auth:
   look for sibling fork remote; if none, STOP
+
+## Reasoning audit trail (local-only, referenced from commit)
+
+Every delegated run writes `/tmp/agent-notes/YYYY-MM-DD-<slug>.md` on
+the **parent's machine**. The file stays local — it is NOT committed
+to the target repo. The commit that ships the work includes a
+`Reasoning:` trailer pointing back to it:
+
+```text
+Reasoning: <hostname>:/tmp/agent-notes/YYYY-MM-DD-<slug>.md
+```
+
+`<hostname>` comes from `hostname` on the parent's machine. `<slug>`
+strips the `delegated/` prefix from the branch name. Future-Igor (or
+future-Claude) can `ssh <hostname>` and `cat` the file to recover
+context, without the audit trail polluting public repo history or
+leaking intent text.
+
+Six level-2 sections in the file, in order:
+
+1. User request — brief intent summary plus a pointer to the source
+   (session jsonl path, Telegram msg id, PR review comment).
+   Verbatim ONLY for chore-style asks with no private content.
+2. Parent's interpretation — scope decision + why delegated.
+3. Subagent's plan — pre-execution, unchanged after the fact.
+4. Decisions — deliberate forks taken during execution.
+5. Outcomes — commit SHAs, files touched, verification run, PR URL.
+6. Deferred — what was explicitly NOT done.
+
+**Ephemerality is a feature.** `/tmp/` survives for the session (and
+typically until reboot); beyond that it may disappear. The whole point
+is that reasoning docs are working-memory artifacts, not repo history.
+If a specific reasoning doc matters beyond a session, upgrade it — copy
+to `~/agent-notes/` or into a longer-lived location, on purpose.
+
+`brief-template.md` carries the authoritative spec the subagent follows.
 
 ## Integration with learn-from-session
 
@@ -385,6 +429,18 @@ These apply to both parent and subagent:
   message only; the user owns the approval gate.
 - **No `cd` in the parent.** Parent always uses `git -C <target>`.
   Only the subagent `cd`s, into the worktree, as its first action.
+  Take-over recovery may enter the worktree briefly and `cd -` out.
+- **No skipping the target's root `CLAUDE.md` read** in the subagent.
+  Missing file means STOP and ask the user, not proceed on defaults.
+- **No committing the reasoning doc.** It lives on the parent's
+  machine at `/tmp/agent-notes/`; the `Reasoning:` trailer in the
+  commit message is the only durable breadcrumb.
+- **When fixing PR review comments**, commit the fix, reply to the
+  thread with the commit SHA + a short how/why, then resolve the
+  thread.
+- **When updating this skill (or any skill in this repo), code-review
+  your own change before opening the PR.** Skill files are contracts —
+  drift is invisible until it bites.
 
 ## Failure handling
 
@@ -403,7 +459,8 @@ These apply to both parent and subagent:
 | Failure                                | Response                                       |
 | -------------------------------------- | ---------------------------------------------- |
 | Final message has no `PR:` line        | Escalate to user (retry / abandon / take over) |
-| Subagent exits without a final message | Same — treat as failure                        |
+| Final message has no `Notes:` line     | Escalate to user (retry / abandon / take over) |
+| Subagent exits without a final message | Treat as failure; escalate                     |
 | Rejected lessons                       | NOT a failure — normal terminal state          |
 
 ## Common mistakes
@@ -479,6 +536,8 @@ the brief uses plain-text formatting for all embedded structure
 - The target slug is non-ASCII and you're about to use it unfiltered
 - You're about to dispatch a subagent to the same repo without first
   asking worktree-or-branch (see Phase 1c-bis)
+- The subagent's final message has a `PR:` line but no `Notes:`
+  line — treat as contract failure
 
 ## Related
 
