@@ -115,6 +115,10 @@ Use `generate.py` from the `image-explore` skill. It handles env loading (`~/.en
 
 5. If generation fails, report the error and ask if the user wants to retry with a modified prompt or skip.
 
+**Verifying transparent output.** Don't judge chroma-key quality by compositing on a solid background — interior holes read as the background color. Extract the alpha channel as a mask: `magick out.webp -alpha extract mask.png`. A clean mask is a solid silhouette; swiss-cheese holes mean the chroma ate interior color data.
+
+**Never chain chroma passes on different magenta tones** (e.g. a second pass on `#E040E0` to catch pink shadow remnants). It eats magenta-tinted highlights inside fluffy characters. If the first pass has fringe, regenerate the source with a stricter prompt (`no shadow on ground, no gradient, no environment`) rather than filtering harder.
+
 ### Phase 5: Insert References (Optional)
 
 Ask the user if they want the images inserted into the post. If yes:
