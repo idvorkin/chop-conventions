@@ -22,50 +22,59 @@ voice-in / voice-out pipeline.
 Parse the user's input for:
 
 - **Input**: Audio file path (`--input`), directory of audio files
-  (`--batch-dir`), or comma-separated list (`--batch-files`). Accepted
+  (`--batch-dir`), or space-separated list (`--batch-files`). Accepted
   formats: WAV, OGG, OGA, MP3, M4A, FLAC, AAC, OPUS — anything ffmpeg
-  can read. Non-WAV inputs are auto-transcoded to 16 kHz mono WAV
-  (Parakeet's training sample rate) in a temp dir.
+  can read. Non-WAV (or non-16kHz-mono) inputs are auto-transcoded to
+  16 kHz mono 16-bit PCM WAV (Parakeet's training sample rate) in a
+  temp dir; already-16kHz-mono WAV inputs skip the transcode.
 - **`--output path`**: Single-mode transcript destination. Defaults to
   `<input>.txt` (or `.json`) alongside the input.
 - **`--output-dir DIR`**: Batch-mode transcript destination dir.
 - **`--json`**: Emit `{text, duration_s, model, elapsed_s}` JSON
   instead of plain text.
-- **`--keep-wav`** (bash only): Retain the intermediate transcoded WAV
-  for debugging.
-- **`--max-workers N`** (Python only): Parallel batch workers. Default
-  **1** (serial). Aggregate CPU = `max_workers × per-process thread cap (2)`,
-  so `--max-workers=2` already drives 4 threads and often runs *slower per
-  file* than serial on consumer CPUs (measured 2026-04-16: 3 files at
-  `--max-workers=2` took 114s vs ~60s projected serial). Only raise on a
-  box with spare cores where wall-clock matters more than per-file latency.
+- **`--keep-wav`**: Retain the intermediate transcoded WAV for
+  debugging. Has no effect when the input was already 16kHz mono.
+- **`--model NAME`**: Override the default
+  `nemo-parakeet-tdt-0.6b-v2` onnx-asr model.
+- **`--max-workers N`**: Parallel batch workers. Default **1**
+  (serial). Aggregate CPU = `max_workers × per-process thread cap (2)`,
+  so `--max-workers=2` already drives 4 threads and often runs *slower
+  per file* than serial on consumer CPUs (measured 2026-04-16: 3 files
+  at `--max-workers=2` took 114s vs ~60s projected serial). Only raise
+  on a box with spare cores where wall-clock matters more than per-file
+  latency.
 
 ## Configuration
 
 - **Auth**: None. This is the local path.
 - **Model cache**: `~/.cache/huggingface/` — first invocation downloads
   ~2 GB. Subsequent runs are fully offline and fast.
-- **Low-level script**: `parakeet-stt.sh` handles single-file ffmpeg
-  transcode + niced ASR invocation.
-- **Generation wrapper**: `generate-stt.py` handles single/batch
-  dispatch via `ThreadPoolExecutor`.
+- **Canonical script**: `parakeet-stt.py` — single Python entry point
+  handling transcode detection, ffmpeg invocation, onnx-asr dispatch,
+  and parallel batch via `ThreadPoolExecutor`. Uses PEP-723 inline
+  metadata with stdlib only (`subprocess`, `pathlib`, `wave`, `json`,
+  `argparse`, `concurrent.futures`), launched via `uv run --script`.
 
 ## Model & Pipeline
 
 - Model: `nemo-parakeet-tdt-0.6b-v2` (600M parameters; NVIDIA NeMo ASR)
 - Backend: `uvx --with onnxruntime --with huggingface_hub onnx-asr`
-- Audio contract: 16 kHz mono PCM\_S16LE WAV — the bash helper
-  auto-transcodes anything else via `ffmpeg -ar 16000 -ac 1`.
+- Audio contract: 16 kHz mono PCM\_S16LE WAV — the script detects
+  already-conforming WAVs via the stdlib `wave` module and skips the
+  transcode; otherwise it invokes `ffmpeg -ar 16000 -ac 1 -acodec
+  pcm_s16le`.
 
 ## Mandatory Nice-Wrap
 
-**All Parakeet + ffmpeg invocations are wrapped** with:
+**Every Parakeet + ffmpeg invocation is wrapped** with:
 
 ```text
 nice -n 19 ionice -c 3 env OMP_NUM_THREADS=2 ORT_NUM_THREADS=2 MKL_NUM_THREADS=2 <cmd>
 ```
 
-This is baked into `parakeet-stt.sh` so callers can't forget. Rationale:
+The prefix is baked into a single `_niced_run()` helper in
+`parakeet-stt.py`; there is no code path that invokes ffmpeg or
+onnx-asr without it. Rationale:
 
 - `nice` alone does NOT cap CPU; it only yields on contention. On an
   idle machine, onnxruntime will happily saturate all 8 cores.
@@ -75,19 +84,22 @@ This is baked into `parakeet-stt.sh` so callers can't forget. Rationale:
   fastembed without the cap.)
 - Leaves 6 cores for interactive work on dev VMs.
 
+Verify on a live run with `awk '{print $19}' /proc/<pid>/stat` (nice
+level) and `ionice -p <pid>` (IO class `idle`).
+
 ## Usage
 
 ### Single file
 
 ```bash
-GEN_STT="$(git -C ~/gits/chop-conventions rev-parse --show-toplevel)/skills/gen-stt/generate-stt.py"
-python3 "$GEN_STT" --input /tmp/clip.ogg --output /tmp/transcript.txt
+GEN_STT="$(git -C ~/gits/chop-conventions rev-parse --show-toplevel)/skills/gen-stt/parakeet-stt.py"
+"$GEN_STT" --input /tmp/clip.ogg --output /tmp/transcript.txt
 ```
 
 ### Single file — JSON output
 
 ```bash
-python3 "$GEN_STT" --input /tmp/clip.wav --json --output /tmp/transcript.json
+"$GEN_STT" --input /tmp/clip.wav --json --output /tmp/transcript.json
 ```
 
 Produces:
@@ -104,7 +116,7 @@ Produces:
 ### Batch (parallel) — directory
 
 ```bash
-python3 "$GEN_STT" --batch-dir /tmp/voice-memos --output-dir /tmp/transcripts
+"$GEN_STT" --batch-dir /tmp/voice-memos --output-dir /tmp/transcripts
 ```
 
 Every audio file under `/tmp/voice-memos` gets a `<stem>.txt` in
@@ -115,15 +127,7 @@ writes `<stem>.json` and emits a summary JSON on stdout. Without
 ### Batch — explicit file list
 
 ```bash
-python3 "$GEN_STT" --batch-files /tmp/a.ogg,/tmp/b.m4a,/tmp/c.wav --json
-```
-
-### Bash-only (no Python wrapper)
-
-```bash
-bash ~/gits/chop-conventions/skills/gen-stt/parakeet-stt.sh /tmp/clip.ogg --output /tmp/out.txt
-bash .../parakeet-stt.sh /tmp/clip.wav --json > /tmp/out.json
-bash .../parakeet-stt.sh /tmp/clip.ogg --keep-wav   # preserve the transcoded 16kHz WAV
+"$GEN_STT" --batch-files /tmp/a.ogg /tmp/b.m4a /tmp/c.wav --json
 ```
 
 ## Round-Trip Integration Test
@@ -133,19 +137,19 @@ a tight end-to-end test:
 
 ```bash
 GEN_TTS=~/gits/chop-conventions/skills/gen-tts/generate-tts.py
-GEN_STT=~/gits/chop-conventions/skills/gen-stt/generate-stt.py
+GEN_STT=~/gits/chop-conventions/skills/gen-stt/parakeet-stt.py
 
-python3 "$GEN_TTS" --text "Hello from Larry. This is the voice pipeline test." --output /tmp/roundtrip.wav
-python3 "$GEN_STT" --input /tmp/roundtrip.wav --output /tmp/roundtrip.txt
+"$GEN_TTS" --text "Hello from Larry. This is the voice pipeline test." --output /tmp/roundtrip.wav
+"$GEN_STT" --input /tmp/roundtrip.wav --output /tmp/roundtrip.txt
 cat /tmp/roundtrip.txt
 # → "Hello from Larry. This is the voice pipeline test."
 ```
 
 ## Error Handling
 
-- **Missing ffmpeg**: Required for any non-WAV input. The bash helper
-  fails fast with a clear message. `brew install ffmpeg` /
-  `apt install ffmpeg`.
+- **Missing ffmpeg**: Required for any non-16kHz-mono input. The script
+  surfaces ffmpeg's stderr on failure. Install via `brew install
+  ffmpeg` or `apt install ffmpeg`.
 - **Missing uvx**: Required to fetch `onnx-asr`. Install via
   `brew install uv` or `pip install uv`.
 - **First-run download delay**: The initial Parakeet model pull from
@@ -154,7 +158,8 @@ cat /tmp/roundtrip.txt
   on a fresh machine.
 - **Empty transcript**: If `onnx-asr` returns nothing (silent audio,
   unsupported encoding that ffmpeg salvaged into unusable WAV), the
-  bash helper exits 1 rather than writing an empty file.
+  script raises with the last 2KB of onnx-asr stderr for diagnosis
+  rather than writing an empty file.
 - **CPU saturation**: Default `--max-workers=1` (serial). Raising it is
   rarely a win: the per-process thread cap stays at 2, so aggregate CPU is
   `max_workers × 2`, and onnxruntime cold-start overhead per worker means
@@ -170,4 +175,4 @@ cat /tmp/roundtrip.txt
   assets dir.
 - Parakeet is English-only. For multilingual audio, prefer Whisper
   (available via the same `onnx-asr` binary — swap `--model
-  whisper-base` on the bash helper).
+  whisper-base`).
