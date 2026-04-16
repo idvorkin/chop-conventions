@@ -1,0 +1,27 @@
+# EXPLAINER tasks
+
+default:
+    @just --list
+
+# Serve index.html locally for preview (port 8000)
+serve:
+    python3 -m http.server 8000
+
+# Re-render all PlantUML diagrams/*.puml -> diagrams/*.svg
+build-diagrams:
+    plantuml -tsvg diagrams/*.puml
+
+# Regenerate transcripts/*.txt from a fresh scenario run (strips ANSI codes)
+rebuild-transcripts:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    mkdir -p transcripts
+    for s in scripts/[0-9]*.sh; do
+        name=$(basename "$s" .sh)
+        echo "--- $name ---"
+        "$s" 2>&1 | sed -r 's/\x1b\[[0-9;]*[mGKH]//g' > "transcripts/$name.txt"
+    done
+
+# Open the deployed Pages URL in a browser
+open-live:
+    open https://OWNER.github.io/REPO/
