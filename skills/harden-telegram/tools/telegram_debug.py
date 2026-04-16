@@ -1,18 +1,27 @@
-#!/usr/bin/env python3
+#!/usr/bin/env -S uv run --script
+# /// script
+# requires-python = ">=3.10"
+# dependencies = [
+#     "typer>=0.12",
+# ]
+# ///
 """
 Telegram MCP diagnostic tool — gathers all logs and system state at once.
 
-Usage:
-    python3 telegram_debug.py                # Full diagnostic report
-    python3 telegram_debug.py --json         # JSON output (pipe to jq)
-    python3 telegram_debug.py --tail 50      # More log lines (default 20)
-    python3 telegram_debug.py --json --tail 100 | jq '.server_log[-5:]'
-    python3 telegram_debug.py --doctor       # Validate two-process chain end-to-end
-    python3 telegram_debug.py --send-reply "hi" --reply-to 42 --chat-id 123  # Threaded reply (prints new message_id)
-    python3 telegram_debug.py --react "\U0001f44d" --message-id 42 --chat-id 123  # Set reaction
+Default mode (no subcommand): full human-readable diagnostic report.
+    telegram_debug.py                                  # Full report
+    telegram_debug.py --json                           # ...as JSON (pipe to jq)
+    telegram_debug.py --tail 50                        # More log lines (default 20)
+
+Subcommands (run `telegram_debug.py --help` for the current list):
+    doctor                                             # Validate two-process chain (exit 1 on failure)
+    paths                                              # Path inventory with existence check
+    direct-send "hi" [--chat-id N]                     # EMERGENCY Bot API send (bypasses MCP)
+    send-reply "hi" --reply-to N --chat-id N           # Threaded reply
+    react 👍 --message-id N --chat-id N                 # Set reaction
+    undelivered                                        # Undelivered inbound rows as JSON
 """
 
-import argparse
 import hashlib
 import json
 import os
@@ -22,6 +31,11 @@ import subprocess
 import sys
 import time
 from pathlib import Path
+
+# `typer` is imported lazily inside the CLI entry-point so that tests and
+# other importers (system Python, pre-commit hooks) don't need it on the
+# module path. Only `python3 telegram_debug.py <subcommand>` needs it, and
+# the PEP 723 shebang (`uv run --script`) provides it on that path.
 
 STATE_DIR = Path(os.environ.get("HOME", "/tmp")) / ".claude" / "channels" / "telegram"
 PLUGIN_DIR = (
@@ -940,7 +954,7 @@ def _find_plugin_server_ts() -> tuple[Path, str | None] | None:
     None if the file exists but can't be read (permissions, race with
     plugin update, etc.) — callers should handle the (path, None) case.
 
-    Shared between the deploy check and the --paths inventory so both
+    Shared between the deploy check and the `paths` inventory so both
     agree on which file is the canonical deploy target.
     """
     try:
@@ -1189,7 +1203,7 @@ def run_paths() -> int:
     rotting as paths moved (e.g. the STATE_DIR→BASE_DIR migration in
     2026-04 made the old table actively wrong). Putting it in code means
     the single source of truth is the constants at the top of this file
-    and the --paths output is always correct.
+    and the `paths` subcommand output is always correct.
 
     Skill author's rule: if a diagnostic is "here's a list of files and
     whether they exist," it goes here, not in prose.
@@ -1700,119 +1714,98 @@ def set_reaction(emoji: str, chat_id: str, message_id: int) -> int:
     return 0
 
 
-def main():
-    parser = argparse.ArgumentParser(description="Telegram MCP diagnostic tool")
-    parser.add_argument("--json", action="store_true", help="JSON output (pipe to jq)")
-    parser.add_argument(
-        "--tail",
-        type=int,
-        default=20,
-        help="Number of log lines/messages to show (default: 20)",
-    )
-    parser.add_argument(
-        "--doctor",
-        action="store_true",
-        help="Validate the two-process chain end-to-end (exit 1 on failure)",
-    )
-    parser.add_argument(
-        "--paths",
-        action="store_true",
-        help="Print every file the two-process chain cares about, with existence check",
-    )
-    parser.add_argument(
-        "--undelivered",
-        action="store_true",
-        help="Print undelivered inbound rows from inbound.db as JSON. Used for emergency-comms-mode polling when MCP bridge is dead.",
-    )
-    parser.add_argument(
-        "--direct-send",
-        "--send",
-        dest="direct_send",
-        metavar="TEXT",
-        help="EMERGENCY DIRECT-SEND via Telegram Bot API — bypasses MCP entirely. Use when server.ts is down and you still need to reach Igor. Message is auto-tagged with [direct-send] so it's visually distinct in Telegram. Runs alone; ignores --doctor/--paths if combined.",
-    )
-    parser.add_argument(
-        "--send-reply",
-        dest="send_reply",
-        metavar="TEXT",
-        help="Post a threaded reply via Bot API. Partners with --reply-to and --chat-id (both required). Prints the new message_id on success. Unlike --direct-send, output is NOT tagged — threads as a normal bot reply.",
-    )
-    parser.add_argument(
-        "--reply-to",
-        dest="reply_to",
-        type=int,
-        help="Message_id to thread under when using --send-reply (required).",
-    )
-    parser.add_argument(
-        "--react",
-        dest="react",
-        metavar="EMOJI",
-        help="Set an emoji reaction on a Telegram message via Bot API setMessageReaction. Partners with --message-id and --chat-id (both required). Emoji must be in Telegram's reaction whitelist.",
-    )
-    parser.add_argument(
-        "--message-id",
-        dest="message_id",
-        type=int,
-        help="Message_id to react to when using --react (required).",
-    )
-    parser.add_argument(
-        "--chat-id",
-        help="Target chat_id for --direct-send / --send-reply / --react. Defaults to the last inbound chat_id from inbound.db for --direct-send; required explicitly for --send-reply and --react.",
-    )
-    args = parser.parse_args()
+def _build_app():
+    """Wire up the Typer app. Called only when executed as a script so
+    tests and module-importers don't need `typer` on their PYTHONPATH."""
+    import typer
 
-    # Enforce top-level action exclusivity. We do this manually (rather than
-    # via argparse's add_mutually_exclusive_group) so the error message names
-    # every action in one place and keeps each flag a simple value flag.
-    actions = {
-        "--doctor": args.doctor,
-        "--paths": args.paths,
-        "--direct-send": args.direct_send is not None,
-        "--send-reply": args.send_reply is not None,
-        "--undelivered": args.undelivered,
-        "--react": args.react is not None,
-    }
-    active = [name for name, on in actions.items() if on]
-    if len(active) > 1:
-        parser.error(f"only one top-level action allowed; got {', '.join(active)}")
+    app = typer.Typer(
+        add_completion=False,
+        help="Telegram MCP diagnostic tool — gathers logs, system state, and runs the doctor.",
+        no_args_is_help=False,
+    )
 
-    if args.direct_send is not None:
-        sys.exit(send_direct(args.direct_send, chat_id=args.chat_id))
+    @app.callback(invoke_without_command=True)
+    def root(
+        ctx: typer.Context,
+        json_out: bool = typer.Option(False, "--json", help="JSON output (pipe to jq)."),
+        tail: int = typer.Option(20, "--tail", help="Number of log lines/messages to show."),
+    ) -> None:
+        """Run the full diagnostic report when no subcommand is given."""
+        if ctx.invoked_subcommand is not None:
+            return
+        diag = full_diagnostic(tail=tail)
+        if json_out:
+            print(json.dumps(diag, indent=2, default=str))
+        else:
+            print_report(diag)
 
-    if args.send_reply is not None:
-        if args.reply_to is None:
-            parser.error("--send-reply requires --reply-to <message-id>")
-        if not args.chat_id:
-            parser.error("--send-reply requires --chat-id <chat-id>")
-        sys.exit(
-            send_reply(args.send_reply, chat_id=args.chat_id, reply_to=args.reply_to)
-        )
+    @app.command()
+    def doctor() -> None:
+        """Validate the two-process chain end-to-end (exit 1 on failure)."""
+        raise typer.Exit(run_doctor())
 
-    if args.undelivered:
-        sys.exit(show_undelivered())
+    @app.command()
+    def paths() -> None:
+        """Print every file the two-process chain cares about, with existence check."""
+        raise typer.Exit(run_paths())
 
-    if args.react is not None:
-        if args.message_id is None:
-            parser.error("--react requires --message-id <message-id>")
-        if not args.chat_id:
-            parser.error("--react requires --chat-id <chat-id>")
-        sys.exit(
-            set_reaction(args.react, chat_id=args.chat_id, message_id=args.message_id)
-        )
+    @app.command("direct-send")
+    def direct_send(
+        text: str = typer.Argument(
+            ..., help=r"Message body; auto-prefixed with \[direct-send] in Telegram."
+        ),
+        chat_id: str | None = typer.Option(
+            None,
+            "--chat-id",
+            help="Target chat_id. Defaults to the last inbound chat_id from inbound.db.",
+        ),
+    ) -> None:
+        """EMERGENCY DIRECT-SEND via Telegram Bot API — bypasses MCP entirely.
 
-    if args.doctor:
-        sys.exit(run_doctor())
+        Use when server.ts is down and you still need to reach Igor.
+        """
+        raise typer.Exit(send_direct(text, chat_id=chat_id))
 
-    if args.paths:
-        sys.exit(run_paths())
+    @app.command("send-reply")
+    def send_reply_cmd(
+        text: str = typer.Argument(
+            ..., help="Reply body (NOT auto-prefixed — threads as a normal bot reply)."
+        ),
+        reply_to: int = typer.Option(
+            ..., "--reply-to", help="Message_id to thread under."
+        ),
+        chat_id: str = typer.Option(..., "--chat-id", help="Target chat_id."),
+    ) -> None:
+        """Post a threaded reply via Bot API. Prints the new message_id on success."""
+        raise typer.Exit(send_reply(text, chat_id=chat_id, reply_to=reply_to))
 
-    diag = full_diagnostic(tail=args.tail)
+    @app.command()
+    def react(
+        emoji: str = typer.Argument(
+            ..., help="Emoji — must be in Telegram's reaction whitelist."
+        ),
+        message_id: int = typer.Option(
+            ..., "--message-id", help="Message_id to react to."
+        ),
+        chat_id: str = typer.Option(..., "--chat-id", help="Target chat_id."),
+    ) -> None:
+        """Set a single-emoji reaction via Bot API setMessageReaction."""
+        raise typer.Exit(set_reaction(emoji, chat_id=chat_id, message_id=message_id))
 
-    if args.json:
-        print(json.dumps(diag, indent=2, default=str))
-    else:
-        print_report(diag)
+    @app.command()
+    def undelivered() -> None:
+        """Print undelivered inbound rows from inbound.db as JSON.
+
+        Used by emergency-comms-mode polling when the MCP bridge is dead —
+        surfaces messages that telegram_bot.py captured but server.ts hasn't
+        delivered. Does NOT mark rows delivered (the bridge handles that on
+        reconnect; duplicates are harmless).
+        """
+        raise typer.Exit(show_undelivered())
+
+    return app
 
 
 if __name__ == "__main__":
-    main()
+    _build_app()()
