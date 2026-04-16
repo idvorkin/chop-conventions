@@ -41,12 +41,17 @@ assumes you are inside that worktree.
 
 # Target repo conventions
 
-Read the following files in order (skip any that don't exist). Do NOT
-read them into context greedily — read only enough to understand the
-conventions, then stop.
+## Read target CLAUDE.md — greedily, before anything else
 
-- CLAUDE.md (root first, then any nested — find them with
-  `find . -name CLAUDE.md -not -path './.worktrees/*'`)
+Full file, every pointer it follows, all transitively. Do this after
+`cd <WORKTREE_PATH>` and before any code change. If root `CLAUDE.md`
+is missing, stop and ask.
+
+Then enumerate the rest (skip any that don't exist):
+
+- Nested `CLAUDE.md` files under subdirectories — find them with
+  `find . -name CLAUDE.md -not -path './.worktrees/*'` and read any
+  whose directory is on the path of files you plan to touch
 - AGENTS.md
 - justfile, Makefile, package.json (scripts section only — use
   `jq .scripts package.json` to avoid reading the whole file)
@@ -123,6 +128,43 @@ Co-Authored-By: Claude <noreply@anthropic.com>
 unless the target repo's CLAUDE.md specifies a different trailer, in
 which case repo convention wins.
 
+# Reasoning audit trail (mandatory, local only)
+
+Write `/tmp/agent-notes/YYYY-MM-DD-<slug>.md` on the **parent's
+machine** — NOT inside the worktree, NOT committed to the target
+repo. `<slug>` strips `delegated/` from the branch name. Create
+the `/tmp/agent-notes/` directory if missing.
+
+Include the file pointer as a **commit trailer** on the code commit:
+
+```text
+Reasoning: <hostname>:/tmp/agent-notes/YYYY-MM-DD-<slug>.md
+```
+
+Use `hostname` to get `<hostname>`. The trailer is the only durable
+record — the `/tmp/` file is ephemeral (survives the session, may
+disappear after reboot). That's intentional: reasoning is
+working-memory, not repo history.
+
+Six level-2 sections in the file, in order:
+
+1. `## User request` — brief intent summary in your own words.
+   Plus a pointer to the source (parent session jsonl path,
+   Telegram msg id in inbound.db, PR review comment). Verbatim
+   quotes are fine here — the file lives on Igor's local box, not
+   a public repo.
+2. `## Parent's interpretation` — scope decision + why delegated.
+   Pull from the `# Task` section above.
+3. `## Subagent's plan` — pre-execution. Written before touching
+   code, left unchanged even if the plan turned out wrong.
+4. `## Decisions` — deliberate forks in the road during execution.
+5. `## Outcomes` — commit SHAs, files touched, verification run
+   (or "pre-commit hooks passed; no runtime surface" for docs-only),
+   PR URL.
+6. `## Deferred items` — what was explicitly NOT done and why.
+
+Lessons go in the final message, NOT the reasoning doc.
+
 # Lessons reflection (run after PR is open, before writing final message)
 
 After your PR is open, reflect on your own work against these prompts
@@ -161,9 +203,14 @@ Your final message MUST contain, in this order:
 
 1. PR URL on its own line, prefixed with "PR: "
 2. 3-5 bullet summary of what changed and why, prefixed with "Summary:"
-3. Optional Lessons block if your reflection surfaced durable insights.
+3. Reasoning pointer on its own line, prefixed with "Notes: " — the
+   `<hostname>:/tmp/agent-notes/YYYY-MM-DD-<slug>.md` pointer that
+   also appears as the `Reasoning:` trailer on the work commit.
+   (This line is mandatory — if it's missing, the parent treats
+   the run as contract-breaking.)
+4. Optional Lessons block if your reflection surfaced durable insights.
    Omit if nothing surfaced.
-4. Nothing else. No preamble, no "I'll now...", no sign-off.
+5. Nothing else. No preamble, no "I'll now...", no sign-off.
 
 Lessons block format (when present): start with the literal line
 "Lessons:" on its own. For each lesson, write — as plain text, not a
@@ -188,6 +235,10 @@ separated by a blank line.
 - No `gh pr merge` — opening the PR is the terminal action
 - No committing CLAUDE.md edits derived from Lessons reflection to
   the work PR
+- No squashing the reasoning doc commit into a code commit, no
+  amending it in. It ships as its own commit in the same PR.
+- No skipping the root CLAUDE.md read at the top of this brief.
+  Missing CLAUDE.md means STOP and ask; it does not mean proceed.
 
 # Historical context (escape hatch)
 
