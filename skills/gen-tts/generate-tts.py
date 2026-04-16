@@ -35,6 +35,7 @@ class TTSJob:
     text: str
     output: str
     voice: str
+    style_prompt: str | None = None  # Director's-notes prefix; see resolve_style()
 
 
 @dataclass
@@ -105,6 +106,47 @@ def resolve_voice_preset(skill_dir: Path, voice_arg: str | None) -> str:
     return voice_arg
 
 
+def resolve_style(
+    skill_dir: Path,
+    style_prompt: str | None,
+    style_preset: str | None,
+    style_file: str | None,
+) -> str | None:
+    """Resolve a style directive (director's-notes prefix) from CLI args.
+
+    Precedence (first non-None wins): --style-prompt > --style-preset > --style-file.
+    --style-preset NAME looks up voices/<NAME>.txt and returns its non-comment
+    body as a single paragraph. This is how multi-line preset files like
+    voices/freud.txt and voices/soprano.txt ship — they're style directives,
+    not Gemini voice IDs.
+    """
+    if style_prompt:
+        return style_prompt
+    if style_preset:
+        preset_path = skill_dir / "voices" / f"{style_preset}.txt"
+        if not preset_path.exists():
+            raise FileNotFoundError(f"Style preset not found: {preset_path}")
+        return _read_style_body(preset_path)
+    if style_file:
+        path = Path(style_file).expanduser()
+        if not path.exists():
+            raise FileNotFoundError(f"Style file not found: {path}")
+        return _read_style_body(path)
+    return None
+
+
+def _read_style_body(path: Path) -> str:
+    """Return the file body with '#' comment lines and blank lines stripped,
+    collapsed to a single space-separated paragraph."""
+    body_lines: list[str] = []
+    for line in path.read_text().splitlines():
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#"):
+            continue
+        body_lines.append(stripped)
+    return " ".join(body_lines)
+
+
 def generate_one(job: TTSJob, gemini_script: str) -> TTSResult:
     """Generate a single audio file via the bash helper."""
     cmd = [
@@ -116,8 +158,11 @@ def generate_one(job: TTSJob, gemini_script: str) -> TTSResult:
         "--voice",
         job.voice,
     ]
+    if job.style_prompt:
+        cmd.extend(["--style-prompt", job.style_prompt])
 
-    print(f"Generating: {job.output} (voice={job.voice})", file=sys.stderr)
+    style_tag = " +style" if job.style_prompt else ""
+    print(f"Generating: {job.output} (voice={job.voice}{style_tag})", file=sys.stderr)
     t0 = time.monotonic()
     result = subprocess.run(cmd, capture_output=True, text=True)
     duration_s = round(time.monotonic() - t0, 1)
@@ -160,7 +205,22 @@ def main():
     parser.add_argument(
         "--voice",
         default=None,
-        help="Voice preset name (resolves voices/<name>.txt) or literal Gemini voice (e.g. Kore, Puck, Charon). Default: read tts-voice.txt",
+        help="Voice preset name (resolves voices/<name>.txt single-line) or literal Gemini voice (e.g. Kore, Puck, Charon). Default: read tts-voice.txt",
+    )
+    parser.add_argument(
+        "--style-prompt",
+        default=None,
+        help="Director's-notes style prefix prepended to the text (e.g. 'Speak in a warm Newcastle accent.')",
+    )
+    parser.add_argument(
+        "--style-preset",
+        default=None,
+        help="Name of a multi-line style file under voices/<name>.txt (e.g. freud, soprano). Mutually exclusive with --style-prompt / --style-file",
+    )
+    parser.add_argument(
+        "--style-file",
+        default=None,
+        help="Path to a multi-line style-directive file (comment lines stripped). Mutually exclusive with --style-prompt / --style-preset",
     )
     parser.add_argument(
         "--max-workers",
@@ -182,6 +242,12 @@ def main():
     if args.text and args.text_file:
         parser.error("Use either --text or --text-file, not both")
 
+    style_flags = [args.style_prompt, args.style_preset, args.style_file]
+    if sum(1 for s in style_flags if s) > 1:
+        parser.error(
+            "Pass at most one of --style-prompt / --style-preset / --style-file"
+        )
+
     chop_root = resolve_chop_root()
     skill_dir = chop_root / "skills" / "gen-tts"
     gemini_script = str(skill_dir / "gemini-tts.sh")
@@ -201,7 +267,16 @@ def main():
         else:
             text = args.text
         voice = resolve_voice_preset(skill_dir, args.voice)
-        job = TTSJob(text=text, output=args.output, voice=voice)
+        try:
+            style_prompt = resolve_style(
+                skill_dir, args.style_prompt, args.style_preset, args.style_file
+            )
+        except FileNotFoundError as e:
+            print(f"Error: {e}", file=sys.stderr)
+            sys.exit(2)
+        job = TTSJob(
+            text=text, output=args.output, voice=voice, style_prompt=style_prompt
+        )
         result = generate_one(job, gemini_script)
         if not result.success:
             print(f"Error: {result.error}", file=sys.stderr)
@@ -226,9 +301,34 @@ def main():
     # Map output filename -> raw dict for augmenting with debug info
     job_by_output = {d["output"]: d for d in raw_jobs}
     jobs: list[TTSJob] = []
+    try:
+        cli_style = resolve_style(
+            skill_dir, args.style_prompt, args.style_preset, args.style_file
+        )
+    except FileNotFoundError as e:
+        print(f"Error: {e}", file=sys.stderr)
+        sys.exit(2)
     for d in raw_jobs:
         voice = resolve_voice_preset(skill_dir, d.get("voice"))
-        jobs.append(TTSJob(text=d["text"], output=d["output"], voice=voice))
+        try:
+            job_style = resolve_style(
+                skill_dir,
+                d.get("style_prompt"),
+                d.get("style_preset"),
+                d.get("style_file"),
+            )
+        except FileNotFoundError as e:
+            print(f"Error: {e} (job output={d.get('output')})", file=sys.stderr)
+            sys.exit(2)
+        style_prompt = job_style if job_style is not None else cli_style
+        jobs.append(
+            TTSJob(
+                text=d["text"],
+                output=d["output"],
+                voice=voice,
+                style_prompt=style_prompt,
+            )
+        )
 
     print(
         f"Generating {len(jobs)} audio clips in parallel (max_workers={args.max_workers})...",

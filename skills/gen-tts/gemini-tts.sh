@@ -4,7 +4,18 @@
 #
 # Usage:
 #   gemini-tts.sh "text to speak" --output /tmp/out.wav [--voice NAME] [--api-url URL]
+#   gemini-tts.sh "text" --output /tmp/out.wav --style-prompt "Speak in a warm baritone."
+#   gemini-tts.sh "text" --output /tmp/out.wav --style-file voices/freud.txt
 #   echo "text to speak" | gemini-tts.sh --output /tmp/out.wav
+#
+# Flags:
+#   --output PATH       (required) destination WAV file
+#   --voice NAME        prebuilt Gemini voice (default: Charon)
+#   --style-prompt TXT  director's-notes prefix prepended to the text
+#   --style-file PATH   read a multiline style directive from a file (comment
+#                       lines starting with '#' are stripped)
+#   --api-url URL       override Gemini endpoint
+#   --help / -h         show this help
 #
 # Environment:
 #   GOOGLE_API_KEY   (required) — your Google API key; auto-sourced from ~/.env if unset
@@ -18,6 +29,8 @@ set -euo pipefail
 TEXT=""
 OUTPUT=""
 VOICE="Charon"
+STYLE_PROMPT=""
+STYLE_FILE=""
 API_URL="https://generativelanguage.googleapis.com/v1beta/models/gemini-3.1-flash-tts-preview:generateContent"
 
 while [[ $# -gt 0 ]]; do
@@ -30,12 +43,20 @@ while [[ $# -gt 0 ]]; do
             VOICE="$2"
             shift 2
             ;;
+        --style-prompt)
+            STYLE_PROMPT="$2"
+            shift 2
+            ;;
+        --style-file)
+            STYLE_FILE="$2"
+            shift 2
+            ;;
         --api-url)
             API_URL="$2"
             shift 2
             ;;
         --help|-h)
-            sed -n '3,14p' "$0"
+            sed -n '3,26p' "$0"
             exit 0
             ;;
         --*)
@@ -67,6 +88,29 @@ fi
 if [[ -z "$OUTPUT" ]]; then
     echo "Error: --output <path.wav> is required" >&2
     exit 2
+fi
+
+# Build the style directive: --style-prompt wins if both supplied. Otherwise
+# --style-file's non-comment lines concatenated. The directive is prepended
+# to the text as a director's-note prefix, which Gemini honors (per
+# simonw's 2026-04-15 Gemini TTS write-up).
+if [[ -n "$STYLE_PROMPT" ]]; then
+    STYLE="$STYLE_PROMPT"
+elif [[ -n "$STYLE_FILE" ]]; then
+    if [[ ! -f "$STYLE_FILE" ]]; then
+        echo "Error: --style-file not found: $STYLE_FILE" >&2
+        exit 2
+    fi
+    # Strip comment lines (leading #), keep the rest, collapse to one paragraph.
+    STYLE=$(grep -v '^\s*#' "$STYLE_FILE" | sed '/^\s*$/d' | tr '\n' ' ' | sed 's/  */ /g; s/^ //; s/ $//')
+else
+    STYLE=""
+fi
+
+if [[ -n "$STYLE" ]]; then
+    TEXT="${STYLE}
+
+Spoken text: ${TEXT}"
 fi
 
 # Auto-source ~/.env if API key is not already set

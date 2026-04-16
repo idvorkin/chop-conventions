@@ -1,7 +1,7 @@
 ---
 name: gen-tts
-description: "Synthesize speech audio via Gemini 3.1 Flash TTS — single clip, batch parallel, or voice preset"
-argument-hint: "<text-or-file> [--voice NAME] [--output path.wav] [--batch file.json]"
+description: "Synthesize speech audio via Gemini 3.1 Flash TTS — single clip, batch parallel, voice + style presets"
+argument-hint: "<text-or-file> [--voice NAME] [--style-preset NAME] [--output path.wav] [--batch file.json]"
 allowed-tools: Bash, Read, Write, Glob, Grep, AskUserQuestion
 ---
 
@@ -18,12 +18,19 @@ Parse the user's input for:
 
 - **Target**: Raw text (quoted), or a path to a text file (`--text-file`)
 - **`--voice NAME`**: Voice preset name. Resolves in this order:
-  1. `voices/<NAME>.txt` in this skill dir — first non-comment line is the literal Gemini `voiceName`
+  1. `voices/<NAME>.txt` in this skill dir — first non-comment line is the literal Gemini `voiceName` (for single-line voice-ID presets)
   2. Literal voice name (e.g. `Kore`, `Puck`, `Charon`) passed straight through
   3. Default: read `tts-voice.txt` (`Charon` ships as the default)
+- **`--style-prompt TEXT`**: Director's-notes prefix prepended to the text (e.g. `"Speak slowly, with a warm Newcastle accent."`). Gemini honors these notes separately from the voice ID.
+- **`--style-preset NAME`**: Load a multi-line style directive from `voices/<NAME>.txt` (e.g. `freud`, `soprano`). Comment lines stripped, body collapsed to one paragraph, prepended as a director's note. Mutually exclusive with `--style-prompt` / `--style-file`.
+- **`--style-file PATH`**: Like `--style-preset` but takes an explicit file path (for styles kept outside the skill dir).
 - **`--output path.wav`**: Where to save the WAV file
 - **`--batch file.json`**: Parallel batch mode (see shape below)
 - **`--api-url URL`** (bash only): Override the Gemini endpoint
+
+`--voice` (Gemini voice ID) and `--style-*` (director's notes prepended to
+the text) are independent and compose — e.g. `--voice Charon --style-preset
+freud` pairs the Charon baritone with Freud's Viennese pacing.
 
 ## Configuration
 
@@ -71,6 +78,22 @@ Full catalog in `tts-voice.txt`. To lock in a named preset separately
 from the default, drop `voices/<name>.txt` next to this file with the
 literal voiceName on its first non-comment line.
 
+### `voices/<name>.txt` — two shapes
+
+Files in `voices/` serve two distinct purposes:
+
+1. **Single-line voice-ID alias** — first non-comment line is a literal
+   Gemini voice name (`Kore`, `Charon`, `Puck`, etc.). Used via `--voice
+   <name>`. The rest of the file is commentary on when to pick it.
+2. **Multi-line style directive** — a character/tone description
+   (Freud's Viennese pacing, Tony Soprano's gravel, etc.). Used via
+   `--style-preset <name>`. Comment lines are stripped; the body is
+   prepended to the text as a director's note. These do NOT pick a
+   Gemini voice — pair them with `--voice Charon` (or whichever voice
+   ID suits the character) for best results.
+
+Shipped style presets: `freud`, `soprano`.
+
 ## Usage
 
 ### Single clip — text arg
@@ -86,6 +109,19 @@ python3 "$GEN_TTS" --text "Hello from Larry. [short pause] This is a voice pipel
 python3 "$GEN_TTS" --text-file /tmp/script.txt --output /tmp/read.wav --voice Charon
 ```
 
+### Single clip — character style preset
+
+```bash
+# Freud's Viennese analyst voice, baritone
+python3 "$GEN_TTS" --text "Tell me about your mother." --voice Charon \
+  --style-preset freud --output /tmp/freud.wav
+
+# Inline director's notes (no preset)
+python3 "$GEN_TTS" --text "Welcome aboard." --voice Puck \
+  --style-prompt "Speak with the warmth of a flight attendant greeting family." \
+  --output /tmp/welcome.wav
+```
+
 ### Batch (parallel)
 
 Write a JSON file:
@@ -94,9 +130,14 @@ Write a JSON file:
 [
   { "text": "Good morning. [short pause] Ready to start?", "output": "/tmp/morning.wav", "voice": "Kore" },
   { "text": "[excited] You nailed that workout!", "output": "/tmp/celebrate.wav", "voice": "Puck" },
-  { "text": "[whisper] Time to wind down.", "output": "/tmp/bedtime.wav" }
+  { "text": "[whisper] Time to wind down.", "output": "/tmp/bedtime.wav" },
+  { "text": "Tell me about your father.", "output": "/tmp/freud.wav", "voice": "Charon", "style_preset": "freud" }
 ]
 ```
+
+Each job object accepts `text`, `output`, `voice`, plus any one of
+`style_prompt` / `style_preset` / `style_file`. A `--style-*` flag on the
+CLI provides a default that per-job entries can override.
 
 Then:
 
