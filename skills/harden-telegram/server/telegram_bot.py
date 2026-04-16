@@ -72,12 +72,54 @@ CREATE TABLE IF NOT EXISTS inbound (
     callback_data TEXT,
     gate_action TEXT NOT NULL,
     delivered INTEGER DEFAULT 0,
-    error TEXT
+    error TEXT,
+    previous_text TEXT,
+    edit_count INTEGER NOT NULL DEFAULT 0,
+    edited_at TEXT
 );
 
 CREATE INDEX IF NOT EXISTS idx_inbound_undelivered ON inbound(delivered, id) WHERE delivered = 0;
 CREATE INDEX IF NOT EXISTS idx_inbound_ts ON inbound(ts);
 """
+
+
+# Columns added post-v1 of the schema. Applied idempotently on every init —
+# ALTER TABLE ADD COLUMN is safe concurrent with reads/writes in WAL mode,
+# so deploying this does NOT require restarting telegram_bot.py for the DB
+# itself; only picking up the new handler logic requires a restart.
+# Tuple shape: (column_name, ALTER fragment).
+_INBOUND_MIGRATIONS: tuple[tuple[str, str], ...] = (
+    ("previous_text", "ALTER TABLE inbound ADD COLUMN previous_text TEXT"),
+    (
+        "edit_count",
+        "ALTER TABLE inbound ADD COLUMN edit_count INTEGER NOT NULL DEFAULT 0",
+    ),
+    ("edited_at", "ALTER TABLE inbound ADD COLUMN edited_at TEXT"),
+)
+
+
+def _existing_inbound_columns(conn: sqlite3.Connection) -> set[str]:
+    rows = conn.execute("PRAGMA table_info(inbound)").fetchall()
+    return {r[1] for r in rows}
+
+
+def migrate_inbound_sync(conn: sqlite3.Connection) -> list[str]:
+    """Apply idempotent ADD COLUMN migrations to the `inbound` table.
+
+    Returns the list of column names that were added (empty if already up
+    to date). Safe to call every startup; safe to run concurrent with
+    reads/writes in WAL mode.
+    """
+    existing = _existing_inbound_columns(conn)
+    added: list[str] = []
+    for col, ddl in _INBOUND_MIGRATIONS:
+        if col in existing:
+            continue
+        conn.execute(ddl)
+        added.append(col)
+    if added:
+        conn.commit()
+    return added
 
 
 def init_db_sync(db_path: Path) -> None:
@@ -87,6 +129,7 @@ def init_db_sync(db_path: Path) -> None:
     conn = sqlite3.connect(db_path)
     try:
         conn.executescript(SCHEMA)
+        migrate_inbound_sync(conn)
         conn.commit()
     finally:
         conn.close()
@@ -934,7 +977,20 @@ async def cmd_status(update: "Update", ctx: "ContextTypes.DEFAULT_TYPE") -> None
 async def handle_any_message(
     update: "Update", ctx: "ContextTypes.DEFAULT_TYPE"
 ) -> None:
-    """Gate-eval + INSERT for every inbound message event."""
+    """Gate-eval + INSERT (or UPDATE for edits) for every inbound message event.
+
+    Edits preserve the pre-edit text. python-telegram-bot surfaces edits via
+    `update.edited_message` (with `update.message is None`); we detect that
+    and route to the edit branch, which SELECTs the current row by
+    (chat_id, message_id), moves `text` into `previous_text`, writes the
+    new text, and bumps `edit_count` + `edited_at`. Only the most-recent
+    pre-edit version is preserved — full history is out of scope.
+    """
+    # Distinguish edits from new messages. `update.edited_message` is set for
+    # edits; `update.message` is set for fresh messages. `effective_message`
+    # collapses both, which is the right source for the content but NOT for
+    # deciding whether this is an edit.
+    is_edit = update.edited_message is not None and update.message is None
     msg = update.effective_message
     if msg is None:
         return
@@ -962,24 +1018,66 @@ async def handle_any_message(
         if perm_match:
             message_type = "permission_reply"
 
-    await db.execute("BEGIN IMMEDIATE")
-    cur = await db.execute(
-        """INSERT INTO inbound
-           (ts, chat_id, message_id, user_id, username, message_type, text, gate_action)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
-        (
-            evt["ts"],
-            evt["chat_id"],
-            evt["message_id"],
-            evt["from_id"],
-            evt["username"],
-            message_type,
-            evt["text"],
-            gate_res["action"],
-        ),
-    )
-    row_id = cur.lastrowid
-    await db.commit()
+    # Edit path: look up the existing row by (chat_id, message_id). If we
+    # find one, UPDATE instead of INSERT so we preserve the prior `text` as
+    # `previous_text` and bump counters. If we don't find one (bot was down
+    # when the original was sent, or the DB was wiped), fall through to the
+    # INSERT path — a fresh row for the edit is strictly better than dropping
+    # the message entirely, and `edit_count=0` just marks it as "first time
+    # this server has seen this message_id."
+    row_id: int | None = None
+    edited_at_iso: str | None = None
+    if is_edit:
+        edited_at_iso = _dt.datetime.now(_dt.timezone.utc).isoformat(
+            timespec="seconds"
+        )
+        existing = await db.execute_fetchall(
+            "SELECT id, text FROM inbound WHERE chat_id = ? AND message_id = ? "
+            "ORDER BY id DESC LIMIT 1",
+            (evt["chat_id"], evt["message_id"]),
+        )
+        if existing:
+            prior_id, prior_text = existing[0]
+            await db.execute("BEGIN IMMEDIATE")
+            await db.execute(
+                """UPDATE inbound
+                   SET previous_text = ?,
+                       text = ?,
+                       edit_count = COALESCE(edit_count, 0) + 1,
+                       edited_at = ?,
+                       delivered = 0
+                   WHERE id = ?""",
+                (prior_text, evt["text"], edited_at_iso, prior_id),
+            )
+            await db.commit()
+            row_id = int(prior_id)
+            log(
+                f"inbound edit: {evt['username'] or evt['from_id']}: "
+                f"msg_id={evt['message_id']} → row={row_id} (re-delivering)"
+            )
+
+    if row_id is None:
+        await db.execute("BEGIN IMMEDIATE")
+        cur = await db.execute(
+            """INSERT INTO inbound
+               (ts, chat_id, message_id, user_id, username, message_type, text,
+                gate_action, edit_count, edited_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (
+                evt["ts"],
+                evt["chat_id"],
+                evt["message_id"],
+                evt["from_id"],
+                evt["username"],
+                message_type,
+                evt["text"],
+                gate_res["action"],
+                1 if is_edit else 0,
+                edited_at_iso,
+            ),
+        )
+        row_id = cur.lastrowid
+        await db.commit()
 
     # Inner 👀 reaction FIRST — must hit Telegram before server.ts fires its
     # own setMessageReaction with 🫡. Telegram's free-tier API only allows

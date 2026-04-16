@@ -63,9 +63,69 @@ def test_init_db_creates_schema(tmp_path):
         "gate_action",
         "delivered",
         "error",
+        "previous_text",
+        "edit_count",
+        "edited_at",
     }
     assert required.issubset(cols), f"missing: {required - cols}"
     assert conn.execute("PRAGMA journal_mode").fetchone()[0] == "wal"
+    conn.close()
+
+
+def test_migrate_inbound_adds_missing_columns(tmp_path):
+    """An older DB without edit-history columns must gain them idempotently."""
+    from telegram_bot import migrate_inbound_sync
+
+    db_path = tmp_path / "inbound.db"
+    # Hand-roll the v1 schema (pre-edit-history) so we can observe migration.
+    conn = sqlite3.connect(db_path)
+    conn.executescript(
+        """
+        CREATE TABLE inbound (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            ts TEXT NOT NULL,
+            chat_id TEXT NOT NULL,
+            message_id TEXT,
+            user_id TEXT,
+            username TEXT,
+            message_type TEXT NOT NULL DEFAULT 'message',
+            text TEXT,
+            attachment_kind TEXT,
+            attachment_path TEXT,
+            attachment_file_id TEXT,
+            attachment_size INTEGER,
+            attachment_mime TEXT,
+            attachment_name TEXT,
+            callback_data TEXT,
+            gate_action TEXT NOT NULL,
+            delivered INTEGER DEFAULT 0,
+            error TEXT
+        );
+        """
+    )
+    conn.commit()
+    # Seed a pre-existing row so we can confirm the migration preserves data
+    # and defaults edit_count to 0 / previous_text to NULL.
+    conn.execute(
+        "INSERT INTO inbound (ts, chat_id, gate_action, text) "
+        "VALUES ('2026-04-14T00:00:00', '1', 'allow', 'hi')"
+    )
+    conn.commit()
+
+    added = migrate_inbound_sync(conn)
+    assert set(added) == {"previous_text", "edit_count", "edited_at"}
+
+    cols = {r[1] for r in conn.execute("PRAGMA table_info(inbound)")}
+    assert {"previous_text", "edit_count", "edited_at"}.issubset(cols)
+
+    row = conn.execute(
+        "SELECT text, previous_text, edit_count, edited_at FROM inbound"
+    ).fetchone()
+    assert row == ("hi", None, 0, None)
+
+    # Second call is a no-op — columns already exist.
+    added2 = migrate_inbound_sync(conn)
+    assert added2 == []
     conn.close()
 
 
