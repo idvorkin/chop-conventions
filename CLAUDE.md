@@ -51,6 +51,7 @@ Scripts that signal processes by pattern (cpulimit, pkill, kill by comm match) M
 - Stdlib is enough for most helpers. Only add dependencies when they earn their keep (Typer + Rich for user-facing CLIs; plain stdlib for programmatic JSON-emitting helpers).
 - Put pure logic behind functions that can be unit-tested without subprocess mocking. Shell out to external tools (`git`, `gh`, etc.) through a thin wrapper so the business logic stays testable.
 - Working example: [`skills/up-to-date/diagnose.py`](skills/up-to-date/diagnose.py) — stdlib-only, `uv run` shebang, parallelized subprocess calls, unit-tested pure functions.
+- **Lazy-import PEP 723 deps that tests don't need.** Scripts with `uv run --script` shebangs self-bootstrap their deps at runtime, but tests and pre-commit hooks import the module in system Python (no `uv`). Put the dep-specific import inside a builder function (e.g. `_build_app()`) called only from `if __name__ == "__main__":`. Tests import the pure-function layer without `ModuleNotFoundError`. Reference: `skills/harden-telegram/tools/telegram_debug.py`.
 
 ## Parsing Claude Session Data
 
