@@ -1,6 +1,10 @@
-# Tony Soprano voice preset.
-# Pass to gemini-tts.sh via: --voice-prompt "$(cat voices/soprano.txt)"
-# Or set as a system-style prefix in your agent's TTS call.
+# Tony Soprano voice preset (style directive — NOT a Gemini voice ID).
+# Use via:
+#   generate-tts.py --style-preset soprano --text "..." --output out.wav
+#   gemini-tts.sh "text" --output out.wav --style-file voices/soprano.txt
+# Comment lines (starting with '#') are stripped; the remaining body is
+# collapsed to one paragraph and prepended to the text as a director's note.
+# Combine with --voice Charon (or similar baritone) for best results.
 
 Speak in a raspy North-Jersey Italian-American baritone. Gravelly, like a
 longtime smoker. Intimate and confidential — the listener is always close
