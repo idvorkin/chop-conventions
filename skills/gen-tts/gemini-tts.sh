@@ -153,10 +153,57 @@ jq -n \
 
 echo "Calling Gemini TTS API (voice=$VOICE)..." >&2
 
-curl -s -X POST \
-    "${API_URL}?key=${GOOGLE_API_KEY}" \
-    -H "Content-Type: application/json" \
-    -d @"$PAYLOAD_FILE" > "$RESPONSE_FILE"
+# Auth via x-goog-api-key header instead of ?key= URL parameter, so the key
+# never appears in shell tracing (`set -x`), curl's own verbose output, or
+# proxy access logs. One retry on transient 5xx / network errors. Note:
+# `set -x` will still expose the TEXT and headers; treat traces accordingly.
+HTTP_STATUS_FILE="$WORK_DIR/http_status"
+curl_once() {
+    curl -sS \
+        -o "$RESPONSE_FILE" \
+        -w '%{http_code}' \
+        -X POST \
+        "$API_URL" \
+        -H "Content-Type: application/json" \
+        -H "x-goog-api-key: ${GOOGLE_API_KEY}" \
+        -d @"$PAYLOAD_FILE" > "$HTTP_STATUS_FILE" 2> "$WORK_DIR/curl.err"
+    return $?
+}
+
+CURL_RC=0
+curl_once || CURL_RC=$?
+HTTP_STATUS=$(cat "$HTTP_STATUS_FILE" 2>/dev/null || echo "")
+
+# Retry once on transient failures: connection errors (curl_rc != 0) or 5xx.
+if [[ "$CURL_RC" -ne 0 ]] || [[ "$HTTP_STATUS" =~ ^5[0-9][0-9]$ ]]; then
+    echo "Transient failure (rc=$CURL_RC http=$HTTP_STATUS), retrying after 1.5s..." >&2
+    sleep 1.5
+    CURL_RC=0
+    curl_once || CURL_RC=$?
+    HTTP_STATUS=$(cat "$HTTP_STATUS_FILE" 2>/dev/null || echo "")
+fi
+
+if [[ "$CURL_RC" -ne 0 ]]; then
+    echo "Error: curl failed (exit $CURL_RC)" >&2
+    head -c 2048 "$WORK_DIR/curl.err" >&2
+    echo >&2
+    exit 1
+fi
+
+# Non-2xx HTTP status is an error — even if the body is JSON without .error
+# (e.g. 4xx from a malformed header). Let the .error / safety-filter parsers
+# below take priority when the body is structured, but surface raw 4xx/5xx
+# when there's no parseable error message.
+if [[ ! "$HTTP_STATUS" =~ ^2[0-9][0-9]$ ]]; then
+    if ! jq -e '.error // empty' "$RESPONSE_FILE" >/dev/null 2>&1; then
+        echo "Error: HTTP $HTTP_STATUS from Gemini TTS" >&2
+        head -c 2048 "$RESPONSE_FILE" >&2
+        echo >&2
+        exit 1
+    fi
+    # else: fall through to the .error.message parser below, which gives a
+    # cleaner message
+fi
 
 ERROR=$(jq -r '.error.message // empty' "$RESPONSE_FILE" 2>/dev/null)
 if [[ -n "$ERROR" ]]; then
