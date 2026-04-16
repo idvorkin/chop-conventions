@@ -129,6 +129,173 @@ def test_migrate_inbound_adds_missing_columns(tmp_path):
     conn.close()
 
 
+def test_edit_update_preserves_previous_text(tmp_path):
+    """Simulate the edit-UPDATE SQL the handler runs.
+
+    This asserts the database-side contract without having to mock
+    python-telegram-bot Update objects: given a pre-existing row for
+    (chat_id, message_id), the edit UPDATE must move current `text` →
+    `previous_text`, bump `edit_count`, stamp `edited_at`, and reset
+    `delivered = 0` so server.ts re-delivers.
+    """
+    from telegram_bot import init_db_sync
+
+    db_path = tmp_path / "inbound.db"
+    init_db_sync(db_path)
+    conn = sqlite3.connect(db_path)
+    try:
+        # Seed a delivered row representing the "original" message.
+        conn.execute(
+            """INSERT INTO inbound (ts, chat_id, message_id, user_id, username,
+                                    message_type, text, gate_action, delivered)
+               VALUES ('2026-04-16T10:00:00', '42', '999', '42', 'igor',
+                       'message', 'original text', 'allow', 1)"""
+        )
+        conn.commit()
+
+        # Run the edit-UPDATE path (allow case — resets delivered).
+        prior = conn.execute(
+            "SELECT id, text FROM inbound WHERE chat_id = ? AND message_id = ? "
+            "ORDER BY id DESC LIMIT 1",
+            ("42", "999"),
+        ).fetchone()
+        assert prior is not None
+        prior_id, prior_text = prior
+        edited_at = "2026-04-16T10:05:00+00:00"
+        conn.execute(
+            """UPDATE inbound
+               SET previous_text = ?, text = ?,
+                   edit_count = COALESCE(edit_count, 0) + 1,
+                   edited_at = ?, delivered = 0
+               WHERE id = ?""",
+            (prior_text, "edited text", edited_at, prior_id),
+        )
+        conn.commit()
+
+        row = conn.execute(
+            "SELECT text, previous_text, edit_count, edited_at, delivered "
+            "FROM inbound WHERE id = ?",
+            (prior_id,),
+        ).fetchone()
+        assert row == ("edited text", "original text", 1, edited_at, 0)
+
+        # Second edit — previous_text should now be "edited text" (most
+        # recent prior), not "original text".
+        prior2 = conn.execute(
+            "SELECT id, text FROM inbound WHERE chat_id = ? AND message_id = ? "
+            "ORDER BY id DESC LIMIT 1",
+            ("42", "999"),
+        ).fetchone()
+        assert prior2 is not None
+        conn.execute(
+            """UPDATE inbound
+               SET previous_text = ?, text = ?,
+                   edit_count = COALESCE(edit_count, 0) + 1,
+                   edited_at = ?, delivered = 0
+               WHERE id = ?""",
+            (prior2[1], "third version", "2026-04-16T10:10:00+00:00", prior2[0]),
+        )
+        conn.commit()
+
+        row = conn.execute(
+            "SELECT text, previous_text, edit_count FROM inbound WHERE id = ?",
+            (prior_id,),
+        ).fetchone()
+        assert row == ("third version", "edited text", 2)
+    finally:
+        conn.close()
+
+
+def test_edit_update_preserves_prior_denied_redelivery(tmp_path):
+    """Edit with gate=drop: UPDATE the row but do NOT reset delivered.
+
+    Scenario: a message was delivered under allow, then the sender's
+    access was revoked, then the sender edited the message. We preserve
+    the diff (for audit) but must not re-deliver to Claude, because the
+    existing row's `gate_action='allow'` would otherwise smuggle an
+    unauthorized edit through server.ts's catchup filter.
+    """
+    from telegram_bot import init_db_sync
+
+    db_path = tmp_path / "inbound.db"
+    init_db_sync(db_path)
+    conn = sqlite3.connect(db_path)
+    try:
+        conn.execute(
+            """INSERT INTO inbound (ts, chat_id, message_id, user_id, username,
+                                    message_type, text, gate_action, delivered)
+               VALUES ('2026-04-16T10:00:00', '42', '999', '42', 'igor',
+                       'message', 'original', 'allow', 1)"""
+        )
+        conn.commit()
+
+        prior = conn.execute(
+            "SELECT id, text FROM inbound WHERE chat_id = ? AND message_id = ?",
+            ("42", "999"),
+        ).fetchone()
+        assert prior is not None
+        prior_id, prior_text = prior
+        # Gate=drop branch — UPDATE without `delivered = 0`.
+        conn.execute(
+            """UPDATE inbound
+               SET previous_text = ?, text = ?,
+                   edit_count = COALESCE(edit_count, 0) + 1,
+                   edited_at = ?
+               WHERE id = ?""",
+            (prior_text, "revoked user edit", "2026-04-16T10:05:00+00:00", prior_id),
+        )
+        conn.commit()
+
+        row = conn.execute(
+            "SELECT text, previous_text, edit_count, delivered FROM inbound WHERE id = ?",
+            (prior_id,),
+        ).fetchone()
+        # delivered stays at 1 — server.ts's WHERE delivered = 0 won't pick it up.
+        assert row == ("revoked user edit", "original", 1, 1)
+    finally:
+        conn.close()
+
+
+def test_is_edit_detection_covers_channel_post():
+    """`is_edit` boolean covers both edited_message and edited_channel_post.
+
+    We reproduce the inline boolean from handle_any_message against small
+    stand-ins for PTB Update so the detection logic doesn't silently
+    regress if someone refactors it.
+    """
+
+    class _FakeUpdate:
+        def __init__(
+            self,
+            message=None,
+            edited_message=None,
+            channel_post=None,
+            edited_channel_post=None,
+        ):
+            self.message = message
+            self.edited_message = edited_message
+            self.channel_post = channel_post
+            self.edited_channel_post = edited_channel_post
+
+    def is_edit(update):
+        return (
+            update.edited_message is not None and update.message is None
+        ) or (
+            update.edited_channel_post is not None and update.channel_post is None
+        )
+
+    # Fresh DM: not an edit
+    assert is_edit(_FakeUpdate(message=object())) is False
+    # Edited DM: edit
+    assert is_edit(_FakeUpdate(edited_message=object())) is True
+    # Fresh channel post: not an edit
+    assert is_edit(_FakeUpdate(channel_post=object())) is False
+    # Edited channel post: edit
+    assert is_edit(_FakeUpdate(edited_channel_post=object())) is True
+    # Both fresh+edited set (weird shape) → NOT an edit (conservative)
+    assert is_edit(_FakeUpdate(message=object(), edited_message=object())) is False
+
+
 def test_access_load_missing(tmp_path, monkeypatch):
     monkeypatch.setenv("TELEGRAM_STATE_DIR", str(tmp_path))
     import importlib
