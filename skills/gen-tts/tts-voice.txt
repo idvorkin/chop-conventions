@@ -1,0 +1,14 @@
+# Default Gemini TTS voice for this skill.
+# First non-comment line is the literal voiceName passed to Gemini's
+# prebuiltVoiceConfig.voiceName field.
+#
+# Catalog (30 voices, per Google's Gemini TTS docs):
+#   Zephyr Puck Charon Kore Fenrir Leda Orus Aoede Callirrhoe Autonoe
+#   Enceladus Iapetus Umbriel Algieba Despina Erinome Algenib Rasalgethi
+#   Laomedeia Achernar Alnilam Schedar Gacrux Pulcherrima Achird
+#   Zubenelgenubi Vindemiatrix Sadachbia Sadaltager Sulafat
+#
+# "Kore" is a firm, steady, observer-coach voice — fits Larry's vibe
+# (calm, grounded, non-performative). Swap to "Charon" for a deeper
+# storyteller tone, "Puck" for upbeat playfulness, "Aoede" for warmth.
+Kore
