@@ -169,7 +169,9 @@ def generate_one(job: TTSJob, gemini_script: str) -> TTSResult:
 
     if result.returncode != 0:
         err = result.stderr.strip() or result.stdout.strip() or "unknown error"
-        return TTSResult(output=job.output, success=False, error=err, duration_s=duration_s)
+        return TTSResult(
+            output=job.output, success=False, error=err, duration_s=duration_s
+        )
 
     if result.stderr:
         print(result.stderr, file=sys.stderr)
