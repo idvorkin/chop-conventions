@@ -25,7 +25,9 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from pathlib import Path
 
-DEFAULT_VOICE = "Kore"  # Firm, observer-coach tone; matches Larry's vibe.
+DEFAULT_VOICE = "Charon"  # Deeper storyteller baritone; matches Larry's vibe.
+# Kept in sync with tts-voice.txt and gemini-tts.sh. If you change the shipped
+# default voice, change all three and mention it in SKILL.md's voice table.
 
 
 @dataclass
