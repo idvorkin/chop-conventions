@@ -1012,9 +1012,18 @@ async def handle_any_message(
 
     # Wake up any connected server.ts clients — DB is the source of truth,
     # the socket is just a latency shortcut so they don't have to poll.
+    # Determine if this message has an attachment — if so, DEFER
+    # notify_clients() until after the attachment UPDATE below. Otherwise
+    # server.ts wakes on the initial NULL-attachments row, marks it
+    # delivered, and never re-reads once the UPDATE populates fields.
+    # Race-condition fix: 2026-04-15.
+    has_attachment = gate_res["action"] == "allow" and _extract_attachment(msg) is not None
+
     # Fired AFTER the inner reaction so the race with server.ts's outer
-    # reaction is deterministic (see comment above).
-    await notify_clients()
+    # reaction is deterministic (see comment above). For attachment-bearing
+    # messages, the attachment block below handles the wakeup after UPDATE.
+    if not has_attachment:
+        await notify_clients()
     log(
         f"inbound [{gate_res['action']}/{message_type}]: "
         f"{evt['username'] or evt['from_id']}: "
@@ -1043,6 +1052,7 @@ async def handle_any_message(
             local_path, err = await _download_attachment(
                 ctx, attachment, evt["chat_id"], base_dir
             )
+            update_ok = False
             try:
                 await db.execute("BEGIN IMMEDIATE")
                 await db.execute(
@@ -1067,9 +1077,16 @@ async def handle_any_message(
                     ),
                 )
                 await db.commit()
-                await notify_clients()
+                update_ok = True
             except Exception as e:
                 log(f"attachment UPDATE failed: {e}")
+            # Always notify — attachment UPDATE success populates the fields,
+            # failure still means server.ts should deliver the row (with NULL
+            # attachments) rather than silently drop. has_attachment branch
+            # above deferred the initial notify; this is the gated wakeup.
+            await notify_clients()
+            if not update_ok:
+                log(f"attachment UPDATE failed for row {row_id} — delivering with NULL attachments")
 
 
 async def handle_callback_query(
