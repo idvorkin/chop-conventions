@@ -20,7 +20,7 @@ Parse the user's input for:
 - **`--voice NAME`**: Voice preset name. Resolves in this order:
   1. `voices/<NAME>.txt` in this skill dir — first non-comment line is the literal Gemini `voiceName`
   2. Literal voice name (e.g. `Kore`, `Puck`, `Charon`) passed straight through
-  3. Default: read `tts-voice.txt` (`Kore` ships as the default)
+  3. Default: read `tts-voice.txt` (`Charon` ships as the default)
 - **`--output path.wav`**: Where to save the WAV file
 - **`--batch file.json`**: Parallel batch mode (see shape below)
 - **`--api-url URL`** (bash only): Override the Gemini endpoint
@@ -62,9 +62,9 @@ Simon Willison's 2026-04-15 write-up. Use either approach; they compose.
 
 | Voice | Vibe | Use for |
 | --- | --- | --- |
-| `Kore` (default) | Firm, observer-coach | Larry-style grounding, review reads |
+| `Charon` (default) | Deeper storyteller baritone | Larry-style grounding, long-form narration |
+| `Kore` | Firm, observer-coach (reads feminine) | Review reads when that vibe fits |
 | `Puck` | Upbeat, playful | Kickoff messages, celebratory clips |
-| `Charon` | Deeper storyteller | Long-form narration |
 | `Aoede` | Warm, soft | Empathic/comfort lines |
 
 Full catalog in `tts-voice.txt`. To lock in a named preset separately
