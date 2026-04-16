@@ -176,8 +176,13 @@ kill -TERM <pid-from-doctor>
 ### 2c. Watchdog reload (from a background shell — NEVER foreground)
 
 ```bash
-# %25 → your pane id (tmux display-message -p '#{pane_id}')
-python3 ~/.claude/skills/harden-telegram/tools/watchdog.py reload --pane %25 \
+# Omit --pane to auto-resolve the caller's pane via parent-chain walk.
+# NEVER pass `tmux display-message -p '#{pane_id}'` here — from a
+# backgrounded, disowned subprocess with a stale TMUX_PANE env var,
+# unscoped display-message falls back to the session's most-recently-active
+# pane, which on a box with concurrent Claude sessions is routinely wrong.
+# Let watchdog.py walk /proc/<pid>/stat ppid chain itself.
+python3 ~/.claude/skills/harden-telegram/tools/watchdog.py reload \
   2>/tmp/watchdog_reload.log &
 disown
 ```
