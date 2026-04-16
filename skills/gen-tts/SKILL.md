@@ -26,7 +26,7 @@ Parse the user's input for:
 - **`--style-file PATH`**: Like `--style-preset` but takes an explicit file path (for styles kept outside the skill dir).
 - **`--output path.wav`**: Where to save the WAV file
 - **`--batch file.json`**: Parallel batch mode (see shape below)
-- **`--api-url URL`** (bash only): Override the Gemini endpoint
+- **`--api-url URL`**: Override the Gemini endpoint (rarely needed; useful for testing against a proxy)
 
 `--voice` (Gemini voice ID) and `--style-*` (director's notes prepended to
 the text) are independent and compose — e.g. `--voice Charon --style-preset
@@ -34,19 +34,20 @@ freud` pairs the Charon baritone with Freud's Viennese pacing.
 
 ## Configuration
 
-- **Auth**: `GOOGLE_API_KEY` — auto-loaded from `~/.env` by `generate-tts.py` (same var as `gen-image`)
+- **Auth**: `GOOGLE_API_KEY` — auto-loaded from `~/.env` by `generate-tts.py` (same var as `gen-image`). Passed as an `x-goog-api-key` header so the key never leaks into URL access logs, shell traces, or proxy logs.
 - **Default voice**: Read from `tts-voice.txt` in this skill's directory
-- **Low-level script**: `gemini-tts.sh` handles single API calls (used internally by `generate-tts.py`)
-- **Generation wrapper**: `generate-tts.py` handles env loading, voice resolution, and parallel batch execution
+- **Single entry point**: `generate-tts.py` — handles the HTTP call, WAV assembly, env loading, voice resolution, and parallel batch execution. Stdlib-only (no `requests` / `httpx` / `jq` / `curl` deps); the PEP-723 shebang (`#!/usr/bin/env -S uv run --script`) means it runs without a local venv.
 
 ## Model & Endpoint
 
 - Model: `gemini-3.1-flash-tts-preview`
 - Endpoint: `POST https://generativelanguage.googleapis.com/v1beta/models/gemini-3.1-flash-tts-preview:generateContent`
 - Output: base64-encoded raw PCM (16-bit signed LE, 24 kHz, mono) in
-  `candidates[0].content.parts[*].inlineData.data`. `gemini-tts.sh`
-  wraps it in a canonical WAV header so the `.wav` output is directly
-  playable by any audio tool.
+  `candidates[0].content.parts[*].inlineData.data`. `generate-tts.py`
+  wraps it in a canonical WAV header (via `struct.pack`) so the `.wav`
+  output is directly playable by any audio tool. Sample rate is parsed
+  from the response MIME type (`audio/L16;codec=pcm;rate=24000`) with
+  24000 as the fallback.
 
 ## Directorial Tags
 
@@ -96,28 +97,34 @@ Shipped style presets: `freud`, `soprano`.
 
 ## Usage
 
-### Single clip — text arg
+The script is executable and uses a `uv`-powered PEP-723 shebang — invoke it directly, no `python3` prefix needed:
 
 ```bash
 GEN_TTS="$(git -C ~/gits/chop-conventions rev-parse --show-toplevel)/skills/gen-tts/generate-tts.py"
-python3 "$GEN_TTS" --text "Hello from Larry. [short pause] This is a voice pipeline test." --output /tmp/larry.wav
 ```
 
-### Single clip — text file
+### Single clip — text arg
 
 ```bash
-python3 "$GEN_TTS" --text-file /tmp/script.txt --output /tmp/read.wav --voice Charon
+"$GEN_TTS" --text "Hello from Larry. [short pause] This is a voice pipeline test." --output /tmp/larry.wav
+```
+
+### Single clip — text file or stdin
+
+```bash
+"$GEN_TTS" --text-file /tmp/script.txt --output /tmp/read.wav --voice Charon
+echo "piped text" | "$GEN_TTS" --output /tmp/piped.wav
 ```
 
 ### Single clip — character style preset
 
 ```bash
 # Freud's Viennese analyst voice, baritone
-python3 "$GEN_TTS" --text "Tell me about your mother." --voice Charon \
+"$GEN_TTS" --text "Tell me about your mother." --voice Charon \
   --style-preset freud --output /tmp/freud.wav
 
 # Inline director's notes (no preset)
-python3 "$GEN_TTS" --text "Welcome aboard." --voice Puck \
+"$GEN_TTS" --text "Welcome aboard." --voice Puck \
   --style-prompt "Speak with the warmth of a flight attendant greeting family." \
   --output /tmp/welcome.wav
 ```
@@ -155,25 +162,20 @@ CLI provides a default that per-job entries can override.
 Then:
 
 ```bash
-python3 "$GEN_TTS" --batch /tmp/lines.json --max-workers 4
+"$GEN_TTS" --batch /tmp/lines.json --max-workers 4
 ```
 
-`_duration_s` is written back into each job object for debug visibility.
-
-### Bash-only (no Python wrapper)
-
-```bash
-bash ~/gits/chop-conventions/skills/gen-tts/gemini-tts.sh "text" --output /tmp/out.wav --voice Kore
-echo "piped text" | bash .../gemini-tts.sh --output /tmp/out.wav
-```
+`_duration_s` is written back into each job object for debug visibility. The batch file is rewritten atomically (tempfile + `os.replace`) so a crash mid-write never corrupts the input.
 
 ## Error Handling
 
-- **Missing API key**: `generate-tts.py` auto-loads from `~/.env`. If still unset, set `GOOGLE_API_KEY` in env or `~/.env`.
-- **API error**: The bash script prints the JSON error body and exits 1. Common causes: billing not enabled for the API key, TTS preview not enabled in the GCP project, quota exhausted.
-- **Safety-filter rejection**: If Gemini returns `promptFeedback.blockReason` (input blocked) or `candidates[0].finishReason` of `SAFETY` / `PROHIBITED_CONTENT` / `RECITATION` / `OTHER` (output blocked), the bash script prints the specific reason and exits 1. Most common trigger: certain prosody tags (`[excited]`, `[whisper]`) combined with flavorful content trip the filter. Retry without the tag or rephrase the text.
-- **Empty audio**: If the decoded PCM is < 1KB, the script fails fast rather than emitting a useless WAV.
-- **Missing deps**: Requires `jq`, `base64`, `curl`, `python3`.
+- **Missing API key**: auto-loads from `~/.env`. If still unset, set `GOOGLE_API_KEY` in env or `~/.env`.
+- **API error**: top-level `error.message` (malformed request, quota exhausted, billing not enabled, TTS preview not enabled) is surfaced verbatim with an `API Error:` prefix.
+- **Safety-filter rejection (input)**: `promptFeedback.blockReason` surfaces as `Gemini TTS refused the prompt (blockReason=...)` with the specific reason (e.g. `PROHIBITED_CONTENT`) plus any `safetyRatings` for diagnosis.
+- **Safety-filter rejection (output)**: `candidates[0].finishReason` of `SAFETY` / `PROHIBITED_CONTENT` / `RECITATION` / `OTHER` (anything other than `STOP` / `MAX_TOKENS`) surfaces as `refused to generate audio (finishReason=...)`. Most common trigger: certain prosody tags (`[excited]`, `[whisper]`) combined with flavorful content trip the filter. Retry without the tag or rephrase.
+- **Transient 5xx / network errors**: one automatic retry with a 2s delay before giving up. Failed-after-retry requests raise `HTTP request failed after retry: ...`.
+- **Empty audio**: If the decoded PCM is < 1 KB, the script fails fast rather than emitting a useless WAV.
+- **Dependencies**: Stdlib-only (`urllib.request`, `base64`, `struct`, `json`). No `jq` / `curl` / `requests` / `httpx` required — just a Python 3.11+ interpreter managed by `uv` (the PEP-723 shebang bootstraps it).
 
 ## Safety
 

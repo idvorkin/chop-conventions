@@ -1,7 +1,7 @@
 # Tony Soprano voice preset (style directive — NOT a Gemini voice ID).
 # Use via:
 #   generate-tts.py --style-preset soprano --text "..." --output out.wav
-#   gemini-tts.sh "text" --output out.wav --style-file voices/soprano.txt
+#   generate-tts.py --style-file voices/soprano.txt --text "..." --output out.wav
 # Comment lines (starting with '#') are stripped; the remaining body is
 # collapsed to one paragraph and prepended to the text as a director's note.
 # Combine with --voice Charon (or similar baritone) for best results.
