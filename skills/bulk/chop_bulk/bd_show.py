@@ -15,8 +15,6 @@ array when the bead is found. Normalize with
 list (see `normalize_bead`).
 """
 
-from __future__ import annotations
-
 import json
 import subprocess
 from typing import Any

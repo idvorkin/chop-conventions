@@ -13,8 +13,6 @@ Kept stdlib-only so tests and pre-commit hooks (no uv) can import this
 module directly. Typer lives only in each tool's `_build_app()`.
 """
 
-from __future__ import annotations
-
 import json
 import sys
 from concurrent.futures import ThreadPoolExecutor, as_completed
