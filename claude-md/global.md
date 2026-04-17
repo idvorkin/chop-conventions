@@ -61,6 +61,7 @@ Just do it - including obvious follow-up actions. Only pause when:
 - **`python3 <uv-script>` bypasses uv dep resolution.** Scripts with `#!/usr/bin/env -S uv run --script` + inline deps (`# /// script`) must be invoked directly (path + executable bit) so the shebang fires. Going through `python3` runs the raw source without uv resolving inline deps → `ModuleNotFoundError` for `typer`, `click`, etc. Applies to any Typer/Click CLI packaged as a uv-script (e.g. `telegram_debug.py`).
 - **Project-specific hooks belong in project `.claude/settings.json`, not global `~/.claude/settings.json`.** Global hooks fire for every session in every repo. If the hook's action targets one project's workflow (conversation logging, project-specific lint, `bd prime`, etc.), scope it to that repo's `.claude/settings.json`. Global is for truly cross-project patterns.
 - **`git commit` can silently no-op when a pre-commit hook reformats staged files.** The commit aborts (hook exit != 0) but a chained `&& git push` still fires — pushing an empty branch or the unchanged tip. Detection: after `git commit`, scan output for the `[branch sha] commit-message` confirmation line. If missing, the commit didn't land — re-stage the reformatted file and retry. Don't trust the chained-push output alone.
+- **Check PR state before pushing follow-up commits.** Run `gh pr view <N> --repo <r> --json state` — if `state == MERGED`, open a new PR for the follow-up work. Pushing to a merged PR's branch succeeds but leaves commits orphaned: the merge already happened at the PR's former tip, and new commits never reach main unless cherry-picked or re-PR'd. Non-obvious because `git push` succeeds regardless.
 - **Non-interactive `git rebase -i` via scripted editors.** For programmatic squashes in sessions without a human editor, write todo to `/tmp/rebase-todo.txt` and message to `/tmp/rebase-msg.txt`, then `GIT_SEQUENCE_EDITOR="cp /tmp/rebase-todo.txt" GIT_EDITOR="cp /tmp/rebase-msg.txt" git rebase -i <base>`. Supports `pick`/`fixup`/`reword`/`squash` in one pass. Always `git tag backup HEAD` first — reflog expires.
 - **Session token / context usage** — when asked "how many tokens am I using" or "how much context is left," read `~/.claude/statusline_last_input.json` with `jq`. The statusline script dumps the harness JSON there every turn; grab `.context_window.used_percentage`, `.context_window.context_window_size`, `.cost.total_cost_usd`. Don't guess from transcript length.
 - **Signing GitHub issues and comments on external repos.** When filing issues, PRs, or comments on repos _outside_ `idvorkin/*` and `idvorkin-ai-tools/*` (e.g., upstream projects, third-party libraries), end the body with this sign-off so Igor gets tagged and notified without relying on watch settings he doesn't have:
@@ -94,6 +95,17 @@ rmux_helper side-edit ~/blog/_d/ai-journal.md:42
 rmux_helper side-run "make test"
 rmux_helper side-edit   # status only
 ```
+
+## Agent Temp Files: `~/tmp/agent/<scope>/`
+
+**Agent temp files go under `~/tmp/agent/<scope>/`.** Scopes:
+
+- `side-edit/` for pre-edit snapshots
+- `notes/YYYY-MM-DD-<slug>.md` for reasoning docs (supersedes `/tmp/agent-notes/`)
+- `image/` for generated images awaiting user pick
+- `skill/<name>/` for skill scratch
+
+Never scatter under bare `/tmp/` or `~/tmp/` without a scope prefix. Root `~/tmp/` stays user-owned. Scoped hierarchy makes cleanup and reasoning tractable; flat `/tmp/` mixes agent state with system files and loses traceability on cleanup.
 
 ## Editing Skills: Symlink Trap
 
