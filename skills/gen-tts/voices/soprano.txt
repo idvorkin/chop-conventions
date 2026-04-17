@@ -1,7 +1,7 @@
 # Tony Soprano voice preset (style directive — NOT a Gemini voice ID).
 # Use via:
-#   generate-tts.py --style-preset soprano --voice Enceladus --text "..." --output out.wav
-#   generate-tts.py --style-file voices/soprano.txt --voice Enceladus --text "..." --output out.wav
+#   generate-tts.py single --style-preset soprano --voice Enceladus --text "..." --output out.wav
+#   generate-tts.py single --style-file voices/soprano.txt --voice Enceladus --text "..." --output out.wav
 # Comment lines (starting with '#') are stripped; the remaining body is
 # collapsed to one paragraph and prepended to the text as a director's note.
 #

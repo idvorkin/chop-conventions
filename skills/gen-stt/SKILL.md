@@ -140,7 +140,7 @@ a tight end-to-end test:
 GEN_TTS=~/gits/chop-conventions/skills/gen-tts/generate-tts.py
 GEN_STT=~/gits/chop-conventions/skills/gen-stt/parakeet-stt.py
 
-"$GEN_TTS" --text "Hello from Larry. This is the voice pipeline test." --output /tmp/roundtrip.wav
+"$GEN_TTS" single --text "Hello from Larry. This is the voice pipeline test." --output /tmp/roundtrip.wav
 "$GEN_STT" single /tmp/roundtrip.wav --output /tmp/roundtrip.txt
 cat /tmp/roundtrip.txt
 # → "Hello from Larry. This is the voice pipeline test."
