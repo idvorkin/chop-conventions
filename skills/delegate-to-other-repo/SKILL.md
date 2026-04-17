@@ -156,30 +156,67 @@ branches off current HEAD, auto-runs `npm install` / `cargo build`, and
 runs baseline tests — none of which are correct for delegating a change
 off a fresh canonical base ref that may be a doc-only edit.
 
-Full shell recipe lives at [`worktree-recipe.md`](worktree-recipe.md).
-Read that file and follow it verbatim. Key points:
+### Preferred: `prepare_dispatch.py`
 
-- Uses `git -C "$T"` throughout
-- Runs `git remote set-head origin --auto` after fetch to refresh
-  stale `refs/remotes/origin/HEAD` (plain `git fetch` does not)
-- Resolves default branch via `symbolic-ref` → `gh repo view` fallback
-  → literal `main`, with explicit `[ -z "$default_branch" ]` guards
-  to avoid a pipe-precedence bug
-- Derives a slug from the task description with a reproducible rule
-  (lowercase → non-alnum collapsed to `-` → ≤40 chars; empty/non-ASCII
-  falls back to `task-<timestamp>`; collisions get `-2`..`-9` suffixes
-  then a timestamp). Collision check covers BOTH `refs/heads/` and
-  `refs/remotes/origin/` to avoid non-fast-forward push rejection
-- Writes `.worktrees/` to `.git/info/exclude` (local-only, untracked,
-  branch-independent) — NOT a `.gitignore` commit. This avoids
-  mutating any branch's history, works regardless of target's
-  current branch, and survives branch-protected defaults
-- Creates the worktree at `.worktrees/delegated-<slug>` on branch
-  `delegated/<slug>` rooted at `$base_ref` — prefers
-  `upstream/<default>` when an `upstream` remote is present (the
-  normal fork-workflow case), else falls back to `origin/<default>`.
-  Basing off upstream avoids starting the subagent on a stale fork
-  ref when `origin` lags canonical.
+Run the helper — it performs all of Phase 1 resolve + Phase 2 worktree
+setup in a single call and returns the inputs Phase 3 needs as JSON:
+
+```bash
+skills/delegate-to-other-repo/prepare_dispatch.py \
+  --target <name|abs-path|rel-path> \
+  --slug <task-slug> \
+  --task "<task description>" \
+  --pretty
+```
+
+Add `--dry-run` to validate and inspect the JSON without creating the
+worktree or writing `.git/info/exclude`.
+
+Output shape:
+
+```json
+{
+  "worktree_path": "/abs/path/to/.worktrees/delegated-<slug>",
+  "branch": "delegated/<slug>",
+  "base_ref": "upstream/main",
+  "base_remote": "upstream",
+  "default_branch": "main",
+  "target_repo_slug": "owner/repo",
+  "session_log": "/path/to/jsonl or null",
+  "slug": "<final-slug-after-collision-resolution>",
+  "errors": []
+}
+```
+
+Non-empty `errors` means the helper stopped before creating the
+worktree — relay the first error to the user and abort. Typical causes:
+target path missing, not a git repo, `owner/repo` slug passed (helper
+does not clone), base ref unreachable after fetch.
+
+The helper does the following in order (all `git -C <target>`, never `cd`):
+
+- Resolves the target path (absolute path / relative path / bare name / rejects `owner/repo` slugs with a clone hint)
+- Fetches `origin` and `upstream` (if present) in parallel via `concurrent.futures`
+- Runs `git remote set-head origin --auto` to refresh stale `refs/remotes/origin/HEAD`
+- Resolves the default branch via `symbolic-ref` → `gh repo view` fallback → literal `main`, with explicit guards between each step (not `||` chains — pipe-precedence bug swallows exit codes)
+- Picks `upstream/<default>` when the `upstream` remote has the ref, else `origin/<default>`
+- Verifies the chosen base ref resolves
+- Sanitizes the slug (lowercase → non-alnum collapsed to `-` → ≤40 chars; non-ASCII / empty → `task-<timestamp>`)
+- Resolves collisions against BOTH `refs/heads/delegated/<slug>` AND `refs/remotes/origin/delegated/<slug>` (heads-only would let the push fail as non-fast-forward)
+- Idempotently appends `.worktrees/` to `<git-common-dir>/info/exclude` — local-only, branch-independent, avoids committing to any branch's `.gitignore`
+- Creates the worktree at `.worktrees/delegated-<slug>` on branch `delegated/<slug>` rooted at the chosen base ref
+- Resolves the parent session's Claude jsonl via `pwd -P` hashed with `[/.]` → `-` (both separators matter — `bar.github.io` hashes to `-bar-github-io`, not `-bar.github.io`)
+- Parses `owner/repo` from `git -C <T> remote get-url origin` (handles both HTTPS and SSH forms)
+
+### Testing
+
+```bash
+cd skills/delegate-to-other-repo && python3 -m unittest test_prepare_dispatch
+```
+
+Pure functions (slug sanitization, default-branch chain, base-ref
+selection, session-log hash, remote-URL parse) are unit-tested in
+isolation — no subprocess mocking required for those.
 
 ### V1 limitation
 
@@ -559,10 +596,24 @@ the brief uses plain-text formatting for all embedded structure
 - `up-to-date` — its `diagnose.py` helper is what the subagent uses
   as a fork-detection shortcut (Cases A and simple B only)
 
+## Manual fallback
+
+If `prepare_dispatch.py` is broken or unavailable (stale checkout,
+Python not on PATH, uv bootstrap failure), drop to the bash recipe at
+[`worktree-recipe.md`](worktree-recipe.md) and follow it verbatim. Same
+semantics — the Python helper was extracted FROM that recipe, and the
+unit tests pin the pure-function behavior byte-for-byte. Prefer the
+Python path whenever both work.
+
 ## Supplementary files
 
-- [`worktree-recipe.md`](worktree-recipe.md) — full shell recipe for
-  Phase 2, with safety checks and fallback chains
+- [`prepare_dispatch.py`](prepare_dispatch.py) — preferred Phase 1-3
+  helper (resolves target, fetches, picks base ref, slug-collision
+  resolves, creates worktree, emits JSON)
+- [`test_prepare_dispatch.py`](test_prepare_dispatch.py) — unit tests
+  for the helper's pure functions and dry-run orchestration
+- [`worktree-recipe.md`](worktree-recipe.md) — manual-fallback shell
+  recipe with full commentary on every step
 - [`brief-template.md`](brief-template.md) — the full self-contained
   brief the parent substitutes slots into and passes to Agent
 - [`fork-detection.md`](fork-detection.md) — the 4-case decision tree
