@@ -77,6 +77,63 @@ ln -s /path/to/chop-conventions/skills/<skill-name> <project>/.claude/skills/<sk
 
 Machine-level skills go in `~/.claude/skills/` and are available everywhere. Project-level skills go in `<project>/.claude/skills/` and are scoped to that repo.
 
+### Install Globally
+
+Several skills ship CLI helpers (e.g. `gen-tts`, `telegram_debug.py`, `watchdog.py`). Instead of typing the full path like `~/gits/chop-conventions/skills/gen-tts/generate-tts.py single …`, install them as short symlinks in `~/.local/bin`:
+
+```bash
+just bootstrap        # one-time: wires repo-versioned git hooks + runs install-tools
+# — OR —
+just install-tools    # just the symlinks, no hook wiring
+```
+
+After `bootstrap`, the repo-versioned hooks in `githooks/` run `install-tools.py --quiet` on every `git pull` / branch checkout, so new or renamed CLIs stay in sync automatically.
+
+Other targets:
+
+```bash
+just install-tools-dry-run   # preview planned changes
+just uninstall-tools         # remove symlinks that resolve into this repo
+```
+
+`install-tools.py` only touches symlinks whose targets resolve into this repo — it will never clobber unrelated files in `~/.local/bin`.
+
+Currently-exposed CLIs:
+
+| Command                 | Source                                         |
+| ----------------------- | ---------------------------------------------- |
+| `gen-tts`               | `skills/gen-tts/generate-tts.py`               |
+| `tg-doctor`             | `skills/harden-telegram/tools/telegram_debug.py` |
+| `tg-watchdog`           | `skills/harden-telegram/tools/watchdog.py`     |
+| `up-to-date-diag`       | `skills/up-to-date/diagnose.py`                |
+| `up-to-date-hook-trust` | `skills/up-to-date/hook_trust.py`              |
+
+Ensure `~/.local/bin` is on your `$PATH`.
+
+#### Optional: Claude Code SessionStart hook
+
+To re-sync symlinks at the start of every Claude Code session (belt-and-suspenders on top of the git hooks), add this to your `~/.claude/settings.json`:
+
+```json
+{
+  "hooks": {
+    "SessionStart": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "~/gits/chop-conventions/install-tools.py --quiet"
+          }
+        ]
+      }
+    ]
+  }
+}
+```
+
+This is per-user opt-in; the skill deliberately does not mutate global Claude Code settings on its own.
+
 ### Available Skills
 
 | Skill                    | Scope   | Description                                                                      |

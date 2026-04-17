@@ -1,0 +1,19 @@
+#!/usr/bin/env bash
+# chop-conventions post-checkout hook: re-sync ~/.local/bin symlinks when a
+# checkout changes the tree. Arguments per `git hooks`:
+#   $1 prev_head  $2 new_head  $3 branch_checkout_flag (1=branch, 0=file)
+# We only bother re-syncing on branch/worktree switches (flag == 1).
+set -u
+
+flag="${3:-0}"
+if [ "$flag" != "1" ]; then
+    exit 0
+fi
+
+repo_root="$(git rev-parse --show-toplevel 2>/dev/null)" || exit 0
+installer="$repo_root/install-tools.py"
+
+if [ -x "$installer" ]; then
+    "$installer" --quiet || echo "install-tools.py failed (post-checkout); continuing" >&2
+fi
+exit 0

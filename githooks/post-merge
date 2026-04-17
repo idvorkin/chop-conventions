@@ -1,0 +1,13 @@
+#!/usr/bin/env bash
+# chop-conventions post-merge hook: keep ~/.local/bin symlinks in sync with
+# whatever the repo currently exposes. Safe no-op if the installer is
+# missing or fails — we don't want to block `git pull`.
+set -u
+
+repo_root="$(git rev-parse --show-toplevel 2>/dev/null)" || exit 0
+installer="$repo_root/install-tools.py"
+
+if [ -x "$installer" ]; then
+    "$installer" --quiet || echo "install-tools.py failed (post-merge); continuing" >&2
+fi
+exit 0
