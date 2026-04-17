@@ -1,0 +1,20 @@
+[project]
+name = "chop-bulk"
+version = "0.1.0"
+description = "Bulk-parallel CLIs — turn N sequential gh/bd/git/file calls into 1 fan-out JSON."
+requires-python = ">=3.13"
+dependencies = ["typer>=0.12"]
+
+[project.scripts]
+bulk-gh-pr-details = "chop_bulk.gh_pr_details:main"
+bulk-gh-prs-open = "chop_bulk.gh_prs_open:main"
+bulk-bd-show = "chop_bulk.bd_show:main"
+bulk-up-to-date = "chop_bulk.up_to_date:main"
+bulk-file-read = "chop_bulk.file_read:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["chop_bulk"]

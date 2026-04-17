@@ -45,6 +45,7 @@ Walk back through the session and answer these prompts explicitly. Each should h
 3. **What was the _right_ place for content we initially put in the _wrong_ place?** (file choice, module boundary, doc location, skill boundary)
 4. **What pattern worked well enough to codify?** (idempotent boot hook, dep check before main loop, smoke test with low thresholds, rebase-before-PR)
 5. **What tool invocation ate time before landing on the right one?** (wrong flag, shadowed binary, pattern that matched unintended targets, subshell trap timing)
+6. **Were ≥3 similar sequential tool calls fired in a row?** (e.g. repeated `gh pr view`, `bd show`, small-file `Read`s across a list, `up-to-date` diagnose across N repos) — if yes, propose the `bulk` skill's matching `bulk-*` CLI, or a new `bulk-*` entry if none fits. One tool call firing N parallel sub-calls beats N sequential calls on wall-clock almost every time, and it keeps main-thread context cleaner.
 
 If fewer than two prompts have real answers, the session likely doesn't need CLAUDE.md updates. Tell the user and stop.
 
