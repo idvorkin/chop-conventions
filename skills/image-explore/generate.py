@@ -141,13 +141,20 @@ FLOOD_FUZZ_PERCENT = 30
 
 
 def _parse_srgb(fragment):
-    """Parse 'srgb(r,g,b)' or 'srgba(r,g,b,a)' — return (r,g,b) ints, or None."""
+    """Parse 'srgb(r,g,b)' or 'srgba(r,g,b,a)' — return (r,g,b) ints, or None.
+
+    Requires at least 3 comma-separated integer components inside the parens.
+    A malformed 'srgb(1,2)' returns None rather than a 2-tuple, so callers
+    can always unpack the result as (r,g,b) without a bounds check.
+    """
     fragment = fragment.strip()
     if not fragment.startswith(("srgb(", "srgba(")):
         return None
     try:
-        nums = fragment.split("(", 1)[1].rstrip(")").split(",")[:3]
-        return tuple(int(n) for n in nums)
+        parts = fragment.split("(", 1)[1].rstrip(")").split(",")
+        if len(parts) < 3:
+            return None
+        return tuple(int(p) for p in parts[:3])
     except (ValueError, IndexError):
         return None
 
