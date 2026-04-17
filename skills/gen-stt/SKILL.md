@@ -1,7 +1,7 @@
 ---
 name: gen-stt
 description: "Transcribe audio to text locally via NVIDIA Parakeet TDT 0.6B ONNX — single clip or batch parallel, no API key"
-argument-hint: "<audio-file-or-dir> [--output path.txt] [--json] [--batch-dir dir]"
+argument-hint: "single <file> | batch-dir <dir> | batch-files <file...> [--json] [--output path]"
 allowed-tools: Bash, Read, Write, Glob, Grep
 ---
 
@@ -21,8 +21,9 @@ voice-in / voice-out pipeline.
 
 Parse the user's input for:
 
-- **Input**: Audio file path (`--input`), directory of audio files
-  (`--batch-dir`), or space-separated list (`--batch-files`). Accepted
+- **Input**: Audio file path (`single` subcommand), directory of audio
+  files (`batch-dir` subcommand), or space-separated list (`batch-files`
+  subcommand). Accepted
   formats: WAV, OGG, OGA, MP3, M4A, FLAC, AAC, OPUS — anything ffmpeg
   can read. Non-WAV (or non-16kHz-mono) inputs are auto-transcoded to
   16 kHz mono 16-bit PCM WAV (Parakeet's training sample rate) in a
@@ -52,8 +53,8 @@ Parse the user's input for:
 - **Canonical script**: `parakeet-stt.py` — single Python entry point
   handling transcode detection, ffmpeg invocation, onnx-asr dispatch,
   and parallel batch via `ThreadPoolExecutor`. Uses PEP-723 inline
-  metadata with stdlib only (`subprocess`, `pathlib`, `wave`, `json`,
-  `argparse`, `concurrent.futures`), launched via `uv run --script`.
+  metadata with stdlib (`subprocess`, `pathlib`, `wave`, `json`,
+  `concurrent.futures`) plus `typer>=0.12`, launched via `uv run --script`.
 
 ## Model & Pipeline
 
@@ -93,13 +94,13 @@ level) and `ionice -p <pid>` (IO class `idle`).
 
 ```bash
 GEN_STT="$(git -C ~/gits/chop-conventions rev-parse --show-toplevel)/skills/gen-stt/parakeet-stt.py"
-"$GEN_STT" --input /tmp/clip.ogg --output /tmp/transcript.txt
+"$GEN_STT" single /tmp/clip.ogg --output /tmp/transcript.txt
 ```
 
 ### Single file — JSON output
 
 ```bash
-"$GEN_STT" --input /tmp/clip.wav --json --output /tmp/transcript.json
+"$GEN_STT" single /tmp/clip.wav --json --output /tmp/transcript.json
 ```
 
 Produces:
@@ -116,7 +117,7 @@ Produces:
 ### Batch (parallel) — directory
 
 ```bash
-"$GEN_STT" --batch-dir /tmp/voice-memos --output-dir /tmp/transcripts
+"$GEN_STT" batch-dir /tmp/voice-memos --output-dir /tmp/transcripts
 ```
 
 Every audio file under `/tmp/voice-memos` gets a `<stem>.txt` in
@@ -127,7 +128,7 @@ writes `<stem>.json` and emits a summary JSON on stdout. Without
 ### Batch — explicit file list
 
 ```bash
-"$GEN_STT" --batch-files /tmp/a.ogg /tmp/b.m4a /tmp/c.wav --json
+"$GEN_STT" batch-files /tmp/a.ogg /tmp/b.m4a /tmp/c.wav --json
 ```
 
 ## Round-Trip Integration Test
@@ -140,7 +141,7 @@ GEN_TTS=~/gits/chop-conventions/skills/gen-tts/generate-tts.py
 GEN_STT=~/gits/chop-conventions/skills/gen-stt/parakeet-stt.py
 
 "$GEN_TTS" --text "Hello from Larry. This is the voice pipeline test." --output /tmp/roundtrip.wav
-"$GEN_STT" --input /tmp/roundtrip.wav --output /tmp/roundtrip.txt
+"$GEN_STT" single /tmp/roundtrip.wav --output /tmp/roundtrip.txt
 cat /tmp/roundtrip.txt
 # → "Hello from Larry. This is the voice pipeline test."
 ```
