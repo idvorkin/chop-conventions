@@ -169,6 +169,8 @@ kill -TERM <pid-from-doctor>
 # Then run /reload-plugins from another context (or via the watchdog below).
 ```
 
+**Pair the kill with a polling cron.** In the same parallel tool-call batch as the kill, schedule `CronCreate` at `*/1 * * * *` to poll `telegram_debug.py undelivered`. The respawn window is 3–4 minutes; any inbound during that gap goes to a different session's bun and is invisible to this session. Delete the cron when the next untagged MCP reply confirms the bridge is back.
+
 **DO NOT** use `pkill -f 'bun.*server.ts'` — that's a broadcast kill that also nukes bridges owned by *other* Claude sessions on the same machine. Each Claude session spawns its own bun `server.ts` child. The doctor classifies them as `ours` / `other-session` / `orphaned` by walking the `ppid` chain up to the nearest `claude` ancestor; trust that, never age or count. The historical "older bun = zombie" heuristic is wrong — multi-session machines routinely have several legitimate bridges running concurrently.
 
 ### 2c. Watchdog reload (from a background shell — NEVER foreground)
