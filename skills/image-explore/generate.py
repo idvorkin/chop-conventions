@@ -1,20 +1,23 @@
-#!/usr/bin/env python3
+#!/usr/bin/env -S uv run --script
+# /// script
+# requires-python = ">=3.10"
+# dependencies = [
+#     "typer>=0.12",
+# ]
+# ///
 # ABOUTME: Wrapper around gemini-image.sh for image generation (single or batch).
 # ABOUTME: Handles env loading, prompt assembly, and ref image resolution safely.
 # ABOUTME: In batch mode, augments the input JSON with _prompt and _duration_s debug fields.
 #
 # Single mode:
-#   generate.py --scene "..." --shirt "TEXT" --output file.webp [options]
+#   generate.py single --scene "..." --shirt "TEXT" --output file.webp [options]
 #
 # Batch mode (parallel):
-#   generate.py --batch directions.json [--aspect 3:4] [--ref path] [--style "..."]
+#   generate.py batch directions.json [--aspect 3:4] [--ref path] [--style "..."]
 #
 # directions.json format:
 #   [{"scene": "...", "shirt": "TEXT", "output": "file.webp"}, ...]
 
-from __future__ import annotations
-
-import argparse
 import json
 import os
 import shutil
@@ -273,79 +276,87 @@ def generate_one(direction: Direction, config: GenerateConfig) -> GenerationResu
     )
 
 
-def main():
-    parser = argparse.ArgumentParser(
-        description="Generate raccoon images via Gemini (single or batch)",
+def _build_app():
+    """Wire Typer app. Called only from __main__ so tests skip the typer import."""
+    import typer
+
+    app = typer.Typer(
+        help="Generate raccoon images via Gemini (single or batch).",
+        add_completion=False,
+        no_args_is_help=True,
     )
 
-    # Batch mode
-    parser.add_argument(
-        "--batch",
-        metavar="JSON",
-        default=None,
-        help="JSON file with directions to generate in parallel",
-    )
+    @app.command()
+    def single(
+        scene: str = typer.Option(..., help="Scene description for the image"),
+        shirt: str = typer.Option(..., help="Text on the raccoon's shirt (max 8 chars)"),
+        output: str = typer.Option(..., help="Output filename (e.g., mountain.webp)"),
+        aspect: str = typer.Option("3:4", help="Aspect ratio (default: 3:4)"),
+        ref: str | None = typer.Option(None, help="Override reference image path"),
+        style: str | None = typer.Option(None, help="Override default raccoon style"),
+        transparent: bool = typer.Option(
+            False,
+            help="Generate on magenta chroma-key background, then strip it via ImageMagick edge-connected flood fill from the 4 corners (preserves interior magenta-tinted pixels)",
+        ),
+    ) -> None:
+        """Generate a single raccoon image."""
+        chop_root = resolve_chop_root()
+        load_env()
 
-    # Single mode
-    parser.add_argument("--scene", default=None, help="Scene description for the image")
-    parser.add_argument(
-        "--shirt", default=None, help="Text on the raccoon's shirt (max 8 chars)"
-    )
-    parser.add_argument(
-        "--output", default=None, help="Output filename (e.g., mountain.webp)"
-    )
+        if not os.environ.get("GOOGLE_API_KEY"):
+            print(
+                "Error: GOOGLE_API_KEY not found in environment or ~/.env",
+                file=sys.stderr,
+            )
+            sys.exit(1)
 
-    # Shared options
-    parser.add_argument("--aspect", default="3:4", help="Aspect ratio (default: 3:4)")
-    parser.add_argument("--ref", default=None, help="Override reference image path")
-    parser.add_argument("--style", default=None, help="Override default raccoon style")
-    parser.add_argument(
-        "--transparent",
-        action="store_true",
-        default=False,
-        help="Generate on magenta chroma-key background, then strip it via ImageMagick edge-connected flood fill from the 4 corners (preserves interior magenta-tinted pixels)",
-    )
-
-    args = parser.parse_args()
-
-    # Validate: must be batch or single, not both/neither
-    is_batch = args.batch is not None
-    is_single = args.scene is not None
-    if not is_batch and not is_single:
-        parser.error("Provide --batch JSON or --scene/--shirt/--output for single mode")
-    if is_batch and is_single:
-        parser.error("Cannot use --batch with --scene/--shirt/--output")
-    if is_single and (not args.shirt or not args.output):
-        parser.error("Single mode requires --scene, --shirt, and --output")
-
-    chop_root = resolve_chop_root()
-    load_env()
-
-    if not os.environ.get("GOOGLE_API_KEY"):
-        print(
-            "Error: GOOGLE_API_KEY not found in environment or ~/.env", file=sys.stderr
+        config = GenerateConfig(
+            gemini_script=str(chop_root / "skills" / "gen-image" / "gemini-image.sh"),
+            style=style or read_default_style(chop_root),
+            ref_image=ref or resolve_ref_image(),
+            aspect=aspect,
+            transparent=transparent,
         )
-        sys.exit(1)
 
-    config = GenerateConfig(
-        gemini_script=str(chop_root / "skills" / "gen-image" / "gemini-image.sh"),
-        style=args.style or read_default_style(chop_root),
-        ref_image=args.ref or resolve_ref_image(),
-        aspect=args.aspect,
-        transparent=args.transparent,
-    )
-
-    if is_single:
-        direction = Direction(scene=args.scene, shirt=args.shirt, output=args.output)
+        direction = Direction(scene=scene, shirt=shirt, output=output)
         result = generate_one(direction, config)
         if not result.success:
             print(f"Error: {result.error}", file=sys.stderr)
             sys.exit(1)
         print(result.output)
         print(f"Generated in {result.duration_s}s", file=sys.stderr)
-    else:
-        # Batch mode: read directions JSON and generate in parallel
-        batch_path = Path(args.batch)
+
+    @app.command()
+    def batch(
+        json_file: str = typer.Argument(help="JSON file with directions to generate in parallel"),
+        aspect: str = typer.Option("3:4", help="Aspect ratio (default: 3:4)"),
+        ref: str | None = typer.Option(None, help="Override reference image path"),
+        style: str | None = typer.Option(None, help="Override default raccoon style"),
+        transparent: bool = typer.Option(
+            False,
+            help="Generate on magenta chroma-key background, then strip it via ImageMagick edge-connected flood fill from the 4 corners (preserves interior magenta-tinted pixels)",
+        ),
+    ) -> None:
+        """Generate images in parallel from a JSON manifest."""
+        chop_root = resolve_chop_root()
+        load_env()
+
+        if not os.environ.get("GOOGLE_API_KEY"):
+            print(
+                "Error: GOOGLE_API_KEY not found in environment or ~/.env",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+
+        config = GenerateConfig(
+            gemini_script=str(chop_root / "skills" / "gen-image" / "gemini-image.sh"),
+            style=style or read_default_style(chop_root),
+            ref_image=ref or resolve_ref_image(),
+            aspect=aspect,
+            transparent=transparent,
+        )
+
+        batch_path = Path(json_file)
         if not batch_path.exists():
             print(f"Error: Batch file not found: {batch_path}", file=sys.stderr)
             sys.exit(1)
@@ -390,7 +401,9 @@ def main():
                     print(result.output)
                 else:
                     failures.append((result.output, result.error))
-                    print(f"FAILED: {result.output} — {result.error}", file=sys.stderr)
+                    print(
+                        f"FAILED: {result.output} — {result.error}", file=sys.stderr
+                    )
 
         batch_duration = round(time.monotonic() - batch_t0, 1)
 
@@ -409,6 +422,8 @@ def main():
             file=sys.stderr,
         )
 
+    return app
+
 
 if __name__ == "__main__":
-    main()
+    _build_app()()

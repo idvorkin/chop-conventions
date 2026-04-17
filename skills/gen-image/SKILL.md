@@ -85,7 +85,7 @@ Use `generate.py` from the `image-explore` skill. It handles env loading (`~/.en
 2. **Single image:**
 
    ```bash
-   python3 "$GEN" --scene "Raccoon lifting kettlebell in a gym" --shirt "FIT" --output raccoon-kettlebell.webp
+   uv run "$GEN" single --scene "Raccoon lifting kettlebell in a gym" --shirt "FIT" --output raccoon-kettlebell.webp
    ```
 
    Pass `--aspect`, `--ref`, or `--style` to override defaults.
@@ -108,7 +108,7 @@ Use `generate.py` from the `image-explore` skill. It handles env loading (`~/.en
    ```
 
    ```bash
-   python3 "$GEN" --batch illustrations.json --aspect 3:4
+   uv run "$GEN" batch illustrations.json --aspect 3:4
    ```
 
 4. After generation, show each image to the user by reading the file with the Read tool (which renders images inline).
