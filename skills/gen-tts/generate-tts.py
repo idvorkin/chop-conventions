@@ -1,26 +1,23 @@
 #!/usr/bin/env -S uv run --script
 # /// script
 # requires-python = ">=3.11"
-# dependencies = []
+# dependencies = ["typer>=0.12"]
 # ///
 # ABOUTME: Python-only Gemini 3.1 Flash TTS generator — single clip or parallel batch.
-# ABOUTME: Stdlib-only (urllib, wave, struct); no requests/httpx/jq/curl deps.
+# ABOUTME: Stdlib-only core (urllib, wave, struct); Typer for CLI. No requests/httpx/jq/curl deps.
 # ABOUTME: In batch mode, augments the input JSON with _duration_s debug fields.
 #
 # Single mode:
-#   generate-tts.py --text "Hello [short pause] world." --output greeting.wav
-#   generate-tts.py --text-file script.txt --output read.wav --voice Kore
-#   echo "piped text" | generate-tts.py --output out.wav
+#   generate-tts.py single --text "Hello [short pause] world." --output greeting.wav
+#   generate-tts.py single --text-file script.txt --output read.wav --voice Kore
+#   echo "piped text" | generate-tts.py single --output out.wav
 #
 # Batch mode (parallel):
-#   generate-tts.py --batch lines.json
+#   generate-tts.py batch lines.json
 #
 # lines.json format:
 #   [{"text": "...", "output": "file.wav", "voice": "Kore"}, ...]
 
-from __future__ import annotations
-
-import argparse
 import base64
 import json
 import os
@@ -451,250 +448,295 @@ def generate_one(job: TTSJob, api_url: str, api_key: str) -> TTSResult:
 # ----- CLI ---------------------------------------------------------------
 
 
-def main() -> None:
-    parser = argparse.ArgumentParser(
-        description="Generate speech audio via Gemini 3.1 Flash TTS (single or batch)",
+def _build_app():
+    """Wire Typer app. Called only from __main__ so tests skip the typer import."""
+    import typer
+    from typing import Optional
+
+    app = typer.Typer(
+        help="Generate speech audio via Gemini 3.1 Flash TTS (single or batch).",
+        add_completion=False,
+        no_args_is_help=True,
     )
 
-    # Batch mode
-    parser.add_argument(
-        "--batch",
-        metavar="JSON",
-        default=None,
-        help="JSON file with jobs to generate in parallel",
-    )
-
-    # Single mode
-    parser.add_argument("--text", default=None, help="Text to synthesize")
-    parser.add_argument(
-        "--text-file",
-        default=None,
-        help="Read text from file (alternative to --text)",
-    )
-    parser.add_argument(
-        "--output", default=None, help="Output WAV filename (e.g., greeting.wav)"
-    )
-
-    # Shared options
-    parser.add_argument(
-        "--voice",
-        default=None,
-        help=(
-            "Voice preset name (resolves voices/<name>.txt single-line) or "
-            "literal Gemini voice (e.g. Kore, Puck, Charon). Default: read "
-            "tts-voice.txt"
+    @app.command()
+    def single(
+        text: Optional[str] = typer.Option(None, help="Text to synthesize"),
+        text_file: Optional[str] = typer.Option(
+            None, "--text-file", help="Read text from file (alternative to --text)"
         ),
-    )
-    parser.add_argument(
-        "--style-prompt",
-        default=None,
-        help=(
-            "Director's-notes style prefix prepended to the text (e.g. "
-            "'Speak in a warm Newcastle accent.')"
+        output: str = typer.Option(
+            ..., help="Output WAV filename (e.g., greeting.wav)"
         ),
-    )
-    parser.add_argument(
-        "--style-preset",
-        default=None,
-        help=(
-            "Name of a multi-line style file under voices/<name>.txt (e.g. "
-            "freud, soprano). Mutually exclusive with --style-prompt / --style-file"
+        voice: Optional[str] = typer.Option(
+            None,
+            help=(
+                "Voice preset name (resolves voices/<name>.txt single-line) or "
+                "literal Gemini voice (e.g. Kore, Puck, Charon). Default: read "
+                "tts-voice.txt"
+            ),
         ),
-    )
-    parser.add_argument(
-        "--style-file",
-        default=None,
-        help=(
-            "Path to a multi-line style-directive file (comment lines stripped). "
-            "Mutually exclusive with --style-prompt / --style-preset"
+        style_prompt: Optional[str] = typer.Option(
+            None,
+            "--style-prompt",
+            help=(
+                "Director's-notes style prefix prepended to the text (e.g. "
+                "'Speak in a warm Newcastle accent.')"
+            ),
         ),
-    )
-    parser.add_argument(
-        "--api-url",
-        default=DEFAULT_API_URL,
-        help="Override Gemini endpoint URL",
-    )
-    parser.add_argument(
-        "--max-workers",
-        type=int,
-        default=4,
-        help="Parallel batch worker count (default: 4)",
-    )
+        style_preset: Optional[str] = typer.Option(
+            None,
+            "--style-preset",
+            help=(
+                "Name of a multi-line style file under voices/<name>.txt (e.g. "
+                "freud, soprano). Mutually exclusive with --style-prompt / --style-file"
+            ),
+        ),
+        style_file: Optional[str] = typer.Option(
+            None,
+            "--style-file",
+            help=(
+                "Path to a multi-line style-directive file (comment lines stripped). "
+                "Mutually exclusive with --style-prompt / --style-preset"
+            ),
+        ),
+        api_url: str = typer.Option(
+            DEFAULT_API_URL,
+            "--api-url",
+            help="Override Gemini endpoint URL",
+        ),
+    ) -> None:
+        """Synthesize one clip from --text, --text-file, or stdin."""
+        if text and text_file:
+            print("Error: Use either --text or --text-file, not both", file=sys.stderr)
+            raise typer.Exit(1)
 
-    args = parser.parse_args()
-
-    is_batch = args.batch is not None
-    is_single = (
-        args.text is not None or args.text_file is not None or not sys.stdin.isatty()
-    )
-    if is_batch and (args.text is not None or args.text_file is not None):
-        parser.error("Cannot combine --batch with --text/--text-file")
-    if args.text and args.text_file:
-        parser.error("Use either --text or --text-file, not both")
-
-    style_flags = [args.style_prompt, args.style_preset, args.style_file]
-    if sum(1 for s in style_flags if s) > 1:
-        parser.error(
-            "Pass at most one of --style-prompt / --style-preset / --style-file"
-        )
-
-    skill_dir = resolve_skill_dir()
-    load_env()
-
-    api_key = os.environ.get("GOOGLE_API_KEY")
-    if not api_key:
-        print(
-            "Error: GOOGLE_API_KEY not found in environment or ~/.env",
-            file=sys.stderr,
-        )
-        sys.exit(1)
-
-    # ----- Single mode (includes stdin-piped input) -----
-    if not is_batch:
-        # Resolve text: --text > --text-file > stdin
-        if args.text is not None:
-            text = args.text
-        elif args.text_file is not None:
-            text = Path(args.text_file).read_text().strip()
-        elif not sys.stdin.isatty():
-            text = sys.stdin.read().strip()
-        else:
-            parser.error(
-                "Provide --batch JSON, --text/--text-file, or pipe text on stdin"
+        style_flags = [style_prompt, style_preset, style_file]
+        if sum(1 for s in style_flags if s) > 1:
+            print(
+                "Error: Pass at most one of --style-prompt / --style-preset / --style-file",
+                file=sys.stderr,
             )
-            return  # unreachable — parser.error calls sys.exit
+            raise typer.Exit(1)
 
-        if not text:
+        skill_dir = resolve_skill_dir()
+        load_env()
+
+        api_key = os.environ.get("GOOGLE_API_KEY")
+        if not api_key:
+            print(
+                "Error: GOOGLE_API_KEY not found in environment or ~/.env",
+                file=sys.stderr,
+            )
+            raise typer.Exit(1)
+
+        # Resolve text: --text > --text-file > stdin
+        if text is not None:
+            resolved_text = text
+        elif text_file is not None:
+            resolved_text = Path(text_file).read_text().strip()
+        elif not sys.stdin.isatty():
+            resolved_text = sys.stdin.read().strip()
+        else:
+            print(
+                "Error: Provide --text, --text-file, or pipe text on stdin",
+                file=sys.stderr,
+            )
+            raise typer.Exit(1)
+
+        if not resolved_text:
             print("Error: no text provided (pass as arg or via stdin)", file=sys.stderr)
-            sys.exit(2)
-        if not args.output:
-            parser.error("Single mode requires --output")
+            raise typer.Exit(2)
 
-        voice = resolve_voice_preset(skill_dir, args.voice)
+        resolved_voice = resolve_voice_preset(skill_dir, voice)
         try:
-            style_prompt = resolve_style(
-                skill_dir, args.style_prompt, args.style_preset, args.style_file
+            resolved_style = resolve_style(
+                skill_dir, style_prompt, style_preset, style_file
             )
         except FileNotFoundError as e:
             print(f"Error: {e}", file=sys.stderr)
-            sys.exit(2)
+            raise typer.Exit(2)
 
         job = TTSJob(
-            text=text,
-            output=args.output,
-            voice=voice,
-            style_prompt=style_prompt,
+            text=resolved_text,
+            output=output,
+            voice=resolved_voice,
+            style_prompt=resolved_style,
         )
-        result = generate_one(job, args.api_url, api_key)
+        result = generate_one(job, api_url, api_key)
         if not result.success:
             print(f"Error: {result.error}", file=sys.stderr)
-            sys.exit(1)
+            raise typer.Exit(1)
         print(result.output)
         print(f"Generated in {result.duration_s}s", file=sys.stderr)
-        return
 
-    # ----- Batch mode -----
-    batch_path = Path(args.batch)
-    if not batch_path.exists():
-        print(f"Error: Batch file not found: {batch_path}", file=sys.stderr)
-        sys.exit(1)
+    @app.command()
+    def batch(
+        json_file: str = typer.Argument(help="JSON file with jobs to generate in parallel"),
+        voice: Optional[str] = typer.Option(
+            None,
+            help=(
+                "Voice preset name (resolves voices/<name>.txt single-line) or "
+                "literal Gemini voice (e.g. Kore, Puck, Charon). Default: read "
+                "tts-voice.txt"
+            ),
+        ),
+        style_prompt: Optional[str] = typer.Option(
+            None,
+            "--style-prompt",
+            help=(
+                "Director's-notes style prefix prepended to the text (e.g. "
+                "'Speak in a warm Newcastle accent.')"
+            ),
+        ),
+        style_preset: Optional[str] = typer.Option(
+            None,
+            "--style-preset",
+            help=(
+                "Name of a multi-line style file under voices/<name>.txt (e.g. "
+                "freud, soprano). Mutually exclusive with --style-prompt / --style-file"
+            ),
+        ),
+        style_file: Optional[str] = typer.Option(
+            None,
+            "--style-file",
+            help=(
+                "Path to a multi-line style-directive file (comment lines stripped). "
+                "Mutually exclusive with --style-prompt / --style-preset"
+            ),
+        ),
+        api_url: str = typer.Option(
+            DEFAULT_API_URL,
+            "--api-url",
+            help="Override Gemini endpoint URL",
+        ),
+        max_workers: int = typer.Option(
+            4, "--max-workers", help="Parallel batch worker count"
+        ),
+    ) -> None:
+        """Generate clips in parallel from a JSON manifest."""
+        style_flags = [style_prompt, style_preset, style_file]
+        if sum(1 for s in style_flags if s) > 1:
+            print(
+                "Error: Pass at most one of --style-prompt / --style-preset / --style-file",
+                file=sys.stderr,
+            )
+            raise typer.Exit(1)
 
-    with open(batch_path) as f:
-        raw_jobs = json.load(f)
+        skill_dir = resolve_skill_dir()
+        load_env()
 
-    if not raw_jobs:
-        print("Error: No jobs in batch file", file=sys.stderr)
-        sys.exit(1)
+        api_key = os.environ.get("GOOGLE_API_KEY")
+        if not api_key:
+            print(
+                "Error: GOOGLE_API_KEY not found in environment or ~/.env",
+                file=sys.stderr,
+            )
+            raise typer.Exit(1)
 
-    # Map output filename -> raw dict for augmenting with debug info
-    job_by_output = {d["output"]: d for d in raw_jobs}
-    jobs: list[TTSJob] = []
-    try:
-        cli_style = resolve_style(
-            skill_dir, args.style_prompt, args.style_preset, args.style_file
-        )
-    except FileNotFoundError as e:
-        print(f"Error: {e}", file=sys.stderr)
-        sys.exit(2)
-    for d in raw_jobs:
-        voice = resolve_voice_preset(skill_dir, d.get("voice"))
+        batch_path = Path(json_file)
+        if not batch_path.exists():
+            print(f"Error: Batch file not found: {batch_path}", file=sys.stderr)
+            raise typer.Exit(1)
+
+        with open(batch_path) as f:
+            raw_jobs = json.load(f)
+
+        if not raw_jobs:
+            print("Error: No jobs in batch file", file=sys.stderr)
+            raise typer.Exit(1)
+
+        # Map output filename -> raw dict for augmenting with debug info
+        job_by_output = {d["output"]: d for d in raw_jobs}
+        jobs: list[TTSJob] = []
         try:
-            job_style = resolve_style(
-                skill_dir,
-                d.get("style_prompt"),
-                d.get("style_preset"),
-                d.get("style_file"),
+            cli_style = resolve_style(
+                skill_dir, style_prompt, style_preset, style_file
             )
         except FileNotFoundError as e:
-            print(f"Error: {e} (job output={d.get('output')})", file=sys.stderr)
-            sys.exit(2)
-        style_prompt = job_style if job_style is not None else cli_style
-        jobs.append(
-            TTSJob(
-                text=d["text"],
-                output=d["output"],
-                voice=voice,
-                style_prompt=style_prompt,
+            print(f"Error: {e}", file=sys.stderr)
+            raise typer.Exit(2)
+        for d in raw_jobs:
+            resolved_voice = resolve_voice_preset(skill_dir, d.get("voice"))
+            try:
+                job_style = resolve_style(
+                    skill_dir,
+                    d.get("style_prompt"),
+                    d.get("style_preset"),
+                    d.get("style_file"),
+                )
+            except FileNotFoundError as e:
+                print(f"Error: {e} (job output={d.get('output')})", file=sys.stderr)
+                raise typer.Exit(2)
+            resolved_style = job_style if job_style is not None else cli_style
+            jobs.append(
+                TTSJob(
+                    text=d["text"],
+                    output=d["output"],
+                    voice=resolved_voice,
+                    style_prompt=resolved_style,
+                )
             )
-        )
 
-    print(
-        f"Generating {len(jobs)} audio clips in parallel (max_workers={args.max_workers})...",
-        file=sys.stderr,
-    )
-    failures: list[tuple[str, str | None]] = []
-
-    batch_t0 = time.monotonic()
-    workers = min(args.max_workers, len(jobs))
-    with ThreadPoolExecutor(max_workers=workers) as pool:
-        futures = {
-            pool.submit(generate_one, j, args.api_url, api_key): j for j in jobs
-        }
-        for future in as_completed(futures):
-            result = future.result()
-            if result.output in job_by_output:
-                job_by_output[result.output]["_duration_s"] = result.duration_s
-            if result.success:
-                print(result.output)
-            else:
-                failures.append((result.output, result.error))
-                print(f"FAILED: {result.output} — {result.error}", file=sys.stderr)
-
-    batch_duration = round(time.monotonic() - batch_t0, 1)
-
-    # Atomic write: tempfile in same dir + os.replace, so a crash mid-write
-    # leaves the original batch file intact rather than a half-written one.
-    tmp_fd, tmp_path = None, None
-    try:
-        import tempfile
-
-        tmp_fd, tmp_path = tempfile.mkstemp(
-            dir=batch_path.parent, prefix=batch_path.name + ".", suffix=".tmp"
-        )
-        with os.fdopen(tmp_fd, "w") as f:
-            tmp_fd = None  # fdopen took ownership
-            json.dump(raw_jobs, f, indent=2)
-            f.flush()
-            os.fsync(f.fileno())
-        os.replace(tmp_path, batch_path)
-        tmp_path = None
-    finally:
-        if tmp_fd is not None:
-            os.close(tmp_fd)
-        if tmp_path is not None and os.path.exists(tmp_path):
-            os.unlink(tmp_path)
-
-    if failures:
         print(
-            f"\n{len(failures)}/{len(jobs)} failed ({batch_duration}s total)",
+            f"Generating {len(jobs)} audio clips in parallel (max_workers={max_workers})...",
             file=sys.stderr,
         )
-        sys.exit(1)
-    print(
-        f"\nAll {len(jobs)} clips generated ({batch_duration}s total)",
-        file=sys.stderr,
-    )
+        failures: list[tuple[str, str | None]] = []
+
+        batch_t0 = time.monotonic()
+        workers = min(max_workers, len(jobs))
+        with ThreadPoolExecutor(max_workers=workers) as pool:
+            futures = {
+                pool.submit(generate_one, j, api_url, api_key): j for j in jobs
+            }
+            for future in as_completed(futures):
+                result = future.result()
+                if result.output in job_by_output:
+                    job_by_output[result.output]["_duration_s"] = result.duration_s
+                if result.success:
+                    print(result.output)
+                else:
+                    failures.append((result.output, result.error))
+                    print(f"FAILED: {result.output} — {result.error}", file=sys.stderr)
+
+        batch_duration = round(time.monotonic() - batch_t0, 1)
+
+        # Atomic write: tempfile in same dir + os.replace, so a crash mid-write
+        # leaves the original batch file intact rather than a half-written one.
+        tmp_fd, tmp_path = None, None
+        try:
+            import tempfile
+
+            tmp_fd, tmp_path = tempfile.mkstemp(
+                dir=batch_path.parent, prefix=batch_path.name + ".", suffix=".tmp"
+            )
+            with os.fdopen(tmp_fd, "w") as f:
+                tmp_fd = None  # fdopen took ownership
+                json.dump(raw_jobs, f, indent=2)
+                f.flush()
+                os.fsync(f.fileno())
+            os.replace(tmp_path, batch_path)
+            tmp_path = None
+        finally:
+            if tmp_fd is not None:
+                os.close(tmp_fd)
+            if tmp_path is not None and os.path.exists(tmp_path):
+                os.unlink(tmp_path)
+
+        if failures:
+            print(
+                f"\n{len(failures)}/{len(jobs)} failed ({batch_duration}s total)",
+                file=sys.stderr,
+            )
+            raise typer.Exit(1)
+        print(
+            f"\nAll {len(jobs)} clips generated ({batch_duration}s total)",
+            file=sys.stderr,
+        )
+
+    return app
 
 
 if __name__ == "__main__":
-    main()
+    _build_app()()

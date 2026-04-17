@@ -1,7 +1,7 @@
 ---
 name: gen-tts
 description: "Synthesize speech audio via Gemini 3.1 Flash TTS — single clip, batch parallel, voice + style presets"
-argument-hint: "<text-or-file> [--voice NAME] [--style-preset NAME] [--output path.wav] [--batch file.json]"
+argument-hint: "single --text <text> --output path.wav | batch file.json [--voice NAME] [--style-preset NAME]"
 allowed-tools: Bash, Read, Write, Glob, Grep, AskUserQuestion
 ---
 
@@ -25,7 +25,7 @@ Parse the user's input for:
 - **`--style-preset NAME`**: Load a multi-line style directive from `voices/<NAME>.txt` (e.g. `freud`, `soprano`). Comment lines stripped, body collapsed to one paragraph, prepended as a director's note. Mutually exclusive with `--style-prompt` / `--style-file`.
 - **`--style-file PATH`**: Like `--style-preset` but takes an explicit file path (for styles kept outside the skill dir).
 - **`--output path.wav`**: Where to save the WAV file
-- **`--batch file.json`**: Parallel batch mode (see shape below)
+- **`batch file.json`**: Parallel batch mode subcommand (see shape below)
 - **`--api-url URL`**: Override the Gemini endpoint (rarely needed; useful for testing against a proxy)
 
 `--voice` (Gemini voice ID) and `--style-*` (director's notes prepended to
@@ -36,7 +36,7 @@ freud` pairs the Charon baritone with Freud's Viennese pacing.
 
 - **Auth**: `GOOGLE_API_KEY` — auto-loaded from `~/.env` by `generate-tts.py` (same var as `gen-image`). Passed as an `x-goog-api-key` header so the key never leaks into URL access logs, shell traces, or proxy logs.
 - **Default voice**: Read from `tts-voice.txt` in this skill's directory
-- **Single entry point**: `generate-tts.py` — handles the HTTP call, WAV assembly, env loading, voice resolution, and parallel batch execution. Stdlib-only (no `requests` / `httpx` / `jq` / `curl` deps); the PEP-723 shebang (`#!/usr/bin/env -S uv run --script`) means it runs without a local venv.
+- **Single entry point**: `generate-tts.py` — handles the HTTP call, WAV assembly, env loading, voice resolution, and parallel batch execution. Stdlib core with Typer for CLI (no `requests` / `httpx` / `jq` / `curl` deps); the PEP-723 shebang (`#!/usr/bin/env -S uv run --script`) means it runs without a local venv. Two subcommands: `single` (one clip) and `batch` (parallel from JSON manifest).
 
 ## Model & Endpoint
 
@@ -106,25 +106,25 @@ GEN_TTS="$(git -C ~/gits/chop-conventions rev-parse --show-toplevel)/skills/gen-
 ### Single clip — text arg
 
 ```bash
-"$GEN_TTS" --text "Hello from Larry. [short pause] This is a voice pipeline test." --output /tmp/larry.wav
+"$GEN_TTS" single --text "Hello from Larry. [short pause] This is a voice pipeline test." --output /tmp/larry.wav
 ```
 
 ### Single clip — text file or stdin
 
 ```bash
-"$GEN_TTS" --text-file /tmp/script.txt --output /tmp/read.wav --voice Charon
-echo "piped text" | "$GEN_TTS" --output /tmp/piped.wav
+"$GEN_TTS" single --text-file /tmp/script.txt --output /tmp/read.wav --voice Charon
+echo "piped text" | "$GEN_TTS" single --output /tmp/piped.wav
 ```
 
 ### Single clip — character style preset
 
 ```bash
 # Freud's Viennese analyst voice, baritone
-"$GEN_TTS" --text "Tell me about your mother." --voice Charon \
+"$GEN_TTS" single --text "Tell me about your mother." --voice Charon \
   --style-preset freud --output /tmp/freud.wav
 
 # Inline director's notes (no preset)
-"$GEN_TTS" --text "Welcome aboard." --voice Puck \
+"$GEN_TTS" single --text "Welcome aboard." --voice Puck \
   --style-prompt "Speak with the warmth of a flight attendant greeting family." \
   --output /tmp/welcome.wav
 ```
@@ -162,7 +162,7 @@ CLI provides a default that per-job entries can override.
 Then:
 
 ```bash
-"$GEN_TTS" --batch /tmp/lines.json --max-workers 4
+"$GEN_TTS" batch /tmp/lines.json --max-workers 4
 ```
 
 `_duration_s` is written back into each job object for debug visibility. The batch file is rewritten atomically (tempfile + `os.replace`) so a crash mid-write never corrupts the input.
