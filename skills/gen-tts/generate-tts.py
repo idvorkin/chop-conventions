@@ -10,18 +10,21 @@
 # Single mode:
 #   generate-tts.py single --text "Hello [short pause] world." --output greeting.wav
 #   generate-tts.py single --text-file script.txt --output read.wav --voice Kore
+#   generate-tts.py single --style-preset freud --speed 1.8 --text "..." --output out.wav
 #   echo "piped text" | generate-tts.py single --output out.wav
 #
 # Batch mode (parallel):
 #   generate-tts.py batch lines.json
+#   generate-tts.py batch lines.json --speed 1.2   # default for jobs missing 'speed'
 #
 # lines.json format:
-#   [{"text": "...", "output": "file.wav", "voice": "Kore"}, ...]
+#   [{"text": "...", "output": "file.wav", "voice": "Kore", "speed": 1.0}, ...]
 
 import base64
 import json
 import os
 import struct
+import subprocess
 import sys
 import time
 import urllib.error
@@ -54,6 +57,7 @@ class TTSJob:
     output: str
     voice: str
     style_prompt: str | None = None  # Director's-notes prefix; see resolve_style()
+    speed: float = 1.0  # Post-process tempo multiplier via ffmpeg atempo. 1.0 = no change.
 
 
 @dataclass
@@ -404,6 +408,57 @@ def pcm_to_wav(
         f.write(header + pcm_bytes)
 
 
+# ----- Post-processing ---------------------------------------------------
+
+
+def atempo_filter_chain(speed: float) -> str:
+    """Build an ffmpeg -filter:a expression for the requested speed.
+
+    ffmpeg's atempo filter accepts 0.5–100.0, but quality degrades outside
+    [0.5, 2.0]. For speeds outside that band we chain atempo filters so each
+    individual step stays in range.
+    """
+    if speed < 0.5 or speed > 100.0:
+        raise ValueError(f"speed must be in [0.5, 100.0], got {speed}")
+    if 0.5 <= speed <= 2.0:
+        return f"atempo={speed}"
+    # Chain 2.0-multipliers until the remainder fits, then apply it.
+    filters: list[str] = []
+    remainder = speed
+    while remainder > 2.0:
+        filters.append("atempo=2.0")
+        remainder /= 2.0
+    while remainder < 0.5:
+        filters.append("atempo=0.5")
+        remainder *= 2.0
+    filters.append(f"atempo={remainder}")
+    return ",".join(filters)
+
+
+def post_process_speed(wav_path: str, speed: float) -> None:
+    """Apply an ffmpeg atempo pass in-place. No-op for speed == 1.0."""
+    if speed == 1.0:
+        return
+    tmp_path = wav_path + ".speed.tmp.wav"
+    cmd = [
+        "ffmpeg", "-y", "-nostdin", "-loglevel", "error",
+        "-i", wav_path,
+        "-filter:a", atempo_filter_chain(speed),
+        tmp_path,
+    ]
+    try:
+        subprocess.run(cmd, check=True)
+    except FileNotFoundError as exc:
+        raise TTSError(
+            "ffmpeg not found on PATH — required for --speed post-processing"
+        ) from exc
+    except subprocess.CalledProcessError as exc:
+        if os.path.exists(tmp_path):
+            os.unlink(tmp_path)
+        raise TTSError(f"ffmpeg atempo failed (speed={speed}): {exc}") from exc
+    os.replace(tmp_path, wav_path)
+
+
 # ----- Single-job driver -------------------------------------------------
 
 
@@ -419,6 +474,8 @@ def generate_one(job: TTSJob, api_url: str, api_key: str) -> TTSResult:
         text = compose_prompt(job.text, job.style_prompt)
         pcm_bytes, sample_rate = call_gemini_tts(text, job.voice, api_url, api_key)
         pcm_to_wav(pcm_bytes, job.output, sample_rate)
+        if job.speed != 1.0:
+            post_process_speed(job.output, job.speed)
     except TTSError as e:
         duration_s = round(time.monotonic() - t0, 1)
         return TTSResult(
@@ -500,6 +557,15 @@ def _build_app():
                 "Mutually exclusive with --style-prompt / --style-preset"
             ),
         ),
+        speed: float = typer.Option(
+            1.0,
+            "--speed",
+            help=(
+                "Post-process tempo multiplier via ffmpeg atempo. 1.0=no change, "
+                "1.8 pairs well with the freud preset. Quality stays best in "
+                "[0.5, 2.0]; values outside that band chain atempo filters."
+            ),
+        ),
         api_url: str = typer.Option(
             DEFAULT_API_URL,
             "--api-url",
@@ -562,6 +628,7 @@ def _build_app():
             output=output,
             voice=resolved_voice,
             style_prompt=resolved_style,
+            speed=speed,
         )
         result = generate_one(job, api_url, api_key)
         if not result.success:
@@ -612,6 +679,14 @@ def _build_app():
         ),
         max_workers: int = typer.Option(
             4, "--max-workers", help="Parallel batch worker count"
+        ),
+        speed: float = typer.Option(
+            1.0,
+            "--speed",
+            help=(
+                "Default post-process tempo for jobs that don't specify their "
+                "own 'speed' key in the batch JSON."
+            ),
         ),
     ) -> None:
         """Generate clips in parallel from a JSON manifest."""
@@ -669,12 +744,14 @@ def _build_app():
                 print(f"Error: {e} (job output={d.get('output')})", file=sys.stderr)
                 raise typer.Exit(2)
             resolved_style = job_style if job_style is not None else cli_style
+            job_speed = d.get("speed", speed)
             jobs.append(
                 TTSJob(
                     text=d["text"],
                     output=d["output"],
                     voice=resolved_voice,
                     style_prompt=resolved_style,
+                    speed=job_speed,
                 )
             )
 
