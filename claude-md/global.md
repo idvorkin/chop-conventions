@@ -89,6 +89,8 @@ Use `rmux_helper side-run <CMD>` to run a shell command in the side pane. If nvi
 
 Both commands print pane status (pane_id, nvim running, current file) to stdout. Call with no args for status only.
 
+- **Before `side-edit`, snapshot the file** to `~/tmp/agent/side-edit/<basename>.pre.<ts>`. When the user returns saying "merge my edits," `diff` against that snapshot — the live file on disk is the only other source, so without the snapshot you can't see deltas. Idempotent; safe to snapshot on every invocation.
+
 ```bash
 rmux_helper side-edit ~/blog/_d/ai-journal.md:42
 rmux_helper side-run "make test"
