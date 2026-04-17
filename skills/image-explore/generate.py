@@ -123,26 +123,104 @@ def read_default_style(chop_root):
     )
 
 
+# Flood-seed scan: sample points along the image border and seed the
+# flood-fill only from points that are actually near the magenta chroma-key
+# color. This handles the case where Gemini frames the shot with the
+# subject or its scenery extending to some of the image edges — the older
+# "flood from all 4 corners" approach assumed every corner is chroma-bg,
+# and when the bottom corners rendered as grass or stone, a 30%-fuzz flood
+# started from grass and ate the subject.
+#
+# Constants below: sampling step along each edge (smaller = more seeds, more
+# robust; larger = cheaper). Near-magenta tolerance is stricter than the
+# flood fuzz on purpose — we want to seed only from "definitely background"
+# pixels and let the flood itself handle the gradient at the subject edge.
+BORDER_SAMPLE_STEP = 8
+NEAR_MAGENTA_L1_TOLERANCE = 70  # sum of |r-255| + |g| + |b-255|
+FLOOD_FUZZ_PERCENT = 30
+
+
+def _parse_srgb(fragment):
+    """Parse 'srgb(r,g,b)' or 'srgba(r,g,b,a)' — return (r,g,b) ints, or None."""
+    fragment = fragment.strip()
+    if not fragment.startswith(("srgb(", "srgba(")):
+        return None
+    try:
+        nums = fragment.split("(", 1)[1].rstrip(")").split(",")[:3]
+        return tuple(int(n) for n in nums)
+    except (ValueError, IndexError):
+        return None
+
+
+def _scan_border_for_magenta_seeds(magick_bin, image_path, w, h):
+    """Return list of (x,y) border pixels within NEAR_MAGENTA_L1_TOLERANCE of #FF00FF.
+
+    Uses a single magick invocation: build a format string that dumps every
+    sampled border pixel separated by '|'. Much cheaper than per-pixel
+    subprocess calls on large borders.
+    """
+    positions = []
+    step = BORDER_SAMPLE_STEP
+    for x in range(0, w, step):
+        positions.append((x, 0))
+        positions.append((x, h - 1))
+    for y in range(0, h, step):
+        positions.append((0, y))
+        positions.append((w - 1, y))
+
+    fmt = "|".join(f"%[pixel:p{{{x},{y}}}]" for x, y in positions)
+    result = subprocess.run(
+        [magick_bin, image_path, "-format", fmt, "info:"],
+        capture_output=True,
+        text=True,
+    )
+    if result.returncode != 0:
+        return None, f"magick border probe failed: {result.stderr.strip()}"
+
+    seeds = []
+    fragments = result.stdout.split("|")
+    if len(fragments) != len(positions):
+        return None, (
+            f"border probe returned {len(fragments)} fragments, expected {len(positions)}"
+        )
+    for (x, y), frag in zip(positions, fragments):
+        rgb = _parse_srgb(frag)
+        if rgb is None:
+            continue
+        r, g, b = rgb
+        if abs(r - 255) + abs(g) + abs(b - 255) <= NEAR_MAGENTA_L1_TOLERANCE:
+            seeds.append((x, y))
+    return seeds, None
+
+
 def remove_background(image_path):
-    """Strip the magenta chroma-key background using edge-connected flood fill.
+    """Strip the magenta chroma-key background using border-seeded flood fill.
 
     Images are generated on a KNOWN solid #FF00FF background, so chroma-key
-    stripping is pixel-accurate without ML. The earlier approach used
-    `-fuzz 30% -transparent #FF00FF`, which kills ALL magenta-ish pixels
-    globally — including magenta-tinted highlights *inside* the character
-    (pink fur, specular glass reflections, lobster-claw reds). That leaves
-    swiss-cheese holes in the alpha mask.
+    stripping is pixel-accurate without ML. The older one-pass
+    `-fuzz 30% -transparent #FF00FF` approach kills every magenta-ish pixel
+    globally, including magenta-tinted highlights *inside* the character
+    (pink fur, specular glass reflections, lobster-claw reds) — leaving
+    swiss-cheese holes in the alpha.
 
-    Flood-fill from all 4 corners only reaches the contiguous background
-    region; interior pixels are protected by the character's own silhouette
-    and preserved automatically. Fuzz of 30% still handles edge antialiasing
-    where magenta blends into the subject outline.
+    The flood-fill strategy only transparents pixels reachable from the
+    image border, so interior magenta-tinted pixels are preserved by the
+    character's own silhouette. Seeding the flood needs to find actual
+    chroma-background pixels on the border — hard-coding the 4 corners
+    fails whenever Gemini frames a shot with grass, sky, or scenery
+    touching an image edge (seen in practice: dense grass rendered into
+    the bottom corners, flood started from grass at 30% fuzz and ate the
+    subject). Instead, sample the border ring, keep only samples that are
+    actually near #FF00FF, and seed the flood from all of them.
+
+    If no border pixels are near-magenta — the subject fills the whole
+    frame — skip the strip rather than eat the subject, and let the caller
+    decide what to do.
     """
     magick = shutil.which("magick") or shutil.which("convert")
     if not magick:
         return False, "magick not found — install ImageMagick"
 
-    # Pre-query image dimensions so we can flood-fill from each corner.
     probe = subprocess.run(
         [magick, "identify", "-format", "%w %h", image_path],
         capture_output=True,
@@ -154,37 +232,40 @@ def remove_background(image_path):
         w, h = (int(x) for x in probe.stdout.split())
     except ValueError:
         return False, f"could not parse image dimensions: {probe.stdout!r}"
-    w1, h1 = w - 1, h - 1
+
+    seeds, err = _scan_border_for_magenta_seeds(magick, image_path, w, h)
+    if err is not None:
+        return False, err
+    if not seeds:
+        return False, (
+            "no magenta chroma-key background detected on the image border; "
+            "skipping strip. Regenerate with a prompt that leaves a magenta "
+            "border on all four sides of the frame."
+        )
 
     with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as tmp:
         tmp_path = tmp.name
 
+    draws = []
+    for x, y in seeds:
+        draws += ["-draw", f"color {x},{y} floodfill"]
+
     try:
-        result = subprocess.run(
-            [
-                magick,
-                image_path,
-                "-alpha",
-                "set",
-                "-fuzz",
-                "30%",
-                "-fill",
-                "none",
-                "-draw",
-                "color 0,0 floodfill",
-                "-draw",
-                f"color {w1},0 floodfill",
-                "-draw",
-                f"color 0,{h1} floodfill",
-                "-draw",
-                f"color {w1},{h1} floodfill",
-                "-quality",
-                "90",
-                tmp_path,
-            ],
-            capture_output=True,
-            text=True,
-        )
+        cmd = [
+            magick,
+            image_path,
+            "-alpha",
+            "set",
+            "-fuzz",
+            f"{FLOOD_FUZZ_PERCENT}%",
+            "-fill",
+            "none",
+            *draws,
+            "-quality",
+            "90",
+            tmp_path,
+        ]
+        result = subprocess.run(cmd, capture_output=True, text=True)
         if result.returncode != 0:
             return False, f"magick flood-fill failed: {result.stderr.strip()}"
 
@@ -289,7 +370,9 @@ def _build_app():
     @app.command()
     def single(
         scene: str = typer.Option(..., help="Scene description for the image"),
-        shirt: str = typer.Option(..., help="Text on the raccoon's shirt (max 8 chars)"),
+        shirt: str = typer.Option(
+            ..., help="Text on the raccoon's shirt (max 8 chars)"
+        ),
         output: str = typer.Option(..., help="Output filename (e.g., mountain.webp)"),
         aspect: str = typer.Option("3:4", help="Aspect ratio (default: 3:4)"),
         ref: str | None = typer.Option(None, help="Override reference image path"),
@@ -328,7 +411,9 @@ def _build_app():
 
     @app.command()
     def batch(
-        json_file: str = typer.Argument(help="JSON file with directions to generate in parallel"),
+        json_file: str = typer.Argument(
+            help="JSON file with directions to generate in parallel"
+        ),
         aspect: str = typer.Option("3:4", help="Aspect ratio (default: 3:4)"),
         ref: str | None = typer.Option(None, help="Override reference image path"),
         style: str | None = typer.Option(None, help="Override default raccoon style"),
@@ -401,9 +486,7 @@ def _build_app():
                     print(result.output)
                 else:
                     failures.append((result.output, result.error))
-                    print(
-                        f"FAILED: {result.output} — {result.error}", file=sys.stderr
-                    )
+                    print(f"FAILED: {result.output} — {result.error}", file=sys.stderr)
 
         batch_duration = round(time.monotonic() - batch_t0, 1)
 
