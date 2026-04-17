@@ -132,8 +132,9 @@ which case repo convention wins.
 
 Write `/tmp/agent-notes/YYYY-MM-DD-<slug>.md` on the **parent's
 machine** — NOT inside the worktree, NOT committed to the target
-repo. `<slug>` strips `delegated/` from the branch name. Create
-the `/tmp/agent-notes/` directory if missing.
+repo. The parent has already derived `<slug>` from the branch name
+(strip the `delegated/` prefix) and substituted it into this brief
+where relevant. Create the `/tmp/agent-notes/` directory if missing.
 
 Include the file pointer as a **commit trailer** on the code commit:
 
