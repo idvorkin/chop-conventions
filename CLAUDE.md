@@ -53,6 +53,15 @@ Scripts that signal processes by pattern (cpulimit, pkill, kill by comm match) M
 - Working example: [`skills/up-to-date/diagnose.py`](skills/up-to-date/diagnose.py) — stdlib-only, `uv run` shebang, parallelized subprocess calls, unit-tested pure functions.
 - **Lazy-import PEP 723 deps that tests don't need.** Scripts with `uv run --script` shebangs self-bootstrap their deps at runtime, but tests and pre-commit hooks import the module in system Python (no `uv`). Put the dep-specific import inside a builder function (e.g. `_build_app()`) called only from `if __name__ == "__main__":`. Tests import the pure-function layer without `ModuleNotFoundError`. Reference: `skills/harden-telegram/tools/telegram_debug.py`.
 
+## Python CLI Apps
+
+**User-facing CLIs use Typer + Rich; programmatic JSON-emitting helpers stay stdlib-only.** The dividing line: if a human will type `--help`, use Typer. If only Claude or a pipeline calls it, argparse (or nothing) is fine.
+
+- **Typer subcommands replace manual mutual exclusion.** Batch-vs-single mode, action flags that can't combine — these are subcommands, not `parser.error()` calls. Typer enforces "exactly one subcommand" for free; argparse requires hand-written validation that rots.
+- **`_build_app()` lazy-import pattern.** `import typer` goes inside a `_build_app()` function called only from `if __name__ == "__main__":`. Tests and pre-commit hooks import the pure-function layer in system Python without `ModuleNotFoundError`. See "Scripting Language Defaults → Lazy-import PEP 723 deps" above.
+- **PEP 723 shebang with `typer>=0.12` dependency.** Scripts self-bootstrap via `#!/usr/bin/env -S uv run --script` — no venv, no pip, no setup. Typer is the only runtime dep; Rich comes transitively.
+- **Reference implementation:** [`skills/harden-telegram/tools/telegram_debug.py`](skills/harden-telegram/tools/telegram_debug.py) — 6 subcommands, `_build_app()` pattern, `app.callback(invoke_without_command=True)` for a default mode.
+
 ## Parsing Claude Session Data
 
 - **Subagents live at `~/.claude/projects/<proj>/<session-uuid>/subagents/agent-*.jsonl`**, NOT inside the main session JSONL. Scripts scanning session data must glob `**/subagents/*.jsonl` or undercount tokens by ~18% (measured against ~40k assistant messages).
