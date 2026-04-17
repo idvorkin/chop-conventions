@@ -85,6 +85,7 @@ Machine-level skills go in `~/.claude/skills/` and are available everywhere. Pro
 | `architect-review`       | machine | Iterative architect review passes on design specs, tracking convergence          |
 | `background-usage`       | machine | Check Claude Code plan usage without blocking the session                        |
 | `build-bd-static`        | machine | Build a static `bd` fallback when Homebrew is unavailable or not portable enough |
+| `bulk`                   | machine | Bulk-parallel CLIs — fan out N `gh`/`bd`/`up-to-date`/file calls in one command  |
 | `clock`                  | machine | Schedule recurring session tasks (time checks, reminders)                        |
 | `delegate-to-other-repo` | machine | Delegate cross-repo work to a subagent with an isolated context; ends with a PR  |
 | `docs`                   | machine | Fetch fresh library/framework docs via Context7 (`ctx7`)                         |
