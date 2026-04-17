@@ -1,13 +1,16 @@
 #!/usr/bin/env -S uv run --script
 # /// script
-# requires-python = ">=3.11"
+# requires-python = ">=3.13"
 # dependencies = [
 #     "typer>=0.12",
 # ]
 # ///
 """Prepare a delegated-worktree dispatch for the delegate-to-other-repo skill.
 
-Replaces Phases 1-3 of the skill's bash recipe with a single typed helper:
+Replaces Phases 1d validate + Phase 2 (worktree setup) of the skill's
+bash recipe with a single typed helper. Phase 3 (brief construction)
+and Phase 4 (Agent dispatch) stay in the parent session — the helper
+just collects inputs. Responsibilities performed here:
 
   * resolve the target repo path from user input (abs/rel path or bare name)
   * fetch origin (+ upstream in parallel when present)
@@ -17,6 +20,7 @@ Replaces Phases 1-3 of the skill's bash recipe with a single typed helper:
   * validate base ref is reachable
   * sanitize + collision-check the task slug across heads AND origin refs
   * idempotently write .worktrees/ to .git/info/exclude
+  * verify the exclude landed via `git check-ignore -q .worktrees/x`
   * create the worktree on branch `delegated/<slug>`
   * resolve the parent session's Claude jsonl via pwd hash (pwd -P, [/.] -> -)
   * parse owner/repo slug from origin URL
@@ -34,8 +38,6 @@ Usage:
     prepare_dispatch.py --target <name|path> --slug <slug> --task "<desc>"
     prepare_dispatch.py ... --dry-run   # validate + emit JSON, do not mutate
 """
-
-from __future__ import annotations
 
 import datetime as _dt
 import json
@@ -398,9 +400,12 @@ def run_prepare(
     JSON that would have been emitted.
     """
     errors: list[str] = []
+    warnings: list[str] = []
     result: dict[str, Any] = {
+        "target": None,  # resolved absolute path on disk
         "worktree_path": None,
         "branch": None,
+        "slug": None,
         "base_ref": None,
         "base_remote": None,
         "default_branch": None,
@@ -409,6 +414,7 @@ def run_prepare(
         "task": task,
         "dry_run": dry_run,
         "errors": errors,
+        "warnings": warnings,
     }
 
     # ---- resolve target path ----
@@ -452,9 +458,12 @@ def run_prepare(
         errors.append(f"git fetch origin failed: {origin_proc.stderr.strip()}")
         return result
     if upstream_proc is not None and upstream_proc.returncode != 0:
-        # Non-fatal — we can still fall back to origin/<default>.
-        errors.append(
-            f"git fetch upstream failed (continuing with origin base): "
+        # Non-fatal — we can still fall back to origin/<default>. This goes
+        # into `warnings`, NOT `errors`: the skill contract is "non-empty
+        # errors ⇒ helper stopped before worktree creation". A fetch warning
+        # that we recovered from must not trip that trigger.
+        warnings.append(
+            f"git fetch upstream failed (falling back to origin base): "
             f"{upstream_proc.stderr.strip()}"
         )
         has_upstream = False
@@ -490,8 +499,14 @@ def run_prepare(
     result["worktree_path"] = worktree_path
 
     # ---- session log resolution ----
+    # `cwd.resolve()` is the physical path (symlinks resolved) because Claude
+    # Code hashes the physical path — see session_log_hash_of docstring.
+    # Toplevel lookup is for the ORIGINATING parent session's jsonl, NOT the
+    # target repo — pass `cwd` explicitly via `git -C` instead of relying on
+    # process cwd, so a caller whose process cwd differs from the parent's
+    # reported cwd (e.g. a test harness) still gets a consistent answer.
     cwd_physical = str(cwd.resolve())
-    toplevel_proc = _git(".", "rev-parse", "--show-toplevel")
+    toplevel_proc = _git(cwd_physical, "rev-parse", "--show-toplevel")
     repo_toplevel = (
         toplevel_proc.stdout.strip() if toplevel_proc.returncode == 0 else None
     )
@@ -501,9 +516,24 @@ def run_prepare(
         return result
 
     # ---- mutations (skipped on --dry-run) ----
-    _wrote, exclude_err = _ensure_exclude(target_str)
+    # `_ensure_exclude` returns (wrote, err); we only care about the error.
+    _, exclude_err = _ensure_exclude(target_str)
     if exclude_err:
         errors.append(exclude_err)
+        return result
+
+    # Sanity-check that .worktrees/ is now actually ignored. `check-ignore`
+    # on a trailing-slash pattern requires a concrete subpath (see
+    # chop-conventions CLAUDE.md note on `git check-ignore`), so we query
+    # `.worktrees/x` rather than `.worktrees`. A failure here means the
+    # exclude write silently landed somewhere we won't see — surface it
+    # loudly rather than letting the subagent hit `?? .worktrees/` noise.
+    ci = _git(target_str, "check-ignore", "-q", ".worktrees/x")
+    if ci.returncode != 0:
+        errors.append(
+            f".worktrees/ is not ignored in {target_str} after writing "
+            "to .git/info/exclude; investigate manually"
+        )
         return result
 
     wt_proc = _worktree_add(target_str, worktree_path, branch, base_ref)
@@ -527,12 +557,14 @@ def _build_app():
 
     app = typer.Typer(
         add_completion=False,
-        help="Prepare a delegated-worktree dispatch (delegate-to-other-repo Phase 1-3).",
+        help="Prepare a delegated-worktree dispatch (delegate-to-other-repo Phases 1d + 2; parent still owns Phase 3 brief).",
         no_args_is_help=True,
     )
 
+    # Typer registers `main` via the decorator; the name is unused locally
+    # but the decorator captures it. pyright flags the binding as unused.
     @app.callback(invoke_without_command=True)
-    def main(
+    def main(  # pyright: ignore[reportUnusedFunction]
         target: str = typer.Option(
             ...,
             "--target",

@@ -9,8 +9,6 @@ guard. Tests exercise pure functions directly and drive the orchestrator
 through a stubbed subprocess layer.
 """
 
-from __future__ import annotations
-
 import os
 import sys
 import tempfile
@@ -88,7 +86,7 @@ class TestTimestampSlug(unittest.TestCase):
 class TestResolveUniqueSlug(unittest.TestCase):
     def test_clean(self):
         self.assertEqual(
-            resolve_unique_slug("fix-thing", ref_exists=lambda _s: False),
+            resolve_unique_slug("fix-thing", ref_exists=lambda _: False),
             "fix-thing",
         )
 
@@ -288,7 +286,8 @@ class TestRunPrepareDryRun(unittest.TestCase):
         """
         import subprocess
 
-        def fake(target: str, *args: str, check: bool = False):
+        def fake(target: str, *args: str, check: bool = False):  # pyright: ignore[reportUnusedParameter]
+            _ = check  # kwarg is part of the _git signature but ignored by the mock
             for matcher, rc, out, err in script:
                 if matcher(args):
                     return subprocess.CompletedProcess(
@@ -351,13 +350,13 @@ class TestRunPrepareDryRun(unittest.TestCase):
 
         write_calls: list[str] = []
 
-        def fake_worktree_add(*a, **kw):
+        def fake_worktree_add(*a, **_kw):
             write_calls.append("worktree_add")
             return subprocess.CompletedProcess(
                 args=a, returncode=0, stdout="", stderr=""
             )
 
-        def fake_ensure_exclude(target):
+        def fake_ensure_exclude(_target):
             write_calls.append("ensure_exclude")
             return True, None
 
@@ -386,17 +385,158 @@ class TestRunPrepareDryRun(unittest.TestCase):
                 )
 
         self.assertEqual(result["errors"], [])
+        # `warnings` is a documented top-level key even when empty — the
+        # SKILL.md JSON contract asserts its presence so the parent can
+        # treat it uniformly with `errors`.
+        self.assertEqual(result["warnings"], [])
         self.assertEqual(result["slug"], "my-slug")
         self.assertEqual(result["branch"], "delegated/my-slug")
         self.assertEqual(result["base_remote"], "upstream")
         self.assertEqual(result["base_ref"], "upstream/main")
         self.assertEqual(result["default_branch"], "main")
         self.assertEqual(result["target_repo_slug"], "idvorkin/blog")
+        self.assertIsNotNone(result["worktree_path"])
+        assert result["worktree_path"] is not None  # narrowing for type-checkers
         self.assertTrue(
             result["worktree_path"].endswith("/.worktrees/delegated-my-slug")
         )
         # Load-bearing: dry-run emits the JSON but never calls the mutating helpers.
         self.assertEqual(write_calls, [])
+
+    def test_upstream_fetch_failure_appends_warning_and_falls_back(self):
+        """Non-fatal upstream fetch failure goes to `warnings`, not `errors`.
+
+        Pass-1 contract change: `errors` means "helper stopped before
+        worktree creation"; recoverable fetch failures must not trip that
+        trigger. Regression guard: if upstream fetch ever goes back to
+        `errors`, the parent will abort on a benign condition.
+        """
+
+        def is_(*expected):
+            return lambda args: tuple(args[: len(expected)]) == expected
+
+        script = [
+            (is_("rev-parse", "--is-inside-work-tree"), 0, "true\n", ""),
+            (
+                is_("remote", "get-url", "origin"),
+                0,
+                "git@github.com:idvorkin/blog.git\n",
+                "",
+            ),
+            (is_("remote"), 0, "origin\nupstream\n", ""),
+            (is_("fetch", "origin"), 0, "", ""),
+            # Upstream fetch fails — this is the branch under test.
+            (is_("fetch", "upstream"), 1, "", "fatal: unable to access upstream\n"),
+            (is_("remote", "set-head", "origin", "--auto"), 0, "", ""),
+            (
+                is_("symbolic-ref", "--short", "refs/remotes/origin/HEAD"),
+                0,
+                "origin/main\n",
+                "",
+            ),
+            # has_upstream is flipped to False after the warning, so we do NOT
+            # probe `upstream/main` at all — we go straight to origin/main.
+            (is_("rev-parse", "--verify", "--quiet", "origin/main"), 0, "", ""),
+            (
+                is_("rev-parse", "--verify", "--quiet", "refs/heads/delegated/my-slug"),
+                1,
+                "",
+                "",
+            ),
+            (
+                is_(
+                    "rev-parse",
+                    "--verify",
+                    "--quiet",
+                    "refs/remotes/origin/delegated/my-slug",
+                ),
+                1,
+                "",
+                "",
+            ),
+            (is_("rev-parse", "--show-toplevel"), 0, "/home/dev/gits/blog6\n", ""),
+        ]
+
+        with (
+            mock.patch.object(
+                prepare_dispatch, "_git", side_effect=self._fake_git(script)
+            ),
+            mock.patch.object(
+                prepare_dispatch,
+                "_worktree_add",
+                side_effect=AssertionError("must not mutate on dry-run"),
+            ),
+            mock.patch.object(
+                prepare_dispatch,
+                "_ensure_exclude",
+                side_effect=AssertionError("must not mutate on dry-run"),
+            ),
+        ):
+            with tempfile.TemporaryDirectory() as td:
+                home = Path(td)
+                target_dir = home / "gits" / "blog"
+                target_dir.mkdir(parents=True)
+                result = prepare_dispatch.run_prepare(
+                    target_raw="blog",
+                    slug_raw="my-slug",
+                    task="do the thing",
+                    dry_run=True,
+                    cwd=Path(td),
+                    home=home,
+                )
+
+        # Contract: helper recovered, so worktree_path is still populated and
+        # errors is empty — parent proceeds but surfaces the warning.
+        self.assertEqual(result["errors"], [])
+        self.assertEqual(len(result["warnings"]), 1)
+        self.assertIn("git fetch upstream failed", result["warnings"][0])
+        # Base ref falls back to origin when upstream fetch fails.
+        self.assertEqual(result["base_remote"], "origin")
+        self.assertEqual(result["base_ref"], "origin/main")
+        self.assertIsNotNone(result["worktree_path"])
+
+    def test_owner_repo_slug_error_populates_stable_keys(self):
+        """Error paths must still emit the documented top-level keys.
+
+        Regression guard: the SKILL.md contract promises `target`, `slug`,
+        `warnings`, `worktree_path`, etc. are ALWAYS present (possibly null)
+        in the JSON output. An early-return error path that forgot one of
+        those keys would break parent code doing `result["warnings"]`.
+        """
+        with tempfile.TemporaryDirectory() as td:
+            home = Path(td)
+            result = prepare_dispatch.run_prepare(
+                target_raw="idvorkin/chop-conventions",  # slug form — rejected
+                slug_raw="my-slug",
+                task="do the thing",
+                dry_run=True,
+                cwd=Path(td),
+                home=home,
+            )
+        # Error is populated and non-empty.
+        self.assertTrue(result["errors"])
+        self.assertIn("gh repo clone", result["errors"][0])
+        # All documented top-level keys exist, even though most are null.
+        for key in (
+            "target",
+            "worktree_path",
+            "branch",
+            "slug",
+            "base_ref",
+            "base_remote",
+            "default_branch",
+            "target_repo_slug",
+            "session_log",
+            "task",
+            "dry_run",
+            "errors",
+            "warnings",
+        ):
+            self.assertIn(key, result, f"missing top-level key: {key}")
+        # `warnings` is always a list, not None — lets parent iterate safely.
+        self.assertEqual(result["warnings"], [])
+        # `worktree_path` is null on error — parent uses this to gate dispatch.
+        self.assertIsNone(result["worktree_path"])
 
 
 if __name__ == "__main__":

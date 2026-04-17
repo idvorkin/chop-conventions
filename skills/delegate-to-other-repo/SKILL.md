@@ -105,6 +105,11 @@ Run `/bin/ls ~/gits/` and present the list. Let the user pick.
 
 ### 1c-bis. Same-repo handling
 
+**Do this BEFORE calling `prepare_dispatch.py`.** The helper has no
+awareness of the parent session's cwd and will happily set up a
+worktree in the same repo you're sitting in — so the parent must
+gate the call on this check.
+
 Compare the resolved target's toplevel against the current session's toplevel:
 
 ```bash
@@ -149,7 +154,12 @@ All validation runs via `git -C <path>` — never `cd` into the target:
 **Not required to be clean.** Worktrees off the remote base ref are safe
 even when the target's working tree is dirty.
 
-## Phase 2: Create the worktree
+## Phase 2: Create the worktree (and finalize Phase 1 validation)
+
+`prepare_dispatch.py` does Phase 1d validation AND Phase 2 worktree
+setup in one call. Phase 1a–1c (resolving the user's intent) and
+Phase 1c-bis (same-repo guard) stay in the parent because they need
+conversational context the helper can't see.
 
 **DO NOT delegate to `superpowers:using-git-worktrees`.** That skill
 branches off current HEAD, auto-runs `npm install` / `cargo build`, and
@@ -158,7 +168,7 @@ off a fresh canonical base ref that may be a doc-only edit.
 
 ### Preferred: `prepare_dispatch.py`
 
-Run the helper — it performs all of Phase 1 resolve + Phase 2 worktree
+Run the helper — it performs Phase 1d validation + Phase 2 worktree
 setup in a single call and returns the inputs Phase 3 needs as JSON:
 
 ```bash
@@ -172,41 +182,51 @@ skills/delegate-to-other-repo/prepare_dispatch.py \
 Add `--dry-run` to validate and inspect the JSON without creating the
 worktree or writing `.git/info/exclude`.
 
-Output shape:
+Output shape (stable JSON contract — the parent reads these keys only):
 
 ```json
 {
+  "target": "/abs/path/to/target/repo",
   "worktree_path": "/abs/path/to/.worktrees/delegated-<slug>",
   "branch": "delegated/<slug>",
+  "slug": "<final-slug-after-collision-resolution>",
   "base_ref": "upstream/main",
   "base_remote": "upstream",
   "default_branch": "main",
   "target_repo_slug": "owner/repo",
   "session_log": "/path/to/jsonl or null",
-  "slug": "<final-slug-after-collision-resolution>",
-  "errors": []
+  "task": "<the --task string verbatim>",
+  "dry_run": false,
+  "errors": [],
+  "warnings": []
 }
 ```
 
-Non-empty `errors` means the helper stopped before creating the
-worktree — relay the first error to the user and abort. Typical causes:
-target path missing, not a git repo, `owner/repo` slug passed (helper
-does not clone), base ref unreachable after fetch.
+### Exit code and error handling
 
-The helper does the following in order (all `git -C <target>`, never `cd`):
+- Exit 0 iff `errors` is empty. Exit 1 otherwise. The helper always emits
+  the JSON on stdout, even on failure — do NOT gate JSON parsing on the
+  exit code.
+- **Non-empty `errors` ⇒ helper stopped before creating the worktree.**
+  `worktree_path` is `null` in this case. Relay the first error to the user
+  and abort — do NOT dispatch the subagent. Typical causes: target path
+  missing, not a git repo, `owner/repo` slug passed (helper does not
+  clone), base ref unreachable after fetch, `git worktree add` collision.
+- **Non-empty `warnings` ⇒ helper recovered and proceeded.** The worktree
+  exists and dispatch is safe. Current producers: upstream fetch failure
+  (fell back to `origin/<default>`). Surface warnings to the user in the
+  dispatch summary so they notice drift from the fork-workflow assumption.
 
-- Resolves the target path (absolute path / relative path / bare name / rejects `owner/repo` slugs with a clone hint)
-- Fetches `origin` and `upstream` (if present) in parallel via `concurrent.futures`
-- Runs `git remote set-head origin --auto` to refresh stale `refs/remotes/origin/HEAD`
-- Resolves the default branch via `symbolic-ref` → `gh repo view` fallback → literal `main`, with explicit guards between each step (not `||` chains — pipe-precedence bug swallows exit codes)
-- Picks `upstream/<default>` when the `upstream` remote has the ref, else `origin/<default>`
-- Verifies the chosen base ref resolves
-- Sanitizes the slug (lowercase → non-alnum collapsed to `-` → ≤40 chars; non-ASCII / empty → `task-<timestamp>`)
-- Resolves collisions against BOTH `refs/heads/delegated/<slug>` AND `refs/remotes/origin/delegated/<slug>` (heads-only would let the push fail as non-fast-forward)
-- Idempotently appends `.worktrees/` to `<git-common-dir>/info/exclude` — local-only, branch-independent, avoids committing to any branch's `.gitignore`
-- Creates the worktree at `.worktrees/delegated-<slug>` on branch `delegated/<slug>` rooted at the chosen base ref
-- Resolves the parent session's Claude jsonl via `pwd -P` hashed with `[/.]` → `-` (both separators matter — `bar.github.io` hashes to `-bar-github-io`, not `-bar.github.io`)
-- Parses `owner/repo` from `git -C <T> remote get-url origin` (handles both HTTPS and SSH forms)
+Additional keys like `task` and `dry_run` are echoed for log-reading —
+the parent does not need to consume them. Future fields will be added as
+optional; keys are never renamed or removed without a V2 bump.
+
+Steps the helper performs (all `git -C <target>`, never `cd`) are
+documented in [`prepare_dispatch.py`](prepare_dispatch.py)'s module
+docstring and mirrored in [`worktree-recipe.md`](worktree-recipe.md) for
+the manual fallback. Do NOT re-list them here — the two sources drift
+and this skill becomes the rotting one. When reviewing a helper change,
+diff the docstring and the fallback recipe together.
 
 ### Testing
 
@@ -246,36 +266,18 @@ parameter to the Agent tool.
 
 ### Session log resolution
 
-```bash
-# Claude Code hashes the session's *cwd* at launch, not the repo root.
-# If you're running inside a worktree, the hash encodes the worktree
-# path, not the main checkout.
-#
-# Two gotchas in the hash rule — both bite in practice:
-#   1. The project-dir hash converts BOTH `/` AND `.` to `-`. A repo
-#      at `/home/foo/gits/bar.github.io` hashes to
-#      `-home-foo-gits-bar-github-io`, NOT `-home-foo-gits-bar.github.io`.
-#      The sed below uses `[/.]` to catch both.
-#   2. `pwd` returns the LOGICAL cwd (may be a symlink like
-#      `/home/foo/blog → /home/foo/gits/bar.github.io`). Claude Code
-#      hashes the physical path, so use `pwd -P` to resolve symlinks
-#      before hashing. Without `-P`, a session launched from a
-#      symlinked shortcut produces a bogus hash matching no project dir.
-cwd_hash=$(pwd -P | sed 's|[/.]|-|g')
-newest=$(/bin/ls -t "$HOME/.claude/projects/$cwd_hash"/*.jsonl 2>/dev/null | head -1)
+**Use the value from `prepare_dispatch.py`'s `session_log` field.** The
+helper handles the physical-path + `[/.]`-hash quirks and falls back to
+the repo toplevel hash. If `session_log` is `null`, omit the entire
+"Historical context" section from the brief — do NOT guess a path.
 
-# Fallback: try the repo toplevel hash (same two gotchas apply).
-if [ -z "$newest" ]; then
-  toplevel=$(git rev-parse --show-toplevel)
-  toplevel_hash=$(echo "$toplevel" | sed 's|[/.]|-|g')
-  newest=$(/bin/ls -t "$HOME/.claude/projects/$toplevel_hash"/*.jsonl 2>/dev/null | head -1)
-fi
-```
-
-If neither path yields a jsonl, warn and omit the historical-context
-section. Parallel sessions in the same cwd resolve to "whichever jsonl
-was most recently written" — this is an accepted v1 ambiguity since
-the log is an escape hatch, not a required input.
+The shell-path reconstruction used to live here and is preserved inline
+in [`worktree-recipe.md`](worktree-recipe.md) §7 as the manual-fallback
+equivalent. Do not re-derive the hash rule in the parent — it's load-bearing
+enough that a single source of truth matters. Parallel sessions in the same
+cwd resolve to "whichever jsonl was most recently written"; this is an
+accepted v1 ambiguity since the log is an escape hatch, not a required
+input.
 
 ## Phase 4: Dispatch the subagent
 
@@ -333,6 +335,22 @@ trigger is the final message, wherever it arrives from.
 **Never retry automatically.** If the subagent fails, escalate to
 the user (see Phase 5).
 
+### If dispatch fails after the worktree exists
+
+The helper is mutating (worktree created, `.git/info/exclude` appended)
+before dispatch. If the `Agent` tool call itself fails (permission
+denied, transport error), the worktree is orphaned — neither the
+subagent nor Phase 5 will reach it. Surface this to the user with the
+exact cleanup command and let them decide:
+
+> "Dispatch failed before the subagent started. Orphan worktree at
+> `<path>` on branch `<branch>`. Clean up with
+> `git -C <target> worktree remove <path> && git -C <target> branch -D <branch>`,
+> or re-run the skill (the helper resolves slug collisions, so a
+> retry will pick a fresh name)."
+
+Do NOT auto-remove. The user may want to inspect the failed state.
+
 ## Phase 5: Relay the result and offer follow-ups
 
 The subagent returns a final message with:
@@ -351,7 +369,14 @@ Relay the sections the subagent returned verbatim to the user
 (`PR:`, `Summary:`, `Notes:`, and `Lessons:` if present). Add a
 note with the worktree path and the cleanup command:
 
-> "Worktree preserved at `<path>`. Delete with `git worktree remove <path>` when you're done iterating on it."
+> "Worktree preserved at `<path>` on branch `<branch>`. Delete both
+> with `git -C <target> worktree remove <path> && git -C <target> branch -D <branch>`
+> once the PR is merged (or you're done iterating). The branch is
+> safe to `-D` after squash-merge — `delegated/<slug>` is never
+> fast-forwarded onto `main`."
+
+Leaving the worktree is intentional: lessons follow-up and take-over
+recovery both need it. Do NOT auto-remove.
 
 ### If `Lessons:` is present
 
@@ -487,17 +512,48 @@ These apply to both parent and subagent:
   your own change before opening the PR.** Skill files are contracts —
   drift is invisible until it bites.
 
+## Concurrency — parallel delegations to the same target
+
+Two parent sessions (or one parent dispatching twice back-to-back)
+can point at the same target repo at once. The helper is safe under
+concurrency because:
+
+- Slug collision resolution checks `refs/heads/delegated/<slug>` AND
+  `refs/remotes/origin/delegated/<slug>` — distinct tasks get
+  distinct branches. Identical task slugs get `-2`, `-3`, ...
+- `git worktree add` is atomic from git's side — one of the two will
+  fail the `<path>` collision and the helper's `errors` will surface
+  the git error verbatim.
+- `.git/info/exclude` append is NOT atomic. Two racing helpers can
+  both miss the `.worktrees/` line and both append — benign (git
+  tolerates duplicate exclude lines). File is never rewritten, only
+  appended, so the old-line survives if a write interleaves.
+
+What the helper does NOT prevent:
+
+- **Two parents dispatching subagents that work on overlapping
+  files.** Scoping is the user's job — if you delegate two changes
+  to the same file, they will conflict at merge time. Warn the user
+  if the task description mentions a file you already saw in a
+  recent delegation summary.
+- **A third delegation starting while the first two are pending
+  `<task-notification>`s.** The parent is free to dispatch during
+  that window, but each dispatch consumes a subagent slot.
+
 ## Failure handling
 
 ### Parent-side
 
-| Failure                                                            | Response                                                   |
-| ------------------------------------------------------------------ | ---------------------------------------------------------- |
-| Target not found / not a git repo                                  | Stop, report, ask user                                     |
-| `git fetch origin` fails                                           | Stop, surface error, don't dispatch                        |
-| `.git/info/exclude` write fails (permission denied)                | Stop, surface error — should not happen on user-owned repo |
-| `git worktree add` fails (path/branch collision, base ref missing) | Stop, surface error                                        |
-| Session log unresolvable                                           | Warn, omit historical-context section, continue            |
+| Failure                                                            | Response                                                                                                  |
+| ------------------------------------------------------------------ | --------------------------------------------------------------------------------------------------------- |
+| Target not found / not a git repo                                  | Helper returns non-empty `errors`; stop, report, ask user                                                 |
+| `git fetch origin` fails                                           | Helper returns non-empty `errors`; stop, surface, don't dispatch                                          |
+| `git fetch upstream` fails (origin succeeded)                      | Helper appends to `warnings`, falls back to `origin/<default>`; relay warning to user in dispatch summary |
+| `.git/info/exclude` write fails (permission denied)                | Helper returns non-empty `errors`; should not happen on user-owned repo                                   |
+| `check-ignore .worktrees/x` fails after exclude write              | Helper returns non-empty `errors`; exclude landed in the wrong place, surface to user                     |
+| `git worktree add` fails (path/branch collision, base ref missing) | Helper returns non-empty `errors`; worktree never created                                                 |
+| `Agent` tool dispatch fails (worktree already created)             | Orphan-worktree cleanup — see "If dispatch fails after the worktree exists" above                         |
+| Session log unresolvable                                           | Helper returns `session_log: null`; parent omits historical-context section                               |
 
 ### Subagent-side
 
@@ -600,10 +656,12 @@ the brief uses plain-text formatting for all embedded structure
 
 If `prepare_dispatch.py` is broken or unavailable (stale checkout,
 Python not on PATH, uv bootstrap failure), drop to the bash recipe at
-[`worktree-recipe.md`](worktree-recipe.md) and follow it verbatim. Same
-semantics — the Python helper was extracted FROM that recipe, and the
-unit tests pin the pure-function behavior byte-for-byte. Prefer the
-Python path whenever both work.
+[`worktree-recipe.md`](worktree-recipe.md) and follow it verbatim. The
+Python helper was extracted FROM that recipe and the pure functions are
+unit-tested, but the two implementations are NOT byte-for-byte
+equivalent — they can drift. When touching either, diff against the
+other as part of the change. Prefer the Python path whenever both
+work; the shell recipe exists only as a break-glass.
 
 ## Supplementary files
 
