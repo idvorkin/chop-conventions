@@ -62,11 +62,11 @@ caller needs given the <purpose> above. Lower the score if text was hard
 to read, if the image was low-resolution, or if the purpose asked about
 something you couldn't clearly see.
 """,
-  run_in_background: false
+  run_in_background: true
 )
 ```
 
-Haiku is cheap enough that this is fine to run synchronously in the default case. The parent blocks briefly, gets the text, and moves on.
+Default to `run_in_background: true`. The parent keeps working; the summary arrives as a task-completion notification. Keeps main context clean and stays consistent with other Agent dispatches in the session. Only run synchronously when the parent's very next decision strictly depends on the image content.
 
 ## Escalation
 
