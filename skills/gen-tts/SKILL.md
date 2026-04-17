@@ -25,6 +25,7 @@ Parse the user's input for:
 - **`--style-preset NAME`**: Load a multi-line style directive from `voices/<NAME>.txt` (e.g. `freud`, `soprano`). Comment lines stripped, body collapsed to one paragraph, prepended as a director's note. Mutually exclusive with `--style-prompt` / `--style-file`.
 - **`--style-file PATH`**: Like `--style-preset` but takes an explicit file path (for styles kept outside the skill dir).
 - **`--output path.wav`**: Where to save the WAV file
+- **`--speed FLOAT`**: Post-process tempo multiplier applied via `ffmpeg atempo` after the Gemini call. `1.0` (default) = no change, `1.8` pairs well with the `freud` preset (the preset is deliberately slow; speeding to 1.8× tightens the phrasing without losing the character). Quality is best in [0.5, 2.0]; values outside that band chain atempo filters automatically. Gemini 3.1 Flash TTS has no server-side speed parameter, so post-processing is the deterministic path. Requires `ffmpeg` on PATH.
 - **`batch file.json`**: Parallel batch mode subcommand (see shape below)
 - **`--api-url URL`**: Override the Gemini endpoint (rarely needed; useful for testing against a proxy)
 
@@ -123,6 +124,10 @@ echo "piped text" | "$GEN_TTS" single --output /tmp/piped.wav
 "$GEN_TTS" single --text "Tell me about your mother." --voice Charon \
   --style-preset freud --output /tmp/freud.wav
 
+# Freud at 1.8× — same deliberate phrasing, tighter tempo
+"$GEN_TTS" single --text "Tell me about your mother." --voice Charon \
+  --style-preset freud --speed 1.8 --output /tmp/freud-fast.wav
+
 # Inline director's notes (no preset)
 "$GEN_TTS" single --text "Welcome aboard." --voice Puck \
   --style-prompt "Speak with the warmth of a flight attendant greeting family." \
@@ -156,8 +161,9 @@ Write a JSON file:
 ```
 
 Each job object accepts `text`, `output`, `voice`, plus any one of
-`style_prompt` / `style_preset` / `style_file`. A `--style-*` flag on the
-CLI provides a default that per-job entries can override.
+`style_prompt` / `style_preset` / `style_file`, plus an optional `speed`
+float. A `--style-*` or `--speed` flag on the CLI provides a default that
+per-job entries can override.
 
 Then:
 
