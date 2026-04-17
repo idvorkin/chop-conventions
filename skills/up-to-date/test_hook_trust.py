@@ -21,10 +21,10 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-# sys.path setup for sibling module imports lives in conftest.py —
-# `unittest discover` adds the start dir automatically; pytest and
-# pyright rely on the conftest shim.
-from hook_trust import (
+# Import from the canonical package location — the in-tree shim at
+# `hook_trust.py` is deprecated. `conftest.py` already adds the skill dir to
+# sys.path so `chop_up_to_date.hook_trust` resolves.
+from chop_up_to_date.hook_trust import (
     HOOK_REL_PATH,
     TRUST_STORE_VERSION,
     classify_trust,
