@@ -91,6 +91,7 @@ Machine-level skills go in `~/.claude/skills/` and are available everywhere. Pro
 | `gen-image`              | machine | Generate illustrations via Gemini image API                                      |
 | `gist-image`             | machine | Host images on GitHub gists for PRs/issues                                       |
 | `image-explore`          | machine | Brainstorm and compare visual directions                                         |
+| `image-read`             | machine | Describe inbound images via a Haiku subagent, keeping pixel payload out of context |
 | `learn-from-session`     | machine | Extract durable lessons from a session into the right CLAUDE.md files            |
 | `machine-doctor`         | machine | Diagnose system health, kill rogue processes                                     |
 | `showboat`               | machine | Create executable demo documents with screenshots                                |
