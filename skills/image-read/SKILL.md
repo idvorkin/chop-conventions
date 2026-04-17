@@ -66,7 +66,7 @@ something you couldn't clearly see.
 )
 ```
 
-Default to `run_in_background: true`. The parent keeps working; the summary arrives as a task-completion notification. Keeps main context clean and stays consistent with other Agent dispatches in the session. Only run synchronously when the parent's very next decision strictly depends on the image content.
+Always `run_in_background: true`. Never block the main thread on an image read — not even when the parent's next decision depends on the image content. The parent keeps working on anything else it can in the meantime and picks the description back up when the task-completion notification arrives. Blocking the main thread on a subagent is the failure mode this skill exists to prevent.
 
 ## Escalation
 
