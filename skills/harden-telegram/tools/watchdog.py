@@ -637,12 +637,12 @@ def _build_app():
                 log(f"found pane {resolved_pane} for PID {pid}")
             else:
                 log(f"could not find tmux pane for PID {pid}")
-                sys.exit(1)
+                raise typer.Exit(1)
         if not resolved_pane:
             resolved_pane = detect_tmux_pane()
         if not resolved_pane:
             log("ERROR: no pane specified and auto-detect failed. Use --pane or --pid.")
-            sys.exit(1)
+            raise typer.Exit(1)
         cmd_reload(resolved_pane, message=message)
 
     @app.command()
@@ -655,24 +655,24 @@ def _build_app():
 
         if not bun_pid_str or not claude_pid_str:
             log("WATCHDOG_BUN_PID and WATCHDOG_CLAUDE_PID must be set")
-            sys.exit(1)
+            raise typer.Exit(1)
 
         if not tmux_pane:
             log("WATCHDOG_TMUX_PANE is empty/unset — not in a tmux session, exiting")
-            sys.exit(0)
+            raise typer.Exit(0)
 
         try:
             bun_pid = int(bun_pid_str)
             claude_pid = int(claude_pid_str)
         except ValueError:
             log(f"invalid PID values: bun={bun_pid_str!r} claude={claude_pid_str!r}")
-            sys.exit(1)
+            raise typer.Exit(1)
 
         log(f"starting: bun_pid={bun_pid} claude_pid={claude_pid} tmux_pane={tmux_pane}")
 
         # --- Singleton ---
         if not acquire_singleton():
-            sys.exit(0)
+            raise typer.Exit(0)
 
         # --- Signal handling ---
         def handle_signal(signum: int, _frame: object) -> None:

@@ -308,7 +308,7 @@ def _build_app():
                 "Error: GOOGLE_API_KEY not found in environment or ~/.env",
                 file=sys.stderr,
             )
-            sys.exit(1)
+            raise typer.Exit(1)
 
         config = GenerateConfig(
             gemini_script=str(chop_root / "skills" / "gen-image" / "gemini-image.sh"),
@@ -322,7 +322,7 @@ def _build_app():
         result = generate_one(direction, config)
         if not result.success:
             print(f"Error: {result.error}", file=sys.stderr)
-            sys.exit(1)
+            raise typer.Exit(1)
         print(result.output)
         print(f"Generated in {result.duration_s}s", file=sys.stderr)
 
@@ -346,7 +346,7 @@ def _build_app():
                 "Error: GOOGLE_API_KEY not found in environment or ~/.env",
                 file=sys.stderr,
             )
-            sys.exit(1)
+            raise typer.Exit(1)
 
         config = GenerateConfig(
             gemini_script=str(chop_root / "skills" / "gen-image" / "gemini-image.sh"),
@@ -359,14 +359,14 @@ def _build_app():
         batch_path = Path(json_file)
         if not batch_path.exists():
             print(f"Error: Batch file not found: {batch_path}", file=sys.stderr)
-            sys.exit(1)
+            raise typer.Exit(1)
 
         with open(batch_path) as f:
             raw_directions = json.load(f)
 
         if not raw_directions:
             print("Error: No directions in batch file", file=sys.stderr)
-            sys.exit(1)
+            raise typer.Exit(1)
 
         print(
             f"Generating {len(raw_directions)} images in parallel...", file=sys.stderr
@@ -416,7 +416,7 @@ def _build_app():
                 f"\n{len(failures)}/{len(raw_directions)} failed ({batch_duration}s total)",
                 file=sys.stderr,
             )
-            sys.exit(1)
+            raise typer.Exit(1)
         print(
             f"\nAll {len(raw_directions)} images generated ({batch_duration}s total)",
             file=sys.stderr,
