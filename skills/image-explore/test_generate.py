@@ -20,9 +20,13 @@ sys.path.insert(0, str(Path(__file__).parent))
 
 from generate import (  # noqa: E402
     BORDER_SAMPLE_STEP,
+    HEALTHY_ALPHA_MAX_PCT,
+    HEALTHY_ALPHA_MIN_PCT,
     NEAR_MAGENTA_L1_TOLERANCE,
+    _format_eval_card,
     _parse_srgb,
     _scan_border_for_magenta_seeds,
+    evaluate_strip,
     remove_background,
 )
 
@@ -225,6 +229,105 @@ class TestRemoveBackgroundIntegration(unittest.TestCase):
         # were grass (should remain opaque). Expect alpha ~50%.
         self.assertGreater(alpha, 40.0, "old-style failure mode — scanner ate too much")
         self.assertLess(alpha, 60.0, "scanner missed magenta on the top half")
+
+
+@REQUIRES_MAGICK
+class TestEvaluateStrip(unittest.TestCase):
+    """evaluate_strip reports metrics + warnings; same thresholds as the integration tests."""
+
+    def setUp(self):
+        self.tmpdir = Path(tempfile.mkdtemp())
+
+    def tearDown(self):
+        import shutil as _sh
+
+        _sh.rmtree(self.tmpdir, ignore_errors=True)
+
+    def test_healthy_strip_reports_healthy_status_no_warning(self):
+        # Pre-stripped image: 50% transparent (top half), 50% opaque green (bottom half).
+        # Alpha mean should land in (HEALTHY_ALPHA_MIN_PCT, HEALTHY_ALPHA_MAX_PCT).
+        path = self.tmpdir / "half-transparent.png"
+        _draw_image(
+            MAGICK,
+            path,
+            "-size",
+            "100x100",
+            "xc:none",
+            "-fill",
+            "#2E8B2E",
+            "-draw",
+            "rectangle 0,50 99,99",
+        )
+        metrics, warning = evaluate_strip(str(path))
+        self.assertEqual(metrics["status"], "healthy")
+        self.assertIsNone(warning)
+        self.assertIsNotNone(metrics["alpha_mean_pct"])
+        self.assertGreaterEqual(metrics["alpha_mean_pct"], HEALTHY_ALPHA_MIN_PCT)
+        self.assertLessEqual(metrics["alpha_mean_pct"], HEALTHY_ALPHA_MAX_PCT)
+        self.assertGreater(metrics["file_size_kb"], 0)
+
+    def test_subject_eaten_reports_loud_warning(self):
+        # Mostly transparent canvas with a 5x5 dot of opacity — alpha far below
+        # the HEALTHY_ALPHA_MIN_PCT threshold. Matches the regression failure mode.
+        path = self.tmpdir / "mostly-eaten.png"
+        _draw_image(
+            MAGICK,
+            path,
+            "-size",
+            "100x100",
+            "xc:none",
+            "-fill",
+            "#2E8B2E",
+            "-draw",
+            "rectangle 47,47 51,51",
+        )
+        metrics, warning = evaluate_strip(str(path))
+        self.assertEqual(metrics["status"], "subject_eaten")
+        self.assertIsNotNone(warning)
+        self.assertIn("subject", warning.lower())
+        self.assertIn("magenta border", warning.lower())
+        self.assertLess(metrics["alpha_mean_pct"], HEALTHY_ALPHA_MIN_PCT)
+
+    def test_nothing_stripped_reports_loud_warning(self):
+        # All-opaque canvas written as PNG32 (alpha channel forced). Plain PNG
+        # strips an all-opaque alpha channel as a size optimization, which would
+        # make the read-back report alpha=0. After remove_background() the
+        # output always has an alpha channel, so this fixture is closer to the
+        # real runtime input to evaluate_strip.
+        path = self.tmpdir / "all-opaque.png"
+        assert MAGICK is not None, "REQUIRES_MAGICK should have skipped this test"
+        subprocess.run(
+            [MAGICK, "-size", "100x100", "xc:rgba(46,139,46,1.0)", f"PNG32:{path}"],
+            check=True,
+            capture_output=True,
+        )
+        metrics, warning = evaluate_strip(str(path))
+        self.assertEqual(metrics["status"], "nothing_stripped")
+        self.assertIsNotNone(warning)
+        self.assertIn("fills the", warning.lower())
+        self.assertGreater(metrics["alpha_mean_pct"], HEALTHY_ALPHA_MAX_PCT)
+
+    def test_format_eval_card_includes_filename_and_metrics(self):
+        card = _format_eval_card(
+            "/tmp/raccoon.webp",
+            {"alpha_mean_pct": 51.3, "file_size_kb": 74.0, "status": "healthy"},
+            None,
+        )
+        self.assertIn("raccoon.webp", card)
+        self.assertIn("51.3%", card)
+        self.assertIn("74.0KB", card)
+        self.assertIn("healthy", card)
+        self.assertNotIn("WARN", card)
+
+    def test_format_eval_card_surfaces_warning_on_second_line(self):
+        card = _format_eval_card(
+            "/tmp/raccoon.webp",
+            {"alpha_mean_pct": 3.1, "file_size_kb": 13.0, "status": "subject_eaten"},
+            "subject eaten — see /hill-climbing for the fix",
+        )
+        self.assertIn("subject_eaten", card)
+        self.assertIn("\n  WARN:", card)
+        self.assertIn("hill-climbing", card)
 
 
 if __name__ == "__main__":

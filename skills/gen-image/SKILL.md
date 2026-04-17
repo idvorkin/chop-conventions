@@ -115,6 +115,8 @@ Use `generate.py` from the `image-explore` skill. It handles env loading (`~/.en
 
 5. If generation fails, report the error and ask if the user wants to retry with a modified prompt or skip.
 
+**Auto-eval runs on every generation.** When `--transparent` is set, `generate.py` runs `evaluate_strip()` on the output right after the chroma-key pass and prints a one-line metrics card to stderr (alpha mean %, file size, status). Status is one of `healthy` (in the 15–85% alpha band), `subject_eaten` (below 15% — strip invariant was violated; regenerate with a magenta border on all four sides), or `nothing_stripped` (above 85% — subject fills the frame; widen the crop). The thresholds are the same ones asserted in `test_generate.py`'s integration suite, so the eval that guards the test suite is the same eval that guards every runtime output — see [/hill-climbing](https://idvork.in/hill-climbing) for the pattern.
+
 **Verifying transparent output.** Don't judge chroma-key quality by compositing on a solid background — interior holes read as the background color. Extract the alpha channel as a mask: `magick out.webp -alpha extract mask.png`. A clean mask is a solid silhouette; swiss-cheese holes mean the chroma ate interior color data.
 
 **Never chain chroma passes on different magenta tones** (e.g. a second pass on `#E040E0` to catch pink shadow remnants). It eats magenta-tinted highlights inside fluffy characters. If the first pass has fringe, regenerate the source with a stricter prompt (`no shadow on ground, no gradient, no environment`) rather than filtering harder.
