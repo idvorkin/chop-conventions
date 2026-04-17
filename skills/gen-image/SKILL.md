@@ -35,7 +35,8 @@ When `--transparent` is active, `generate.py` runs two complementary evals on th
 
 **(2) Alpha-mask quality signal** (`eval_alpha`, opt-out via `--no-eval`):
 
-- `interior_hole_px` — transparent pixels enclosed by opaque (signals interior damage the alpha-mean misses: Swiss-cheese holes that read as shading on a colored preview background).
+- `interior_hole_px` — pixels in transparent regions that only become enclosed once the opaque mask is morphologically closed by 1 pixel. Isolates flood-fill bleed-through damage: thin 1–2-pixel channels the chroma-strip drills through the character (neck, between fingers, limb outlines) that topologically connect a real interior hole to the outside background so a naive "enclosed transparent" check reports zero. Legitimate design gaps (armpit openings, space between legs) are wider than 2 px and stay unaffected by the closing, so they don't false-alarm.
+- `interior_hole_largest_px` — pixels in the single biggest channel-revealed hole. More stable across images; good thresholding target because one big visible hole is what a human notices.
 - `residual_magenta_px` — opaque pixels still near chroma color (signals trapped magenta pockets corner-seeded flood couldn't reach).
 - `edge_fringe_px` — partial-alpha pixels (signals halo).
 
@@ -43,11 +44,11 @@ Output format:
 
 ```
 eval [healthy] out.webp: alpha=51.3% size=74.0KB
-[eval] /tmp/out.webp: holes=84, residual=132, fringe=0   [OK]
-[eval] /tmp/out.webp: holes=9687, residual=0, fringe=0   [WARN: interior damage likely — check alpha mask]
+[eval] /tmp/out.webp: holes=0 (largest=0), residual=0, fringe=0   [OK]
+[eval] /tmp/out.webp: holes=4508 (largest=4356), residual=0, fringe=0   [WARN: interior damage likely — check alpha mask]
 ```
 
-Thresholds for the mask-quality signal are conservative by default (holes > 200, residual > 500, fringe > 2000). Pass `--no-eval` to skip it. Pass `--eval-strict` to exit nonzero when a mask-quality threshold trips.
+Thresholds for the mask-quality signal are conservative by default (holes > 500, residual > 500, fringe > 2000). Pass `--no-eval` to skip it. Pass `--eval-strict` to exit nonzero when a mask-quality threshold trips.
 
 **Why:** visual inspection on a light or dark background hides interior damage (holes read as shadow/shading). The alpha mask is the ground truth. Baking both evals into the skill makes them the default, so a silently-broken output can't ship. See [/hill-climbing](https://idvork.in/hill-climbing) for the "eval becomes regression guard" pattern.
 
