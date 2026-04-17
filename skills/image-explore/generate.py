@@ -83,10 +83,26 @@ class GenerationResult:
 # the mean catches "strip ate the subject" / "nothing stripped"; these
 # catch "Swiss-cheese holes", "trapped magenta pockets", and "halo".
 EVAL_ALPHA_THRESHOLDS = {
-    "interior_hole_px": 200,
+    "interior_hole_px": 500,
     "residual_magenta_px": 500,
     "edge_fringe_px": 2000,
 }
+
+# Before counting interior holes, morphologically close the opaque mask
+# (dilate then erode by this many pixels). Flood-fill chroma-key can
+# drill 1–2-pixel-wide channels through narrow parts of the character
+# (neck, between fingers, limb outlines), which topologically connect
+# real interior holes to the outside background — naive connected-
+# components then reports holes=0 even when the mask is visibly damaged.
+# Radius 1 seals channels up to 3px wide, which matches every bleed
+# path observed on the Pod Detective calibration set without collapsing
+# legitimate design gaps (between legs, armpit openings) that are 5+ px
+# wide on real character art. See issue #171.
+INTERIOR_HOLE_CLOSE_RADIUS = 1
+# After sealing channels, drop interior components smaller than this —
+# antialiasing specks between fingers / between objects aren't real
+# damage, and they dominate the component count on otherwise-clean images.
+INTERIOR_HOLE_MIN_COMPONENT_PX = 100
 
 
 def resolve_chop_root():
@@ -355,7 +371,9 @@ def evaluate_strip(image_path):
 
     try:
         path_obj = Path(image_path)
-        file_size_kb = round(path_obj.stat().st_size / 1024, 1) if path_obj.exists() else None
+        file_size_kb = (
+            round(path_obj.stat().st_size / 1024, 1) if path_obj.exists() else None
+        )
     except OSError:
         file_size_kb = None
 
@@ -428,15 +446,43 @@ def _format_eval_card(image_path, metrics, warning):
     return line
 
 
-def eval_alpha(image_path, chroma_rgb=(255, 0, 255), tolerance=20):
+def _label_interior(transparent_mask, label):
+    """Return a boolean mask of transparent pixels NOT reachable from
+    the image border. `label` is scipy.ndimage.label injected by the
+    caller so this helper doesn't need its own import."""
+    import numpy as np  # noqa: PLC0415
+
+    labeled, _ = label(transparent_mask)
+    border_labels = set()
+    border_labels.update(labeled[0, :].tolist())
+    border_labels.update(labeled[-1, :].tolist())
+    border_labels.update(labeled[:, 0].tolist())
+    border_labels.update(labeled[:, -1].tolist())
+    border_labels.discard(0)
+    border_mask = np.isin(labeled, list(border_labels))
+    return transparent_mask & ~border_mask
+
+
+def eval_alpha(
+    image_path,
+    chroma_rgb=(255, 0, 255),
+    tolerance=20,
+    close_radius=INTERIOR_HOLE_CLOSE_RADIUS,
+    min_component_px=INTERIOR_HOLE_MIN_COMPONENT_PX,
+):
     """Compute alpha-mask quality metrics for a post-chroma RGBA image.
 
     Detects failure modes orthogonal to evaluate_strip's alpha-mean signal:
-      * interior_hole_px — transparent pixels NOT connected to the image
-        border. These are "eaten" interiors: highlights/glass the flood-fill
-        or fuzzy chroma chewed through and left as holes. On a light preview
-        background these holes read as shading and hide silently — the alpha
-        mask is the only ground truth.
+      * interior_hole_px — transparent pixels NOT reachable from the image
+        border after the opaque mask is morphologically closed. Closing
+        seals the 1–2-pixel bleed channels the flood-fill drills through
+        narrow character parts; without it, a real interior hole connected
+        to the outside by a thin channel gets counted as border-touching
+        and slips through (the issue-#171 failure mode). Tiny components
+        below `min_component_px` are filtered as antialiasing noise.
+      * interior_hole_largest_px — pixels in the single largest interior
+        hole. More stable across images than the total; good for
+        thresholding because one big hole is what a human sees.
       * residual_magenta_px — opaque pixels still near the chroma color.
         Trapped magenta pockets between characters or inside enclosed
         negative space the flood-fill couldn't reach from the corners.
@@ -448,7 +494,7 @@ def eval_alpha(image_path, chroma_rgb=(255, 0, 255), tolerance=20):
     """
     import numpy as np  # noqa: PLC0415 — lazy import, see module header
     from PIL import Image  # noqa: PLC0415
-    from scipy.ndimage import label  # noqa: PLC0415
+    from scipy.ndimage import binary_closing, label  # noqa: PLC0415
 
     arr = np.asarray(Image.open(image_path).convert("RGBA"))
     rgb, a = arr[:, :, :3], arr[:, :, 3]
@@ -461,18 +507,44 @@ def eval_alpha(image_path, chroma_rgb=(255, 0, 255), tolerance=20):
     dist = np.abs(rgb.astype(np.int16) - chroma).sum(axis=2)
     residual = int((opaque & (dist <= tolerance)).sum())
 
-    # Interior holes: label connected components of transparent pixels,
-    # then subtract every component that touches the image border.
-    # What remains is transparent regions fully enclosed by opaque — the
-    # "Swiss-cheese" damage we care about.
-    labeled, _ = label(transparent)
-    border = set()
-    border.update(labeled[0, :].tolist())
-    border.update(labeled[-1, :].tolist())
-    border.update(labeled[:, 0].tolist())
-    border.update(labeled[:, -1].tolist())
-    border.discard(0)  # 0 is the non-transparent background in the labeling
-    interior = int(transparent.sum() - np.isin(labeled, list(border)).sum())
+    # Interior holes: we want to flag flood-fill bleed-through damage but
+    # NOT legitimate design-intentional gaps (armpit openings, space
+    # between legs, gap between fingers). Both show up as "transparent
+    # surrounded by opaque" but they behave differently under morphological
+    # closing of the opaque mask:
+    #   - Design gap: several pixels wide at its opening; closing by 1 px
+    #     barely narrows it, so its topological relationship to the border
+    #     is unchanged.
+    #   - Bleed channel: 1–2 px wide where it pierces the character;
+    #     closing by 1 px seals the channel shut, so what was border-
+    #     connected becomes enclosed and "appears" in the interior set.
+    # The set difference (closed-interior minus open-interior) isolates
+    # exactly the pixels that only became enclosed because of the
+    # channel-sealing. That's the bleed-through signal we actually want.
+    interior_open = _label_interior(~opaque, label)
+    if close_radius > 0:
+        closed_opaque = binary_closing(opaque, iterations=close_radius)
+        interior_closed = _label_interior(~closed_opaque, label)
+        channel_revealed = interior_closed & ~interior_open
+    else:
+        channel_revealed = interior_open
+
+    if min_component_px > 1 and channel_revealed.any():
+        relabeled, _ = label(channel_revealed)
+        sizes = np.bincount(relabeled.ravel())
+        small_labels = np.where(sizes < min_component_px)[0]
+        small_labels = small_labels[small_labels != 0]
+        if small_labels.size:
+            channel_revealed = channel_revealed & ~np.isin(relabeled, small_labels)
+
+    interior = int(channel_revealed.sum())
+    if channel_revealed.any():
+        relabeled, _ = label(channel_revealed)
+        sizes = np.bincount(relabeled.ravel())
+        sizes[0] = 0
+        interior_largest = int(sizes.max())
+    else:
+        interior_largest = 0
 
     # Edge fringe: partial alpha. Some is expected (antialiasing); a lot
     # suggests the chroma removal left a halo.
@@ -480,6 +552,7 @@ def eval_alpha(image_path, chroma_rgb=(255, 0, 255), tolerance=20):
 
     return {
         "interior_hole_px": interior,
+        "interior_hole_largest_px": interior_largest,
         "residual_magenta_px": residual,
         "edge_fringe_px": edge,
     }
@@ -488,9 +561,10 @@ def eval_alpha(image_path, chroma_rgb=(255, 0, 255), tolerance=20):
 def format_eval_line(image_path, metrics, warnings):
     """Render the eval_alpha line printed to stderr."""
     status = f"[WARN: {'; '.join(warnings)}]" if warnings else "[OK]"
+    largest = metrics.get("interior_hole_largest_px", 0)
     return (
         f"[eval] {image_path}: "
-        f"holes={metrics['interior_hole_px']}, "
+        f"holes={metrics['interior_hole_px']} (largest={largest}), "
         f"residual={metrics['residual_magenta_px']}, "
         f"fringe={metrics['edge_fringe_px']}   {status}"
     )

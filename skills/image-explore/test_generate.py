@@ -22,10 +22,12 @@ from generate import (  # noqa: E402
     BORDER_SAMPLE_STEP,
     HEALTHY_ALPHA_MAX_PCT,
     HEALTHY_ALPHA_MIN_PCT,
+    INTERIOR_HOLE_CLOSE_RADIUS,
     NEAR_MAGENTA_L1_TOLERANCE,
     _format_eval_card,
     _parse_srgb,
     _scan_border_for_magenta_seeds,
+    eval_alpha,
     evaluate_strip,
     remove_background,
 )
@@ -328,6 +330,156 @@ class TestEvaluateStrip(unittest.TestCase):
         self.assertIn("subject_eaten", card)
         self.assertIn("\n  WARN:", card)
         self.assertIn("hill-climbing", card)
+
+
+class TestEvalAlphaInteriorHoles(unittest.TestCase):
+    """eval_alpha must catch flood-fill bleed-through channels.
+
+    The issue-#171 failure: a real interior hole gets connected to the
+    image border by a 1–2-pixel-wide transparent channel the flood-fill
+    drilled through a narrow part of the character (neck, between legs).
+    A naive "transparent pixels not touching border" check then reports
+    zero holes. Morphological closing of the opaque mask seals the thin
+    channels, and the hole re-emerges as an enclosed component.
+    """
+
+    def _build_rgba(self, opaque_mask):
+        """Turn a bool opaque_mask into an RGBA array with flat alpha."""
+        import numpy as np  # noqa: PLC0415
+
+        h, w = opaque_mask.shape
+        rgba = np.zeros((h, w, 4), dtype=np.uint8)
+        rgba[..., :3][opaque_mask] = (128, 128, 128)  # neutral opaque fill
+        rgba[..., 3] = np.where(opaque_mask, 255, 0)
+        return rgba
+
+    def _save_and_eval(self, rgba, **eval_kwargs):
+        from PIL import Image  # noqa: PLC0415
+
+        with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as f:
+            path = f.name
+        Image.fromarray(rgba, mode="RGBA").save(path)
+        try:
+            return eval_alpha(path, **eval_kwargs)
+        finally:
+            Path(path).unlink(missing_ok=True)
+
+    def _try_import_numpy(self):
+        try:
+            import numpy as np  # noqa: F401, PLC0415
+            from PIL import Image  # noqa: F401, PLC0415
+            from scipy.ndimage import label  # noqa: F401, PLC0415
+        except ImportError:
+            self.skipTest("eval_alpha deps (numpy/pillow/scipy) not installed")
+
+    def test_clean_solid_silhouette_reports_zero_holes(self):
+        """A solid opaque disc on a transparent field — no damage, zero holes."""
+        self._try_import_numpy()
+        import numpy as np  # noqa: PLC0415
+
+        h = w = 200
+        yy, xx = np.ogrid[:h, :w]
+        opaque = (yy - h // 2) ** 2 + (xx - w // 2) ** 2 <= 60**2
+        metrics = self._save_and_eval(self._build_rgba(opaque))
+        self.assertEqual(metrics["interior_hole_px"], 0)
+        self.assertEqual(metrics["interior_hole_largest_px"], 0)
+
+    def test_preexisting_enclosed_hole_without_channel_is_not_flagged(self):
+        """Enclosed transparent disc with no bleed channel — interior at
+        both r=0 and r=1. Set-difference zeroes it out: could be design-
+        intentional (donut hole, glasses rim), so give benefit of doubt.
+        The metric targets flood-fill bleed-through specifically.
+        """
+        self._try_import_numpy()
+        import numpy as np  # noqa: PLC0415
+
+        h = w = 200
+        yy, xx = np.ogrid[:h, :w]
+        body = (yy - h // 2) ** 2 + (xx - w // 2) ** 2 <= 80**2
+        hole = (yy - h // 2) ** 2 + (xx - w // 2) ** 2 <= 20**2
+        opaque = body & ~hole
+        metrics = self._save_and_eval(self._build_rgba(opaque))
+        self.assertEqual(metrics["interior_hole_px"], 0)
+        self.assertEqual(metrics["interior_hole_largest_px"], 0)
+
+    def test_design_gap_armpit_is_not_flagged(self):
+        """Solid body with a 5-px-wide inlet from the border (like an
+        armpit opening between arm and body). Interior_open treats the
+        inlet as border-connected; closing at radius 1 narrows it but
+        doesn't seal it (wider than 2*radius+1). Set-difference = 0.
+        """
+        self._try_import_numpy()
+        import numpy as np  # noqa: PLC0415
+
+        h = w = 200
+        yy, xx = np.ogrid[:h, :w]
+        opaque = (yy - h // 2) ** 2 + (xx - w // 2) ** 2 <= 80**2
+        # Carve a 5-px-wide inlet from the top edge down into the body.
+        inlet = (np.abs(xx - w // 2) <= 2) & (yy <= h // 2)
+        opaque = opaque & ~inlet
+        metrics = self._save_and_eval(self._build_rgba(opaque))
+        self.assertEqual(metrics["interior_hole_px"], 0)
+
+    def test_bleed_channel_hole_still_flagged_after_closing(self):
+        """The issue-#171 failure mode: hole connected to outside via a
+        thin 1-pixel channel. Without closing, reports 0. With the default
+        closing radius, the channel is sealed and the hole re-emerges.
+        """
+        self._try_import_numpy()
+        import numpy as np  # noqa: PLC0415
+
+        h = w = 200
+        yy, xx = np.ogrid[:h, :w]
+        body = (yy - h // 2) ** 2 + (xx - w // 2) ** 2 <= 80**2
+        hole = (yy - h // 2) ** 2 + (xx - w // 2) ** 2 <= 20**2
+        # 1-pixel-wide channel from the hole straight out through the body
+        # to the image border. Emulates a flood-fill bleed path.
+        channel = (np.abs(xx - w // 2) <= 0) & (yy >= h // 2)
+        opaque = body & ~hole & ~channel
+
+        # Confirm the naïve (radius=0) detector misses it.
+        metrics_naive = self._save_and_eval(self._build_rgba(opaque), close_radius=0)
+        self.assertEqual(
+            metrics_naive["interior_hole_px"],
+            0,
+            "test fixture is supposed to hide the hole behind a thin channel",
+        )
+
+        # Default radius must catch it.
+        metrics = self._save_and_eval(self._build_rgba(opaque))
+        hole_area = int(hole.sum())
+        self.assertGreater(
+            metrics["interior_hole_px"],
+            hole_area * 0.5,
+            f"closing (r={INTERIOR_HOLE_CLOSE_RADIUS}) should re-expose the hidden hole",
+        )
+
+    def test_tiny_speckles_below_min_component_are_filtered(self):
+        """Single-pixel transparent dots inside opaque shouldn't register."""
+        self._try_import_numpy()
+        import numpy as np  # noqa: PLC0415
+
+        h = w = 200
+        yy, xx = np.ogrid[:h, :w]
+        body = (yy - h // 2) ** 2 + (xx - w // 2) ** 2 <= 80**2
+        opaque = body.copy()
+        # Scatter 10 isolated 1-pixel interior transparent dots.
+        for dy, dx in [
+            (-40, 0),
+            (-30, 10),
+            (-20, -20),
+            (-10, 15),
+            (0, -30),
+            (10, 25),
+            (20, -5),
+            (30, 20),
+            (-5, 5),
+            (5, -10),
+        ]:
+            opaque[h // 2 + dy, w // 2 + dx] = False
+        metrics = self._save_and_eval(self._build_rgba(opaque))
+        # Each speckle is 1 px (<100), so they should all be filtered.
+        self.assertLess(metrics["interior_hole_largest_px"], 100)
 
 
 if __name__ == "__main__":
