@@ -11,9 +11,11 @@ import tempfile
 import unittest
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).parent))
+# Import from the canonical package location — the in-tree shim at
+# `tools/telegram_debug.py` is deprecated and exists only for back-compat.
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from telegram_debug import (  # noqa: E402
+from chop_telegram_tools.telegram_debug import (  # noqa: E402
     REACTION_WHITELIST,
     _default_chat_id,
     _find_owning_claude,

@@ -77,6 +77,37 @@ ln -s /path/to/chop-conventions/skills/<skill-name> <project>/.claude/skills/<sk
 
 Machine-level skills go in `~/.claude/skills/` and are available everywhere. Project-level skills go in `<project>/.claude/skills/` and are scoped to that repo.
 
+### Install Globally
+
+Several skills ship CLI helpers (Gemini TTS, Telegram diagnostics/watchdog, up-to-date diagnose/hook-trust). Install them as proper `uv tool install` packages so you can invoke them from anywhere:
+
+```bash
+just install-tools        # installs every registered chop-conventions package
+```
+
+Under the hood this runs `./install-tools.py`, which calls `uv tool install --force --reinstall <path>` for each skill directory that ships a `pyproject.toml`. Each tool gets its own isolated venv; `uv` symlinks the console-script entry points into `~/.local/bin/`.
+
+Currently registered entry points:
+
+| CLI                     | Package               | Source dir               |
+| ----------------------- | --------------------- | ------------------------ |
+| `gen-tts`               | `chop-gen-tts`        | `skills/gen-tts`         |
+| `tg-doctor`             | `chop-telegram-tools` | `skills/harden-telegram` |
+| `tg-watchdog`           | `chop-telegram-tools` | `skills/harden-telegram` |
+| `up-to-date-diag`       | `chop-up-to-date`     | `skills/up-to-date`      |
+| `up-to-date-hook-trust` | `chop-up-to-date`     | `skills/up-to-date`      |
+
+Other targets:
+
+```bash
+just install-tools-dry-run   # enumerate planned `uv tool install` commands, no writes
+just uninstall-tools         # `uv tool uninstall` every registered package
+```
+
+After install, a `which` check prints where each binary landed — if any says `NOT ON $PATH`, add `~/.local/bin` to your shell rc.
+
+**Back-compat note.** The old shebang-driven scripts (e.g. `skills/gen-tts/generate-tts.py`, `skills/harden-telegram/tools/telegram_debug.py`, `skills/up-to-date/diagnose.py`) remain as deprecated thin shims during the transition — they bootstrap the same code via PEP 723 `uv run --script`, so in-flight callers don't break. Prefer the packaged entry points going forward; the shims will be removed once downstream callers migrate.
+
 ### Available Skills
 
 | Skill                    | Scope   | Description                                                                      |

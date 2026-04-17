@@ -12,11 +12,11 @@ import tempfile
 import unittest
 from pathlib import Path
 
-# sys.path setup for sibling module imports lives in conftest.py —
-# `unittest discover` adds the start dir automatically; pytest and
-# pyright rely on the conftest shim.
-import diagnose
-from diagnose import (
+# Import from the canonical package location — the in-tree shim at
+# `diagnose.py` is deprecated. `conftest.py` already adds the skill dir to
+# sys.path so `chop_up_to_date.diagnose` resolves.
+from chop_up_to_date import diagnose  # noqa: E402
+from chop_up_to_date.diagnose import (  # noqa: E402
     CherryAnalysis,
     MachineInfo,
     Remote,

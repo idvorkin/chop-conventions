@@ -19,9 +19,13 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-sys.path.insert(0, str(Path(__file__).parent))
+# Import from the canonical package location — the in-tree shim at
+# `tools/watchdog.py` is deprecated and exists only for back-compat. Tests
+# must target the real module so `mock.patch("chop_telegram_tools.watchdog.
+# <name>", …)` hits the same reference `resolve_pane_for_pid()` reads.
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from watchdog import (  # noqa: E402
+from chop_telegram_tools.watchdog import (  # noqa: E402
     _FALLBACK,
     _resolve_pane_via_rmux_helper,
     find_ancestor_pane,
@@ -206,7 +210,7 @@ class TestResolvePaneViaRmuxHelper(unittest.TestCase):
 
     def test_happy_path_returns_pane_id(self):
         with mock.patch(
-            "watchdog.subprocess.run",
+            "chop_telegram_tools.watchdog.subprocess.run",
             return_value=_completed_process(0, stdout="%35\n"),
         ):
             self.assertEqual(_resolve_pane_via_rmux_helper(999), "%35")
@@ -215,7 +219,7 @@ class TestResolvePaneViaRmuxHelper(unittest.TestCase):
         # Exit 1 is a definitive "no pane in ancestor chain" — caller
         # must NOT fall back, the answer is None.
         with mock.patch(
-            "watchdog.subprocess.run",
+            "chop_telegram_tools.watchdog.subprocess.run",
             return_value=_completed_process(
                 1, stderr="no tmux pane found for pid 999\n"
             ),
@@ -225,7 +229,7 @@ class TestResolvePaneViaRmuxHelper(unittest.TestCase):
     def test_file_not_found_returns_fallback(self):
         # rmux_helper not on PATH → fall back to Python walker.
         with mock.patch(
-            "watchdog.subprocess.run",
+            "chop_telegram_tools.watchdog.subprocess.run",
             side_effect=FileNotFoundError("rmux_helper"),
         ):
             self.assertIs(_resolve_pane_via_rmux_helper(999), _FALLBACK)
@@ -233,7 +237,7 @@ class TestResolvePaneViaRmuxHelper(unittest.TestCase):
     def test_timeout_returns_fallback(self):
         # rmux_helper hangs → fall back to Python walker.
         with mock.patch(
-            "watchdog.subprocess.run",
+            "chop_telegram_tools.watchdog.subprocess.run",
             side_effect=subprocess.TimeoutExpired(cmd="rmux_helper", timeout=2.0),
         ):
             self.assertIs(_resolve_pane_via_rmux_helper(999), _FALLBACK)
@@ -242,7 +246,7 @@ class TestResolvePaneViaRmuxHelper(unittest.TestCase):
         # Exit 2 = tmux not running. Fall back — rmux_helper's tmux
         # detection may be wrong on this box.
         with mock.patch(
-            "watchdog.subprocess.run",
+            "chop_telegram_tools.watchdog.subprocess.run",
             return_value=_completed_process(2, stderr="tmux not running\n"),
         ):
             self.assertIs(_resolve_pane_via_rmux_helper(999), _FALLBACK)
@@ -250,7 +254,7 @@ class TestResolvePaneViaRmuxHelper(unittest.TestCase):
     def test_exit_3_returns_fallback(self):
         # Exit 3 = /proc unreadable. Fall back.
         with mock.patch(
-            "watchdog.subprocess.run",
+            "chop_telegram_tools.watchdog.subprocess.run",
             return_value=_completed_process(3, stderr="/proc unreadable\n"),
         ):
             self.assertIs(_resolve_pane_via_rmux_helper(999), _FALLBACK)
@@ -258,7 +262,7 @@ class TestResolvePaneViaRmuxHelper(unittest.TestCase):
     def test_empty_stdout_on_exit_0_returns_fallback(self):
         # Exit 0 with empty stdout is malformed — fall back defensively.
         with mock.patch(
-            "watchdog.subprocess.run",
+            "chop_telegram_tools.watchdog.subprocess.run",
             return_value=_completed_process(0, stdout="\n"),
         ):
             self.assertIs(_resolve_pane_via_rmux_helper(999), _FALLBACK)
@@ -275,11 +279,11 @@ class TestResolvePaneForPid(unittest.TestCase):
     def test_falls_back_to_python_walker_when_rmux_helper_missing(self):
         with (
             mock.patch(
-                "watchdog.subprocess.run",
+                "chop_telegram_tools.watchdog.subprocess.run",
                 side_effect=FileNotFoundError("rmux_helper"),
             ),
             mock.patch(
-                "watchdog._resolve_pane_via_python_walker",
+                "chop_telegram_tools.watchdog._resolve_pane_via_python_walker",
                 return_value="%99",
             ) as mock_walker,
         ):
@@ -292,11 +296,11 @@ class TestResolvePaneForPid(unittest.TestCase):
         # invoked by mistake.
         with (
             mock.patch(
-                "watchdog.subprocess.run",
+                "chop_telegram_tools.watchdog.subprocess.run",
                 return_value=_completed_process(0, stdout="%35\n"),
             ),
             mock.patch(
-                "watchdog._resolve_pane_via_python_walker",
+                "chop_telegram_tools.watchdog._resolve_pane_via_python_walker",
                 side_effect=AssertionError(
                     "fallback must not be called on primary success"
                 ),
@@ -311,11 +315,11 @@ class TestResolvePaneForPid(unittest.TestCase):
         # could disagree on the same process tree.
         with (
             mock.patch(
-                "watchdog.subprocess.run",
+                "chop_telegram_tools.watchdog.subprocess.run",
                 return_value=_completed_process(1),
             ),
             mock.patch(
-                "watchdog._resolve_pane_via_python_walker",
+                "chop_telegram_tools.watchdog._resolve_pane_via_python_walker",
                 return_value="%99",
             ) as mock_walker,
         ):
