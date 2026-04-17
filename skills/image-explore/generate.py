@@ -139,6 +139,16 @@ BORDER_SAMPLE_STEP = 8
 NEAR_MAGENTA_L1_TOLERANCE = 70  # sum of |r-255| + |g| + |b-255|
 FLOOD_FUZZ_PERCENT = 30
 
+# Post-strip eval thresholds — the same metrics the unit tests assert on,
+# reused as a runtime regression guard. See /hill-climbing for why the
+# same eval that drives the search becomes infrastructure after it.
+# Alpha mean (0..100): percentage of pixels fully opaque. Below
+# HEALTHY_ALPHA_MIN_PCT means the strip ate the subject (chroma invariant
+# was violated); above HEALTHY_ALPHA_MAX_PCT means nearly nothing was
+# transparent (subject likely fills the frame, strip effectively a no-op).
+HEALTHY_ALPHA_MIN_PCT = 15.0
+HEALTHY_ALPHA_MAX_PCT = 85.0
+
 
 def _parse_srgb(fragment):
     """Parse 'srgb(r,g,b)' or 'srgba(r,g,b,a)' — return (r,g,b) ints, or None.
@@ -292,6 +302,104 @@ def remove_background(image_path):
         Path(tmp_path).unlink(missing_ok=True)
 
 
+def evaluate_strip(image_path):
+    """Compute chroma-strip quality metrics for a finished image.
+
+    Returns (metrics_dict, warning_str_or_None). The metrics dict always
+    has the same keys so the caller can log them uniformly; warning is
+    set when the metrics indicate the strip likely failed (subject eaten
+    or nothing stripped). The same thresholds are asserted on in
+    test_generate.py's integration suite, so test + runtime share the
+    same definition of "healthy."
+
+    Keys in the metrics dict:
+    - alpha_mean_pct: percentage of pixels fully opaque (0..100)
+    - file_size_kb: size on disk, rounded
+    - status: one of "healthy", "subject_eaten", "nothing_stripped",
+      "eval_failed"
+    """
+    magick = shutil.which("magick") or shutil.which("convert")
+    if magick is None:
+        return (
+            {"alpha_mean_pct": None, "file_size_kb": None, "status": "eval_failed"},
+            "magick not found — skipping post-strip eval",
+        )
+
+    try:
+        path_obj = Path(image_path)
+        file_size_kb = round(path_obj.stat().st_size / 1024, 1) if path_obj.exists() else None
+    except OSError:
+        file_size_kb = None
+
+    result = subprocess.run(
+        [magick, image_path, "-format", "%[fx:mean.a*100]", "info:"],
+        capture_output=True,
+        text=True,
+    )
+    if result.returncode != 0:
+        return (
+            {
+                "alpha_mean_pct": None,
+                "file_size_kb": file_size_kb,
+                "status": "eval_failed",
+            },
+            f"magick alpha probe failed: {result.stderr.strip()}",
+        )
+
+    try:
+        alpha_pct = round(float(result.stdout.strip()), 2)
+    except ValueError:
+        return (
+            {
+                "alpha_mean_pct": None,
+                "file_size_kb": file_size_kb,
+                "status": "eval_failed",
+            },
+            f"could not parse alpha mean: {result.stdout.strip()!r}",
+        )
+
+    if alpha_pct < HEALTHY_ALPHA_MIN_PCT:
+        status = "subject_eaten"
+        warning = (
+            f"alpha_mean={alpha_pct}% is below {HEALTHY_ALPHA_MIN_PCT}%: "
+            "the strip likely ate the subject. Usually means chroma-bg "
+            "wasn't present on every image border — regenerate with a "
+            "prompt that leaves a solid magenta border on all four sides."
+        )
+    elif alpha_pct > HEALTHY_ALPHA_MAX_PCT:
+        status = "nothing_stripped"
+        warning = (
+            f"alpha_mean={alpha_pct}% is above {HEALTHY_ALPHA_MAX_PCT}%: "
+            "almost nothing was transparented. Subject likely fills the "
+            "frame; the character reference image may need a wider crop."
+        )
+    else:
+        status = "healthy"
+        warning = None
+
+    return (
+        {
+            "alpha_mean_pct": alpha_pct,
+            "file_size_kb": file_size_kb,
+            "status": status,
+        },
+        warning,
+    )
+
+
+def _format_eval_card(image_path, metrics, warning):
+    """Render a compact one-line eval summary for stderr logging."""
+    alpha = metrics.get("alpha_mean_pct")
+    size = metrics.get("file_size_kb")
+    status = metrics.get("status", "unknown")
+    alpha_s = f"{alpha}%" if alpha is not None else "?"
+    size_s = f"{size}KB" if size is not None else "?"
+    line = f"eval [{status}] {Path(image_path).name}: alpha={alpha_s} size={size_s}"
+    if warning:
+        line += f"\n  WARN: {warning}"
+    return line
+
+
 def generate_one(direction: Direction, config: GenerateConfig) -> GenerationResult:
     """Generate a single image.
 
@@ -354,6 +462,15 @@ def generate_one(direction: Direction, config: GenerateConfig) -> GenerationResu
                 prompt=full_prompt,
                 duration_s=duration_s,
             )
+        # Auto-eval the strip: the same metrics asserted in test_generate.py
+        # become the runtime regression guard. Healthy strips print a quiet
+        # one-liner; failed strips print a loud warning with actionable
+        # guidance (regenerate the prompt vs. widen the crop).
+        metrics, warning = evaluate_strip(direction.output)
+        print(
+            _format_eval_card(direction.output, metrics, warning),
+            file=sys.stderr,
+        )
 
     return GenerationResult(
         output=direction.output,
