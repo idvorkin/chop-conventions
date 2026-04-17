@@ -1,21 +1,21 @@
 #!/usr/bin/env -S uv run --script
 # /// script
 # requires-python = ">=3.10"
-# dependencies = []
+# dependencies = [
+#     "typer>=0.12",
+# ]
 # ///
 # ABOUTME: Local speech-to-text via NVIDIA Parakeet TDT 0.6B ONNX — single file or batch.
 # ABOUTME: Auto-transcodes non-16kHz/non-mono audio via ffmpeg; wraps every subprocess
 # ABOUTME: with `nice -n 19 ionice -c 3 env OMP_NUM_THREADS=2 ORT_NUM_THREADS=2 MKL_NUM_THREADS=2`.
 # ABOUTME: No API key — uses the local nemo-parakeet-tdt-0.6b-v2 ONNX model via onnx-asr.
 #
-# Single mode:
-#   parakeet-stt.py --input clip.wav --output transcript.txt
-#   parakeet-stt.py --input clip.ogg --json --output transcript.json
-#
-# Batch mode (parallel):
-#   parakeet-stt.py --batch-dir /path/to/audio/dir
-#   parakeet-stt.py --batch-dir /path/to/audio/dir --json --max-workers 2
-#   parakeet-stt.py --batch-files a.wav b.m4a c.ogg
+# Subcommands:
+#   parakeet-stt.py single clip.wav --output transcript.txt
+#   parakeet-stt.py single clip.ogg --json --output transcript.json
+#   parakeet-stt.py batch-dir /path/to/audio/dir
+#   parakeet-stt.py batch-dir /path/to/audio/dir --json --max-workers 2
+#   parakeet-stt.py batch-files a.wav b.m4a c.ogg
 #
 # Mandatory nice-wrap (BAKED IN — there is no code path that skips it):
 #   nice -n 19 ionice -c 3 env OMP_NUM_THREADS=2 ORT_NUM_THREADS=2 MKL_NUM_THREADS=2 <cmd>
@@ -23,9 +23,6 @@
 # Empirically 2 threads is FASTER than onnxruntime's default on consumer CPUs
 # because the default thrashes.
 
-from __future__ import annotations
-
-import argparse
 import json
 import subprocess
 import sys
@@ -304,174 +301,49 @@ def default_output_path(
     return target_dir / f"{input_path.stem}{suffix}"
 
 
-def main() -> None:
-    parser = argparse.ArgumentParser(
-        description=(
-            "Transcribe audio via local Parakeet TDT 0.6B ONNX "
-            "(single or batch). No API key required."
-        ),
-    )
+def _run_batch(
+    inputs: list[Path],
+    *,
+    json_mode: bool,
+    keep_wav: bool,
+    model: str,
+    max_workers: int,
+    output_dir: Path | None,
+) -> None:
+    """Shared batch execution logic for batch-dir and batch-files subcommands."""
+    import typer
 
-    # Single mode
-    parser.add_argument(
-        "--input",
-        default=None,
-        help="Single audio file to transcribe",
-    )
-    parser.add_argument(
-        "--output",
-        default=None,
-        help="Output transcript path (single mode). Defaults to <input>.txt / .json.",
-    )
+    if max_workers < 1:
+        print(
+            f"Error: --max-workers must be >= 1 (got {max_workers})",
+            file=sys.stderr,
+        )
+        raise typer.Exit(2)
 
-    # Batch mode
-    parser.add_argument(
-        "--batch-dir",
-        default=None,
-        metavar="DIR",
-        help="Directory of audio files to transcribe in parallel",
-    )
-    parser.add_argument(
-        "--batch-files",
-        nargs="+",
-        default=None,
-        metavar="PATH",
-        help="Space-separated list of audio files to transcribe in parallel",
-    )
-    parser.add_argument(
-        "--output-dir",
-        default=None,
-        metavar="DIR",
-        help="Batch mode: write transcripts to this dir instead of alongside inputs",
-    )
-
-    # Shared
-    parser.add_argument(
-        "--json",
-        action="store_true",
-        help="Emit {text, duration_s, model, elapsed_s} JSON instead of plain text",
-    )
-    parser.add_argument(
-        "--keep-wav",
-        action="store_true",
-        help="Retain the intermediate transcoded WAV file (debugging)",
-    )
-    parser.add_argument(
-        "--model",
-        default=DEFAULT_MODEL,
-        help=f"onnx-asr model name (default: {DEFAULT_MODEL})",
-    )
-    parser.add_argument(
-        "--max-workers",
-        type=int,
-        default=1,
-        help=(
-            "Parallel batch worker count (default: 1 — empirically faster than 2 "
-            "on consumer CPUs because OMP_NUM_THREADS=2 × N_workers still thrashes)."
-        ),
-    )
-
-    args = parser.parse_args()
-
-    modes = sum(bool(x) for x in (args.input, args.batch_dir, args.batch_files))
-    if modes == 0:
-        parser.error("Provide --input, --batch-dir, or --batch-files")
-    if modes > 1:
-        parser.error("Use exactly one of --input / --batch-dir / --batch-files")
-
-    output_dir = Path(args.output_dir).expanduser() if args.output_dir else None
-
-    # Shared work-root for intermediate transcoded WAVs.
     work_root = Path("/tmp") / f"parakeet-stt-{int(time.time() * 1000)}"
     work_root.mkdir(parents=True, exist_ok=True)
 
     try:
-        # --- Single mode ---------------------------------------------------
-        if args.input:
-            input_path = Path(args.input).expanduser()
-            if not input_path.exists():
-                print(f"Error: input file not found: {input_path}", file=sys.stderr)
-                sys.exit(1)
-            output_path = (
-                Path(args.output).expanduser()
-                if args.output
-                else default_output_path(input_path, args.json, output_dir)
-            )
-            job = STTJob(
-                input_path=input_path,
-                output_path=output_path,
-                json_mode=args.json,
-                keep_wav=args.keep_wav,
-                model=args.model,
-            )
-            result = transcribe_one(job, work_root)
-            if not result.success:
-                print(f"Error: {result.error}", file=sys.stderr)
-                sys.exit(1)
-            # Stdout contract: transcript text (or JSON) → stdout, so the tool
-            # composes in pipelines, e.g. `TEXT=$(parakeet-stt.py --input x.wav)`.
-            # The saved path is echoed to stderr instead.
-            print(result.text or "")
-            print(f"Saved: {result.output_path}", file=sys.stderr)
-            print(f"Transcribed in {result.elapsed_s}s", file=sys.stderr)
-            return
-
-        # --- Batch mode ----------------------------------------------------
-        inputs: list[Path] = []
-        if args.batch_dir:
-            batch_dir = Path(args.batch_dir).expanduser()
-            inputs = discover_audio_files(batch_dir)
-            if not inputs:
-                print(
-                    f"Error: no audio files found under {batch_dir} "
-                    f"(accepted: {sorted(AUDIO_EXTS)})",
-                    file=sys.stderr,
-                )
-                sys.exit(1)
-        else:
-            for raw in args.batch_files:
-                raw = raw.strip()
-                if not raw:
-                    continue
-                p = Path(raw).expanduser()
-                if not p.exists():
-                    print(f"Error: batch file not found: {p}", file=sys.stderr)
-                    sys.exit(1)
-                inputs.append(p)
-            if not inputs:
-                print(
-                    "Error: --batch-files was empty",
-                    file=sys.stderr,
-                )
-                sys.exit(2)
-
-        if args.max_workers < 1:
-            print(
-                f"Error: --max-workers must be >= 1 (got {args.max_workers})",
-                file=sys.stderr,
-            )
-            sys.exit(2)
-
         jobs: list[STTJob] = [
             STTJob(
                 input_path=p,
-                output_path=default_output_path(p, args.json, output_dir),
-                json_mode=args.json,
-                keep_wav=args.keep_wav,
-                model=args.model,
+                output_path=default_output_path(p, json_mode, output_dir),
+                json_mode=json_mode,
+                keep_wav=keep_wav,
+                model=model,
             )
             for p in inputs
         ]
 
         print(
             f"Transcribing {len(jobs)} files in parallel "
-            f"(max_workers={args.max_workers})...",
+            f"(max_workers={max_workers})...",
             file=sys.stderr,
         )
 
         failures: list[tuple[Path, str | None]] = []
         batch_t0 = time.monotonic()
-        workers = min(args.max_workers, len(jobs))
+        workers = min(max_workers, len(jobs))
         with ThreadPoolExecutor(max_workers=workers) as pool:
             futures = {
                 pool.submit(transcribe_one, j, work_root): j for j in jobs
@@ -494,9 +366,9 @@ def main() -> None:
                 f"\n{len(failures)}/{len(jobs)} failed ({batch_duration}s total)",
                 file=sys.stderr,
             )
-            sys.exit(1)
+            raise typer.Exit(1)
 
-        if args.json:
+        if json_mode:
             summary = {
                 "total": len(jobs),
                 "succeeded": len(jobs) - len(failures),
@@ -510,8 +382,6 @@ def main() -> None:
             file=sys.stderr,
         )
     finally:
-        # Best-effort cleanup of shared work root (individual jobs clean
-        # their own files unless --keep-wav was set).
         try:
             if work_root.exists() and not any(work_root.iterdir()):
                 work_root.rmdir()
@@ -519,5 +389,194 @@ def main() -> None:
             pass
 
 
+def _build_app():
+    """Wire Typer app. Called only from __main__ so tests skip the typer import."""
+    import typer
+
+    app = typer.Typer(
+        help=(
+            "Transcribe audio via local Parakeet TDT 0.6B ONNX "
+            "(single or batch). No API key required."
+        ),
+        add_completion=False,
+        no_args_is_help=True,
+    )
+
+    @app.command()
+    def single(
+        input_file: Path,
+        output: str | None = typer.Option(
+            None,
+            help="Output transcript path. Defaults to <input>.txt / .json.",
+        ),
+        json: bool = typer.Option(
+            False,
+            "--json",
+            help="Emit {text, duration_s, model, elapsed_s} JSON instead of plain text",
+        ),
+        keep_wav: bool = typer.Option(
+            False,
+            "--keep-wav",
+            help="Retain the intermediate transcoded WAV file (debugging)",
+        ),
+        model: str = typer.Option(
+            DEFAULT_MODEL,
+            help=f"onnx-asr model name (default: {DEFAULT_MODEL})",
+        ),
+    ) -> None:
+        """Transcribe one audio file."""
+        input_path = input_file.expanduser()
+        if not input_path.exists():
+            print(f"Error: input file not found: {input_path}", file=sys.stderr)
+            raise typer.Exit(1)
+
+        output_path = (
+            Path(output).expanduser()
+            if output
+            else default_output_path(input_path, json, None)
+        )
+
+        work_root = Path("/tmp") / f"parakeet-stt-{int(time.time() * 1000)}"
+        work_root.mkdir(parents=True, exist_ok=True)
+
+        try:
+            job = STTJob(
+                input_path=input_path,
+                output_path=output_path,
+                json_mode=json,
+                keep_wav=keep_wav,
+                model=model,
+            )
+            result = transcribe_one(job, work_root)
+            if not result.success:
+                print(f"Error: {result.error}", file=sys.stderr)
+                raise typer.Exit(1)
+            # Stdout contract: transcript text (or JSON) → stdout, so the tool
+            # composes in pipelines, e.g. `TEXT=$(parakeet-stt.py single x.wav)`.
+            # The saved path is echoed to stderr instead.
+            print(result.text or "")
+            print(f"Saved: {result.output_path}", file=sys.stderr)
+            print(f"Transcribed in {result.elapsed_s}s", file=sys.stderr)
+        finally:
+            try:
+                if work_root.exists() and not any(work_root.iterdir()):
+                    work_root.rmdir()
+            except OSError:
+                pass
+
+    @app.command("batch-dir")
+    def batch_dir(
+        directory: Path,
+        output_dir: str | None = typer.Option(
+            None,
+            "--output-dir",
+            help="Write transcripts to this dir instead of alongside inputs",
+        ),
+        json: bool = typer.Option(
+            False,
+            "--json",
+            help="Emit {text, duration_s, model, elapsed_s} JSON instead of plain text",
+        ),
+        keep_wav: bool = typer.Option(
+            False,
+            "--keep-wav",
+            help="Retain the intermediate transcoded WAV file (debugging)",
+        ),
+        model: str = typer.Option(
+            DEFAULT_MODEL,
+            help=f"onnx-asr model name (default: {DEFAULT_MODEL})",
+        ),
+        max_workers: int = typer.Option(
+            1,
+            "--max-workers",
+            help=(
+                "Parallel batch worker count (default: 1 — empirically faster "
+                "than 2 on consumer CPUs because OMP_NUM_THREADS=2 × N_workers "
+                "still thrashes)."
+            ),
+        ),
+    ) -> None:
+        """Transcribe all audio files in a directory."""
+        dir_path = directory.expanduser()
+        inputs = discover_audio_files(dir_path)
+        if not inputs:
+            print(
+                f"Error: no audio files found under {dir_path} "
+                f"(accepted: {sorted(AUDIO_EXTS)})",
+                file=sys.stderr,
+            )
+            raise typer.Exit(1)
+
+        out_dir = Path(output_dir).expanduser() if output_dir else None
+        _run_batch(
+            inputs,
+            json_mode=json,
+            keep_wav=keep_wav,
+            model=model,
+            max_workers=max_workers,
+            output_dir=out_dir,
+        )
+
+    @app.command("batch-files")
+    def batch_files(
+        files: list[Path] = typer.Argument(
+            ...,
+            help="Audio files to transcribe in parallel",
+        ),
+        output_dir: str | None = typer.Option(
+            None,
+            "--output-dir",
+            help="Write transcripts to this dir instead of alongside inputs",
+        ),
+        json: bool = typer.Option(
+            False,
+            "--json",
+            help="Emit {text, duration_s, model, elapsed_s} JSON instead of plain text",
+        ),
+        keep_wav: bool = typer.Option(
+            False,
+            "--keep-wav",
+            help="Retain the intermediate transcoded WAV file (debugging)",
+        ),
+        model: str = typer.Option(
+            DEFAULT_MODEL,
+            help=f"onnx-asr model name (default: {DEFAULT_MODEL})",
+        ),
+        max_workers: int = typer.Option(
+            1,
+            "--max-workers",
+            help=(
+                "Parallel batch worker count (default: 1 — empirically faster "
+                "than 2 on consumer CPUs because OMP_NUM_THREADS=2 × N_workers "
+                "still thrashes)."
+            ),
+        ),
+    ) -> None:
+        """Transcribe a list of files."""
+        inputs: list[Path] = []
+        for f in files:
+            p = f.expanduser()
+            if not p.exists():
+                print(f"Error: batch file not found: {p}", file=sys.stderr)
+                raise typer.Exit(1)
+            inputs.append(p)
+
+        if not inputs:
+            print("Error: no files provided", file=sys.stderr)
+            raise typer.Exit(2)
+
+        out_dir = Path(output_dir).expanduser() if output_dir else None
+        _run_batch(
+            inputs,
+            json_mode=json,
+            keep_wav=keep_wav,
+            model=model,
+            max_workers=max_workers,
+            output_dir=out_dir,
+        )
+
+    return app
+
+
 if __name__ == "__main__":
-    main()
+    _build_app()()
