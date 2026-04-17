@@ -147,7 +147,7 @@ Confirm with user via `AskUserQuestion` before generating. User may add, remove,
 3. **Generate all images in parallel** with a single command:
 
    ```bash
-   uv run "$GEN" --batch directions.json
+   uv run "$GEN" batch directions.json
    ```
 
    Pass `--aspect`, `--ref`, or `--style` if overriding defaults. The script handles env loading,

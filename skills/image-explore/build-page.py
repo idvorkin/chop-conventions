@@ -18,7 +18,7 @@
 #    "vibe": "Quiet awe", "shirt": "NORTH", "image": "mountain-v2.webp"}
 # ]
 #
-# Optional debug fields (added by generate.py --batch):
+# Optional debug fields (added by generate.py batch):
 #   "_prompt": "full assembled prompt text"
 #   "_duration_s": 16.2
 # Optional verification fields (added by Phase 3b verify-retry):
@@ -50,7 +50,7 @@ class Direction:
     image: str = ""
     output: str = ""
     group: str = ""
-    # Debug fields (populated by generate.py --batch)
+    # Debug fields (populated by generate.py batch)
     prompt: str = ""
     duration_s: float | None = None
     # Verification fields (populated by Phase 3b verify-retry)
