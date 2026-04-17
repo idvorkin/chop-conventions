@@ -65,7 +65,7 @@ app()
 <example>
 # Lazy-import pattern for testability (tests run in system Python without uv)
 # /// script
-# requires-python = ">=3.10"
+# requires-python = ">=3.13"
 # dependencies = [
 #     "typer>=0.12",
 # ]
