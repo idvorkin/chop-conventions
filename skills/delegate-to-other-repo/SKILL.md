@@ -46,8 +46,11 @@ Parent (you)                             Subagent (fresh context)
 ──────────────────                       ─────────────────────────
 1. Resolve target repo
 2. git -C <T> fetch origin
+   (plus upstream if present)
 3. Create worktree off
-   origin/<default-branch>
+   upstream/<default> if
+   upstream exists, else
+   origin/<default>
 4. Build brief (template +
    substitutions)
 5. Agent tool dispatch  ─────────────►   1. cd <worktree>
@@ -140,9 +143,10 @@ All validation runs via `git -C <path>` — never `cd` into the target:
 3. Has an `origin` remote that resolves:
    `git -C "$T" remote get-url origin`
 4. Default branch is resolvable (see Phase 2 recipe)
-5. `origin/<default>` is reachable after `git fetch`
+5. `$base_ref` (upstream/<default> if upstream exists, else
+   origin/<default>) is reachable after `git fetch`
 
-**Not required to be clean.** Worktrees off `origin/<default>` are safe
+**Not required to be clean.** Worktrees off the remote base ref are safe
 even when the target's working tree is dirty.
 
 ## Phase 2: Create the worktree
@@ -150,7 +154,7 @@ even when the target's working tree is dirty.
 **DO NOT delegate to `superpowers:using-git-worktrees`.** That skill
 branches off current HEAD, auto-runs `npm install` / `cargo build`, and
 runs baseline tests — none of which are correct for delegating a change
-off a fresh `origin/<default>` that may be a doc-only edit.
+off a fresh canonical base ref that may be a doc-only edit.
 
 Full shell recipe lives at [`worktree-recipe.md`](worktree-recipe.md).
 Read that file and follow it verbatim. Key points:
@@ -171,7 +175,11 @@ Read that file and follow it verbatim. Key points:
   mutating any branch's history, works regardless of target's
   current branch, and survives branch-protected defaults
 - Creates the worktree at `.worktrees/delegated-<slug>` on branch
-  `delegated/<slug>` rooted at `origin/<default>`
+  `delegated/<slug>` rooted at `$base_ref` — prefers
+  `upstream/<default>` when an `upstream` remote is present (the
+  normal fork-workflow case), else falls back to `origin/<default>`.
+  Basing off upstream avoids starting the subagent on a stale fork
+  ref when `origin` lags canonical.
 
 ### V1 limitation
 
@@ -473,8 +481,11 @@ Only the subagent `cd`s.
 
 ### Hardcoding `origin/main`
 
-Breaks on repos with `master` or `trunk` as the default branch. Fix:
-resolve the default branch with the fallback chain in `worktree-recipe.md`.
+Breaks on repos with `master` or `trunk` as the default branch, and on
+two-remote fork workflows where `origin` is the fork and can lag
+`upstream`. Fix: resolve both the default branch name AND the base
+remote via the chain in `worktree-recipe.md` — upstream preferred when
+it exists, origin as fallback.
 
 ### Skipping `remote set-head --auto` after fetch
 

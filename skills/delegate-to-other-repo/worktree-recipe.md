@@ -2,8 +2,9 @@
 
 > Phase 2 shell recipe for `delegate-to-other-repo`. Read the parent
 > `SKILL.md` first. Follow this recipe verbatim — the ordering of
-> `set-head`, the step-by-step default-branch resolution, and the
-> gitignore-commit branch guard are all load-bearing.
+> `set-head`, the step-by-step default-branch resolution, the
+> upstream-over-origin base selection, and the gitignore-commit
+> branch guard are all load-bearing.
 
 ## Inputs
 
@@ -27,6 +28,15 @@ task_description=<user's task description, raw>
 # stale value below. `--auto` is a no-op if origin/HEAD already matches.
 git -C "$T" fetch origin
 git -C "$T" remote set-head origin --auto >/dev/null 2>&1 || true
+
+# If the target has a two-remote fork workflow, refresh upstream too —
+# we'll prefer upstream/<default> as the base below. `origin` in a
+# fork workflow points at the user's fork, which can lag the canonical
+# `upstream` by several commits; basing the worktree on stale origin
+# forces the subagent to detect and rebase at runtime.
+if git -C "$T" remote | grep -qx upstream; then
+  git -C "$T" fetch upstream
+fi
 
 # -----------------------------------------------------------------------------
 # 2. Determine default branch.
@@ -53,10 +63,30 @@ fi
 default_branch="${default_branch:-main}"
 
 # -----------------------------------------------------------------------------
-# 3. Verify origin/<default> is reachable.
+# 2.5. Select base ref — prefer upstream over origin when both exist.
 # -----------------------------------------------------------------------------
-if ! git -C "$T" rev-parse --verify "origin/$default_branch" >/dev/null 2>&1; then
-  echo "STOP: origin/$default_branch is not reachable in $T after fetch."
+# When both `upstream` and `origin` exist (fork workflow), the canonical
+# main lives on upstream and `origin/<default>` can lag. Base the
+# delegated worktree on upstream/<default> so the subagent starts
+# from canonical state. Fall back to origin/<default> otherwise.
+#
+# Incident that surfaced this: a delegation on 2026-04-16 was branched
+# from `origin/main` 4 commits behind `upstream/main`; the target file
+# the task referenced didn't exist yet on that base and the subagent
+# had to detect and rebase at runtime.
+base_remote=origin
+if git -C "$T" remote | grep -qx upstream; then
+  if git -C "$T" rev-parse --verify "upstream/$default_branch" >/dev/null 2>&1; then
+    base_remote=upstream
+  fi
+fi
+base_ref="$base_remote/$default_branch"
+
+# -----------------------------------------------------------------------------
+# 3. Verify $base_ref is reachable.
+# -----------------------------------------------------------------------------
+if ! git -C "$T" rev-parse --verify "$base_ref" >/dev/null 2>&1; then
+  echo "STOP: $base_ref is not reachable in $T after fetch."
   exit 1
 fi
 
@@ -110,7 +140,7 @@ path="$T/.worktrees/delegated-$slug"
 # ignore entry — but we deliberately avoid committing to `.gitignore`.
 #
 # Why not commit .gitignore on the default branch?
-#   - The delegated branch is created from `origin/$default_branch`
+#   - The delegated branch is created from `$base_ref`
 #     (a clean remote ref) so a local-only commit on the default
 #     branch wouldn't be in the delegated branch's base anyway.
 #   - Committing on the target's *current* branch would pollute
@@ -150,11 +180,11 @@ fi
 # -----------------------------------------------------------------------------
 # `worktree add` is the only step that mutates the working set. If it
 # fails (path collision, ref missing), STOP and report.
-git -C "$T" worktree add "$path" -b "$branch" "origin/$default_branch"
+git -C "$T" worktree add "$path" -b "$branch" "$base_ref"
 
 echo "Worktree ready: $path"
 echo "Branch:         $branch"
-echo "Base:           origin/$default_branch"
+echo "Base:           $base_ref"
 ```
 
 ## Why this skill does NOT call `superpowers:using-git-worktrees`
@@ -162,14 +192,14 @@ echo "Base:           origin/$default_branch"
 That skill:
 
 - Branches off current HEAD — no way to pass a base ref like
-  `origin/<default>`
+  `upstream/<default>` (or `origin/<default>` as fallback)
 - Auto-runs `npm install` / `cargo build` / `pip install` — noisy
   and wrong for doc-only or tiny changes
 - Runs the target's test suite as a baseline — slow, and unnecessary
   before the subagent has done anything
 
 Those are good defaults for same-repo feature work but wrong defaults
-for cross-repo delegation off a fresh `origin/<default>`. This recipe
+for cross-repo delegation off a fresh canonical base ref. This recipe
 is the explicit alternative.
 
 ## Output
@@ -177,7 +207,9 @@ is the explicit alternative.
 On success:
 
 - Worktree at `$T/.worktrees/delegated-<slug>` checked out to
-  `delegated/<slug>` branch, based on `origin/<default-branch>`
+  `delegated/<slug>` branch, based on `$base_ref` —
+  `upstream/<default-branch>` when an `upstream` remote exists (the
+  normal fork-workflow case), else `origin/<default-branch>`
 - Possibly one new line appended to `.git/info/exclude` ensuring
   `.worktrees/` is ignored. This is local-only, untracked, and
   shared across all worktrees via the common git dir — no branch
