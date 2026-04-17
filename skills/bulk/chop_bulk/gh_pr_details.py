@@ -18,8 +18,6 @@ Typer lives inside `_build_app()` so tests import the pure-function
 layer without `ModuleNotFoundError` on systems lacking typer.
 """
 
-from __future__ import annotations
-
 import json
 import re
 import subprocess

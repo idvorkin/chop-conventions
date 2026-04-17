@@ -14,8 +14,6 @@ Purpose: quick multi-file text inventory without individual `Read`
 calls. Skip-rather-than-load on big files keeps the output JSON sane.
 """
 
-from __future__ import annotations
-
 import json
 import os
 from pathlib import Path

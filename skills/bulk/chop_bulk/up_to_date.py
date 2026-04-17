@@ -17,8 +17,6 @@ installed:
 The discovery happens once at module load — later calls don't re-probe.
 """
 
-from __future__ import annotations
-
 import json
 import os
 import shutil
