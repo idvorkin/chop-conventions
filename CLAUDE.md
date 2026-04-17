@@ -43,6 +43,8 @@ Scripts that signal processes by pattern (cpulimit, pkill, kill by comm match) M
 
 **Tests for these signalling functions MUST mock their subprocess/OS calls.** An unmocked "smoke test" that invokes the real `pkill`/`os.kill`/`create_subprocess_exec` against the dev box's real process table will match legitimate running processes and SIGTERM them — this nuked a live Telegram MCP bridge mid-session on 2026-04-12. Patch `asyncio.create_subprocess_exec` / `subprocess.run` / `os.kill` via `monkeypatch` before invoking the target. The test verifies return-type and error-handling, never the real kill path.
 
+**`run=subprocess.run` default-arg pattern silently defeats test mocking.** Defaults bind at function-def time, so `patch("mod.subprocess.run", ...)` doesn't affect calls that captured the default. Symptom: tests appear to pass the mock-injection path but real subprocess calls leak through. Fix: declare `run=None` and resolve `if run is None: run = subprocess.run` in the body — the module-global lookup at call time is what makes patching work. Reference: `skills/bulk/chop_bulk/*.py`.
+
 ## Scripting Language Defaults
 
 **Default to Python for any non-trivial script, not shell.** Shell is for one-liners and the occasional `just` target. Anything with branching, data structures, or more than ~20 lines should be Python.
