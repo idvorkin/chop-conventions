@@ -125,6 +125,14 @@ Branches whose PR is MERGED but whose local tip has advanced past the PR's recor
 
 Surface this list to the user with a warning ("branch X has commits made after its PR merged; review before deleting"). Do not offer an automatic deletion command — the user should review the post-merge commits first and either open a new PR or reset/discard manually.
 
+**Verification recipe before deletion.** Post-merge commits are often _also_ absorbed via subsequent squash-merges. To check:
+
+1. `git cherry -v $SRC/main <branch>` — `-` rows are already in upstream; `+` rows need investigation.
+2. For each `+` commit, grep upstream for its file additions (`git ls-tree $SRC/main <path>`) and commit subject (`git log --grep=... $SRC/main`). Squash-merges change patch-IDs but preserve file contents and messages.
+3. If every `+` commit is accounted for, the branch is fully absorbed — `git branch -D` is safe.
+
+The check is manual, not automated — judgment is required when commits moved content across files.
+
 ### Prunable worktrees (`worktrees` in the JSON)
 
 Each entry has `{path, branch, is_primary, absorbed, unmerged_count}`. **A worktree is prunable iff `is_primary == false AND absorbed == true`.** The primary checkout is flagged separately and is never a deletion candidate, regardless of its branch's absorption state — removing the primary is destructive.
