@@ -182,7 +182,7 @@ kill -TERM <pid-from-doctor>
 # unscoped display-message falls back to the session's most-recently-active
 # pane, which on a box with concurrent Claude sessions is routinely wrong.
 # Let watchdog.py walk /proc/<pid>/stat ppid chain itself.
-python3 ~/.claude/skills/harden-telegram/tools/watchdog.py reload \
+uv run ~/.claude/skills/harden-telegram/tools/watchdog.py reload \
   2>/tmp/watchdog_reload.log &
 disown
 ```

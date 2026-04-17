@@ -1,4 +1,10 @@
-#!/usr/bin/env python3
+#!/usr/bin/env -S uv run --script
+# /// script
+# requires-python = ">=3.10"
+# dependencies = [
+#     "typer>=0.12",
+# ]
+# ///
 """
 Telegram MCP watchdog — auto-recover Claude Code's Telegram plugin.
 
@@ -596,135 +602,122 @@ def cmd_reload(tmux_pane: str | None = None, message: str | None = None) -> None
     log("=== Reload Test Complete ===")
 
 
-def _parse_cli():
-    """Parse CLI args. Returns (command, pane, pid) or falls through to daemon mode."""
-    # Usage:
-    #   watchdog.py reload [--pane %17] [--pid 12345]
-    #   watchdog.py                          (daemon mode, uses env vars)
-    import argparse
+def _build_app():
+    """Wire Typer app. Called only from __main__ so tests skip the typer import."""
+    import typer
+    from typing import Optional
 
-    parser = argparse.ArgumentParser(description="Telegram MCP watchdog")
-    sub = parser.add_subparsers(dest="command")
-
-    reload_p = sub.add_parser(
-        "reload", help="Send /reload-plugins to Claude's tmux pane"
-    )
-    reload_p.add_argument(
-        "--pane", help="tmux pane ID (e.g. %%17). Auto-detects if omitted."
-    )
-    reload_p.add_argument(
-        "--pid", type=int, help="PID of process in target pane. Used to find the pane."
-    )
-    reload_p.add_argument(
-        "--message",
-        "-m",
-        help="Message to send to Claude after reload (e.g. 'Larry reloaded, I\\'m back')",
+    app = typer.Typer(
+        help="Telegram MCP watchdog — auto-recover Claude Code's Telegram plugin.",
+        add_completion=False,
+        no_args_is_help=True,
     )
 
-    return parser.parse_args()
-
-
-def pane_from_pid(pid: int) -> str | None:
-    """Find the tmux pane containing a given PID.
-
-    Walks the ppid chain from `pid` upward and matches each ancestor against
-    the set of known tmux pane shell pids. Returns the matching pane_id, or
-    None if no ancestor is a tmux pane shell (e.g., caller isn't running in
-    tmux, or target pid is detached).
-    """
-    return resolve_pane_for_pid(pid)
-
-
-def main() -> None:
-    args = _parse_cli()
-
-    if args.command == "reload":
-        # Resolve pane
-        pane = args.pane
-        if not pane and args.pid:
-            log(f"looking up tmux pane for PID {args.pid}...")
-            pane = pane_from_pid(args.pid)
-            if pane:
-                log(f"found pane {pane} for PID {args.pid}")
+    @app.command()
+    def reload(
+        pane: Optional[str] = typer.Option(
+            None, help="tmux pane ID (e.g. %%17). Auto-detects if omitted."
+        ),
+        pid: Optional[int] = typer.Option(
+            None, help="PID of process in target pane. Used to find the pane."
+        ),
+        message: Optional[str] = typer.Option(
+            None,
+            "-m",
+            "--message",
+            help="Message to send to Claude after reload.",
+        ),
+    ) -> None:
+        """Send /reload-plugins to Claude's tmux pane."""
+        resolved_pane = pane
+        if not resolved_pane and pid is not None:
+            log(f"looking up tmux pane for PID {pid}...")
+            resolved_pane = resolve_pane_for_pid(pid)
+            if resolved_pane:
+                log(f"found pane {resolved_pane} for PID {pid}")
             else:
-                log(f"could not find tmux pane for PID {args.pid}")
+                log(f"could not find tmux pane for PID {pid}")
                 sys.exit(1)
-        if not pane:
-            pane = detect_tmux_pane()
-        if not pane:
+        if not resolved_pane:
+            resolved_pane = detect_tmux_pane()
+        if not resolved_pane:
             log("ERROR: no pane specified and auto-detect failed. Use --pane or --pid.")
             sys.exit(1)
-        cmd_reload(pane, message=args.message)
-        return
+        cmd_reload(resolved_pane, message=message)
 
-    # --- Daemon mode: parse environment ---
-    bun_pid_str = os.environ.get("WATCHDOG_BUN_PID", "")
-    claude_pid_str = os.environ.get("WATCHDOG_CLAUDE_PID", "")
-    tmux_pane = os.environ.get("WATCHDOG_TMUX_PANE", "")
+    @app.command()
+    def daemon() -> None:
+        """Run as a watchdog daemon. Reads config from env vars."""
+        # --- Daemon mode: parse environment ---
+        bun_pid_str = os.environ.get("WATCHDOG_BUN_PID", "")
+        claude_pid_str = os.environ.get("WATCHDOG_CLAUDE_PID", "")
+        tmux_pane = os.environ.get("WATCHDOG_TMUX_PANE", "")
 
-    if not bun_pid_str or not claude_pid_str:
-        log("WATCHDOG_BUN_PID and WATCHDOG_CLAUDE_PID must be set")
-        sys.exit(1)
+        if not bun_pid_str or not claude_pid_str:
+            log("WATCHDOG_BUN_PID and WATCHDOG_CLAUDE_PID must be set")
+            sys.exit(1)
 
-    if not tmux_pane:
-        log("WATCHDOG_TMUX_PANE is empty/unset — not in a tmux session, exiting")
-        sys.exit(0)
+        if not tmux_pane:
+            log("WATCHDOG_TMUX_PANE is empty/unset — not in a tmux session, exiting")
+            sys.exit(0)
 
-    try:
-        bun_pid = int(bun_pid_str)
-        claude_pid = int(claude_pid_str)
-    except ValueError:
-        log(f"invalid PID values: bun={bun_pid_str!r} claude={claude_pid_str!r}")
-        sys.exit(1)
+        try:
+            bun_pid = int(bun_pid_str)
+            claude_pid = int(claude_pid_str)
+        except ValueError:
+            log(f"invalid PID values: bun={bun_pid_str!r} claude={claude_pid_str!r}")
+            sys.exit(1)
 
-    log(f"starting: bun_pid={bun_pid} claude_pid={claude_pid} tmux_pane={tmux_pane}")
+        log(f"starting: bun_pid={bun_pid} claude_pid={claude_pid} tmux_pane={tmux_pane}")
 
-    # --- Singleton ---
-    if not acquire_singleton():
-        sys.exit(0)
+        # --- Singleton ---
+        if not acquire_singleton():
+            sys.exit(0)
 
-    # --- Signal handling ---
-    def handle_signal(signum: int, _frame: object) -> None:
-        sig_name = signal.Signals(signum).name
-        log(f"received {sig_name}, exiting")
-        cleanup_pid_file()
-        sys.exit(0)
+        # --- Signal handling ---
+        def handle_signal(signum: int, _frame: object) -> None:
+            sig_name = signal.Signals(signum).name
+            log(f"received {sig_name}, exiting")
+            cleanup_pid_file()
+            sys.exit(0)
 
-    signal.signal(signal.SIGTERM, handle_signal)
-    signal.signal(signal.SIGINT, handle_signal)
+        signal.signal(signal.SIGTERM, handle_signal)
+        signal.signal(signal.SIGINT, handle_signal)
 
-    # --- Main loop ---
-    try:
-        while True:
-            time.sleep(POLL_INTERVAL)
+        # --- Main loop ---
+        try:
+            while True:
+                time.sleep(POLL_INTERVAL)
 
-            # Check Claude first — if Claude is gone, nothing to recover
-            if not is_pid_alive(claude_pid):
-                log("Claude process is dead, nothing to recover — exiting")
-                break
+                # Check Claude first — if Claude is gone, nothing to recover
+                if not is_pid_alive(claude_pid):
+                    log("Claude process is dead, nothing to recover — exiting")
+                    break
 
-            # Check bun
-            if not is_pid_alive(bun_pid):
-                log(f"bun process (PID {bun_pid}) is dead!")
+                # Check bun
+                if not is_pid_alive(bun_pid):
+                    log(f"bun process (PID {bun_pid}) is dead!")
 
-                if do_recovery(tmux_pane):
-                    log("recovery sequence sent, waiting for new bun process")
-                    if wait_for_new_bun():
-                        log(
-                            "new bun process started — new watchdog will take over, exiting"
-                        )
+                    if do_recovery(tmux_pane):
+                        log("recovery sequence sent, waiting for new bun process")
+                        if wait_for_new_bun():
+                            log(
+                                "new bun process started — new watchdog will take over, exiting"
+                            )
+                        else:
+                            log("no new bun process appeared within timeout")
                     else:
-                        log("no new bun process appeared within timeout")
-                else:
-                    log("recovery sequence failed")
-                # Either way, exit — if recovery worked, new watchdog replaces us;
-                # if it failed, we can't do more.
-                break
-    finally:
-        cleanup_pid_file()
+                        log("recovery sequence failed")
+                    # Either way, exit — if recovery worked, new watchdog replaces us;
+                    # if it failed, we can't do more.
+                    break
+        finally:
+            cleanup_pid_file()
 
-    log("watchdog exiting")
+        log("watchdog exiting")
+
+    return app
 
 
 if __name__ == "__main__":
-    main()
+    _build_app()()
