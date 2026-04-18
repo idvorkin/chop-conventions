@@ -58,4 +58,30 @@ if [ -n "$used" ] && [ -n "$ctx_size" ]; then
 fi
 [ -n "$cost_usd" ] && prompt="${prompt} \$$(printf '%.2f' "$cost_usd")"
 
+# Time since last file write — updated by PostToolUse/SessionStart hooks
+# that touch ~/.claude/last_write.timestamp (see claude-code-statusline.md).
+# Segment appears only when the delta exceeds write_threshold seconds, so
+# the prompt stays quiet during normal editing. 3600 (1 hour) is tuned to
+# surface long read/think/bash stretches without writes; drop to 60 (1m)
+# when verifying the display works.
+write_ts_file="$HOME/.claude/last_write.timestamp"
+write_threshold=3600
+if [ -f "$write_ts_file" ]; then
+  last_mtime=$(stat -c %Y "$write_ts_file" 2>/dev/null || stat -f %m "$write_ts_file" 2>/dev/null)
+  if [ -n "$last_mtime" ]; then
+    now=$(date +%s)
+    delta=$((now - last_mtime))
+    if [ "$delta" -gt "$write_threshold" ]; then
+      if [ "$delta" -lt 3600 ]; then
+        write_str="$((delta / 60))m"
+      elif [ "$delta" -lt 86400 ]; then
+        write_str="$((delta / 3600))h$(((delta % 3600) / 60))m"
+      else
+        write_str="$((delta / 86400))d"
+      fi
+      prompt="${prompt} ${PINK}since-write:${write_str}${RESET}"
+    fi
+  fi
+fi
+
 printf '%s' "$prompt"

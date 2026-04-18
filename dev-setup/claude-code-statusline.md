@@ -12,14 +12,15 @@ Claude Code's `statusLine` setting accepts an inline command, but inline JSON-qu
 user@host ~/path/to/repo [branch] | Opus 4.6 ctx:12% 125k/1000k $0.42
 ```
 
-| Segment         | Source                                                  | Color                                            |
-| --------------- | ------------------------------------------------------- | ------------------------------------------------ |
-| `user@host`     | `whoami` / `hostname -s`                                | default                                          |
-| `~/path`        | `cwd` (or `workspace.current_dir`), home shortened      | yellow                                           |
-| `[branch]`      | `git symbolic-ref --short HEAD` (skipped if not a repo) | yellow                                           |
-| `Opus 4.6`      | `model.display_name`                                    | default                                          |
-| `ctx:NN% Xk/Yk` | `context_window.{used_percentage, context_window_size}` | green <200k, yellow <400k, pink <600k, red ≥600k |
-| `$X.XX`         | `cost.total_cost_usd`                                   | default                                          |
+| Segment          | Source                                                                                                                                            | Color                                            |
+| ---------------- | ------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------ |
+| `user@host`      | `whoami` / `hostname -s`                                                                                                                          | default                                          |
+| `~/path`         | `cwd` (or `workspace.current_dir`), home shortened                                                                                                | yellow                                           |
+| `[branch]`       | `git symbolic-ref --short HEAD` (skipped if not a repo)                                                                                           | yellow                                           |
+| `Opus 4.6`       | `model.display_name`                                                                                                                              | default                                          |
+| `ctx:NN% Xk/Yk`  | `context_window.{used_percentage, context_window_size}`                                                                                           | green <200k, yellow <400k, pink <600k, red ≥600k |
+| `$X.XX`          | `cost.total_cost_usd`                                                                                                                             | default                                          |
+| `since-write:Xm` | Delta between now and `~/.claude/last_write.timestamp` mtime (conditional segment — see [Time Since Last Write](#optional-time-since-last-write)) | pink                                             |
 
 The token bucket (`Xk`) snaps to the nearest 10k so the number doesn't jitter on every tick. The total (`Yk`) comes from `context_window.context_window_size` directly — no model-string heuristics, so Sonnet (200k) and Opus `[1m]` render correctly without code changes.
 
@@ -40,6 +41,73 @@ Then add to `~/.claude/settings.json`:
   }
 }
 ```
+
+## Optional: Time Since Last Write
+
+The `since-write:Xm` segment surfaces long stretches where Claude has been reading, grepping, or thinking without actually writing any code — useful as a "have I been on a tangent for an hour?" nudge. It stays hidden during normal editing and only appears once the idle-since-write delta crosses a threshold.
+
+### How It Works
+
+The script reads the mtime of `~/.claude/last_write.timestamp` and computes `now - mtime`. Two hooks keep that file current:
+
+- **`PostToolUse` on `Write|Edit|NotebookEdit`** — touches the file after every file-writing tool call, resetting the clock
+- **`SessionStart`** — touches the file at session start so a fresh session doesn't inherit a stale timestamp from the previous one
+
+Add them to `~/.claude/settings.json`:
+
+```json
+{
+  "statusLine": {
+    "type": "command",
+    "command": "sh $HOME/.claude/statusline-command.sh",
+    "refreshInterval": 30
+  },
+  "hooks": {
+    "PostToolUse": [
+      {
+        "matcher": "Write|Edit|NotebookEdit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "touch $HOME/.claude/last_write.timestamp"
+          }
+        ]
+      }
+    ],
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "touch $HOME/.claude/last_write.timestamp"
+          }
+        ]
+      }
+    ]
+  }
+}
+```
+
+`refreshInterval: 30` is load-bearing — event-driven status line updates only fire on tool calls, so without the interval the counter stalls whenever Claude is thinking or waiting on you. 30 seconds is frequent enough that the segment appears within half a minute of crossing the threshold.
+
+### Tuning the Threshold
+
+The threshold lives at the top of the time-since-write block in `statusline-command.sh`:
+
+```sh
+write_threshold=3600   # 1 hour; drop to 60 for quick verification
+```
+
+The default (3600 = 1 hour) is picked to surface long non-writing stretches without nagging during normal editing. Drop to `60` temporarily when you first install the feature so you can confirm the segment renders within a minute of your last edit, then restore 3600 once you trust the wiring.
+
+### Formatting
+
+| Delta         | Display            |
+| ------------- | ------------------ |
+| `< threshold` | (hidden)           |
+| `< 1 hour`    | `since-write:Xm`   |
+| `< 24 hours`  | `since-write:XhYm` |
+| `≥ 24 hours`  | `since-write:Xd`   |
 
 ## Requirements
 
