@@ -19,47 +19,45 @@ Parse the user's input for:
 - **`--api-url 'url'`**: Override the Gemini API endpoint (default below)
 - **`--count N`**: Max number of images to generate (default: 3)
 - **`--aspect 'W:H'`**: Aspect ratio via `imageConfig` (default: 3:4, portrait). Valid values: `1:1`, `2:3`, `3:2`, `3:4`, `4:3`, `4:5`, `5:4`, `9:16`, `16:9`, `21:9`
-- **`--transparent`**: Generate on magenta chroma-key background (`#FF00FF`), then strip it via ImageMagick **border-seeded flood fill**. The scanner samples pixels along every image edge and keeps only the ones that are actually near `#FF00FF` as flood seeds — so shots where Gemini rendered grass/scenery into some corners (which broke the earlier 4-corners-only approach when flood-fill started from grass at 30% fuzz and ate the subject) still strip cleanly. Only magenta pixels reachable from the image edges are made transparent; interior magenta-tinted pixels (pink fur highlights, glass reflections, lobster-claw reds) are preserved automatically. Fast (sub-second) and pixel-accurate — no ML needed. Requires `magick` (ImageMagick). If the subject fills the frame and no border pixel is near-magenta, the strip is skipped with an error rather than producing a swiss-cheese result. After the strip, two layered evals auto-run — see **Automatic eval** below.
-- **`--bg-remover {magenta|recraft}`**: Choose the background-removal backend used by `--transparent`. Default `magenta` (the border-seeded flood fill described above — offline, ~1s/image, free). Pass `recraft` to route through Recraft's `removeBackground` API instead — soft-mask edges on hair/fur, no `subject_eaten` / `interior_pockets` failure modes from flood-fill, and works on AI outputs with irregular edges. **Cost:** ~$0.01/call. **Latency:** ~7-40s/call (vs ~1s magenta). **Requires:** `RECRAFT_API_TOKEN` in env or `~/.env` and a network connection. Recraft is opt-in to preserve offline robustness and zero-cost defaults; the magenta flood-fill stays the default for everyday work. The alpha-mask eval pass runs on the Recraft output too — same thresholds, same regression guard. See bead `igor2-88g.61` for smoke-test results (alpha-mean within 0.2% of the magenta path, cleaner edges, smaller files).
-- **`--no-eval`**: Skip the alpha-mask eval pass that looks for interior holes, residual magenta, and edge fringe (needs numpy/pillow/scipy — the `uv run --script` shebang installs them automatically, but plain `python3` invocations without `uv` may need this flag). The alpha-mean signal still runs.
+- **`--transparent`**: Generate on a uniform magenta background, then strip it via Recraft's `removeBackground` API. Soft-mask edges on hair/fur, no flood-fill / corner-seed failure modes, and works on AI outputs with irregular edges. **Cost:** ~$0.01/call. **Latency:** ~7-40s/call. **Requires:** `RECRAFT_API_TOKEN` in env or `~/.env` and a network connection. After the strip, two layered evals auto-run — see **Automatic eval** below.
+- **`--no-eval`**: Skip the alpha-mask eval pass that looks for interior holes and edge fringe (needs numpy/pillow/scipy — the `uv run --script` shebang installs them automatically, but plain `python3` invocations without `uv` may need this flag). The alpha-mean signal still runs.
 - **`--eval-strict`**: Exit nonzero when any alpha-mask eval threshold trips. Useful when a calling agent wants to retry or fail loudly instead of silently shipping a broken alpha mask.
 
 ### Automatic eval
 
-When `--transparent` is active, `generate.py` runs two complementary evals on the output and prints metrics to stderr.
+When `--transparent` is active, `generate.py` runs two complementary evals on the Recraft output and prints metrics to stderr. Both signals are bg-removal-mechanism-agnostic — they measure the alpha channel of the finished RGBA image, so they work as a regression guard against any future stripper too.
 
 **(1) Alpha-mean signal** (`evaluate_strip`, always on — same thresholds `test_generate.py` asserts):
 
 - Status `healthy` — alpha mean in 15–85% band.
-- Status `subject_eaten` — alpha mean below 15%; the strip ate the subject. Regenerate with a magenta border on all four sides.
+- Status `subject_eaten` — alpha mean below 15%; the strip ate the subject. Recraft may have misidentified the subject — regenerate, or inspect the source.
 - Status `nothing_stripped` — alpha mean above 85%; subject fills the frame. Widen the crop.
 
 **(2) Alpha-mask quality signal** (`eval_alpha`, opt-out via `--no-eval`):
 
-- `interior_hole_px` — pixels in transparent regions that only become enclosed once the opaque mask is morphologically closed by 1 pixel. Isolates flood-fill bleed-through damage: thin 1–2-pixel channels the chroma-strip drills through the character (neck, between fingers, limb outlines) that topologically connect a real interior hole to the outside background so a naive "enclosed transparent" check reports zero. Legitimate design gaps (armpit openings, space between legs) are wider than 2 px and stay unaffected by the closing, so they don't false-alarm.
+- `interior_hole_px` — pixels in transparent regions that only become enclosed once the opaque mask is morphologically closed by 1 pixel. Isolates bleed-through damage: thin 1–2-pixel channels through the character (neck, between fingers, limb outlines) that topologically connect a real interior hole to the outside background so a naive "enclosed transparent" check reports zero. Legitimate design gaps (armpit openings, space between legs) are wider than 2 px and stay unaffected by the closing, so they don't false-alarm.
 - `interior_hole_largest_px` — pixels in the single biggest channel-revealed hole. More stable across images; good thresholding target because one big visible hole is what a human notices.
-- `residual_magenta_px` — opaque pixels still near chroma color (signals trapped magenta pockets corner-seeded flood couldn't reach).
-- `edge_fringe_px` — partial-alpha pixels (signals halo).
+- `edge_fringe_px` — partial-alpha pixels (signals halo — a known Recraft tradeoff on hair/fur edges).
 
 Output format:
 
 ```
 eval [healthy] out.webp: alpha=51.3% size=74.0KB
-[eval] /tmp/out.webp: holes=0 (largest=0), residual=0, fringe=0   [OK]
-[eval] /tmp/out.webp: holes=4508 (largest=4356), residual=0, fringe=0   [WARN: interior damage likely — check alpha mask]
+[eval] /tmp/out.webp: holes=0 (largest=0), fringe=0   [OK]
+[eval] /tmp/out.webp: holes=4508 (largest=4356), fringe=0   [WARN: interior damage likely — check alpha mask]
 ```
 
-Thresholds for the mask-quality signal are conservative by default (holes > 500, residual > 500, fringe > 2000). Pass `--no-eval` to skip it. Pass `--eval-strict` to exit nonzero when a mask-quality threshold trips.
+Thresholds for the mask-quality signal are conservative by default (holes > 500, fringe > 2000). Pass `--no-eval` to skip it. Pass `--eval-strict` to exit nonzero when a mask-quality threshold trips.
 
 **Why:** visual inspection on a light or dark background hides interior damage (holes read as shadow/shading). The alpha mask is the ground truth. Baking both evals into the skill makes them the default, so a silently-broken output can't ship. See [/hill-climbing](https://idvork.in/hill-climbing) for the "eval becomes regression guard" pattern.
 
 ## Configuration
 
-- **Auth**: `GOOGLE_API_KEY` — auto-loaded from `~/.env` by `generate.py`
-- **Recraft auth (optional)**: `RECRAFT_API_TOKEN` — auto-loaded from `~/.env` (tolerates `export KEY=val` form) by `recraft_bg_remove.py`. Only needed when you pass `--bg-remover recraft`. Check the account balance any time with `./skills/gen-image/recraft_bg_remove.py balance` (no credits consumed).
+- **Auth (Gemini)**: `GOOGLE_API_KEY` — auto-loaded from `~/.env` by `generate.py`
+- **Auth (Recraft)**: `RECRAFT_API_TOKEN` — auto-loaded from `~/.env` (tolerates `export KEY=val` form) by `recraft_bg_remove.py`. Required for `--transparent` (the only bg-removal path). Check the account balance any time with `./skills/gen-image/recraft_bg_remove.py balance` (no credits consumed). Each strip costs ~$0.01.
 - **Default style**: Read from `raccoon-style.txt` (in this skill's directory) by `generate.py`
 - **Reference image**: Auto-resolved by `generate.py` (searches `~/gits/blog*/images/raccoon-nerd.webp`)
-- **Low-level scripts**: `gemini-image.sh` handles single Gemini API calls; `recraft_bg_remove.py` (Typer + uv-shebang, stdlib-only HTTP layer) handles Recraft `removeBackground` calls. Both used internally by `generate.py`. The Recraft script honors the output extension: `.webp` is converted via `cwebp -q 90` (matching the magenta-path quality settings) so file sizes and visuals stay consistent across both backends.
+- **Low-level scripts**: `gemini-image.sh` handles single Gemini API calls; `recraft_bg_remove.py` (Typer + uv-shebang, stdlib-only HTTP layer) handles Recraft `removeBackground` calls. Both used internally by `generate.py`. The Recraft script honors the output extension: `.webp` is converted via `cwebp -q 90` so file sizes and visuals match `gemini-image.sh`'s direct WebP output.
 - **Generation wrapper**: `../image-explore/generate.py` handles env loading, style, ref image, and parallel batch execution
 
 When `--style` is provided, it **replaces** the default raccoon style entirely (it is not appended).
@@ -148,11 +146,9 @@ Use `generate.py` from the `image-explore` skill. It handles env loading (`~/.en
 
 5. If generation fails, report the error and ask if the user wants to retry with a modified prompt or skip.
 
-**Auto-eval runs on every generation.** When `--transparent` is set, `generate.py` runs two complementary evals right after the chroma-key pass — the alpha-mean signal (always) and the alpha-mask quality signal (interior holes, residual magenta, edge fringe; opt-out via `--no-eval`). Details and thresholds in the **Automatic eval** subsection above. See [/hill-climbing](https://idvork.in/hill-climbing) for the "eval becomes regression guard" pattern.
+**Auto-eval runs on every generation.** When `--transparent` is set, `generate.py` runs two complementary evals right after the Recraft pass — the alpha-mean signal (always) and the alpha-mask quality signal (interior holes, edge fringe; opt-out via `--no-eval`). Details and thresholds in the **Automatic eval** subsection above. See [/hill-climbing](https://idvork.in/hill-climbing) for the "eval becomes regression guard" pattern.
 
-**Verifying transparent output.** Don't judge chroma-key quality by compositing on a solid background — interior holes read as the background color. Extract the alpha channel as a mask: `magick out.webp -alpha extract mask.png`. A clean mask is a solid silhouette; swiss-cheese holes mean the chroma ate interior color data.
-
-**Never chain chroma passes on different magenta tones** (e.g. a second pass on `#E040E0` to catch pink shadow remnants). It eats magenta-tinted highlights inside fluffy characters. If the first pass has fringe, regenerate the source with a stricter prompt (`no shadow on ground, no gradient, no environment`) rather than filtering harder.
+**Verifying transparent output.** Don't judge bg-strip quality by compositing on a solid background — interior holes read as the background color. Extract the alpha channel as a mask: `magick out.webp -alpha extract mask.png`. A clean mask is a solid silhouette; swiss-cheese holes or visible halo mean the strip mis-segmented the subject.
 
 ### Phase 5: Insert References (Optional)
 
