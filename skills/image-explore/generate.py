@@ -42,6 +42,14 @@ GREENSCREEN_PROMPT = (
     "uniform flat magenta everywhere behind the character."
 )
 
+# Gemini image-generation models. `fast` is the default (Flash), matching
+# the historical behavior of gemini-image.sh; `pro` swaps in the Pro model
+# (more obedient to style directives, slower and more expensive). The
+# selected id is plumbed to gemini-image.sh via the GEMINI_IMAGE_MODEL
+# env var — the script uses it to derive the default API URL.
+GEMINI_FAST_MODEL = "gemini-3.1-flash-image-preview"
+GEMINI_PRO_MODEL = "gemini-3-pro-image-preview"
+
 
 @dataclass
 class Direction:
@@ -64,6 +72,10 @@ class GenerateConfig:
     eval_strict: bool = False
     # Path to the Recraft script (skills/gen-image/recraft_bg_remove.py).
     recraft_script: str | None = None
+    # Gemini image-generation model id. Plumbed to gemini-image.sh via
+    # the GEMINI_IMAGE_MODEL env var. Defaults to the Flash ("fast")
+    # model; --no-fast on the CLI swaps in the Pro model.
+    gemini_model: str = GEMINI_FAST_MODEL
 
 
 @dataclass
@@ -476,6 +488,7 @@ def generate_one(direction: Direction, config: GenerateConfig) -> GenerationResu
 
     env = os.environ.copy()
     env["ASPECT_RATIO"] = config.aspect
+    env["GEMINI_IMAGE_MODEL"] = config.gemini_model
 
     print(f"Generating: {direction.output}", file=sys.stderr)
     t0 = time.monotonic()
@@ -586,6 +599,15 @@ def _build_app():
             False,
             help="Generate on a uniform magenta background, then strip it via Recraft's removeBackground API (~$0.01/call, ~7-40s/image, requires RECRAFT_API_TOKEN). Soft-mask edges on hair/fur, no flood-fill failure modes.",
         ),
+        fast: bool = typer.Option(
+            True,
+            "--fast/--no-fast",
+            help=(
+                f"Pick the Gemini image model. --fast (default) uses {GEMINI_FAST_MODEL} "
+                f"(Flash, cheaper/faster). --no-fast uses {GEMINI_PRO_MODEL} (Pro: more "
+                "obedient to style directives, slower, more expensive)."
+            ),
+        ),
         no_eval: bool = typer.Option(
             False,
             "--no-eval",
@@ -619,6 +641,7 @@ def _build_app():
             recraft_script=str(
                 chop_root / "skills" / "gen-image" / "recraft_bg_remove.py"
             ),
+            gemini_model=GEMINI_FAST_MODEL if fast else GEMINI_PRO_MODEL,
         )
 
         direction = Direction(scene=scene, shirt=shirt, output=output)
@@ -646,6 +669,15 @@ def _build_app():
         transparent: bool = typer.Option(
             False,
             help="Generate on a uniform magenta background, then strip it via Recraft's removeBackground API (~$0.01/call, ~7-40s/image, requires RECRAFT_API_TOKEN). Soft-mask edges on hair/fur, no flood-fill failure modes.",
+        ),
+        fast: bool = typer.Option(
+            True,
+            "--fast/--no-fast",
+            help=(
+                f"Pick the Gemini image model. --fast (default) uses {GEMINI_FAST_MODEL} "
+                f"(Flash, cheaper/faster). --no-fast uses {GEMINI_PRO_MODEL} (Pro: more "
+                "obedient to style directives, slower, more expensive)."
+            ),
         ),
         no_eval: bool = typer.Option(
             False,
@@ -680,6 +712,7 @@ def _build_app():
             recraft_script=str(
                 chop_root / "skills" / "gen-image" / "recraft_bg_remove.py"
             ),
+            gemini_model=GEMINI_FAST_MODEL if fast else GEMINI_PRO_MODEL,
         )
 
         batch_path = Path(json_file)

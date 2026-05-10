@@ -5,8 +5,15 @@
 # Usage: gemini-image.sh <prompt> <output-file> [api-url] [ref-image...]
 #
 # Environment:
-#   GOOGLE_API_KEY   (required) — your Google API key
-#   ASPECT_RATIO     (optional) — aspect ratio, e.g. "3:4" (default: 3:4)
+#   GOOGLE_API_KEY      (required) — your Google API key
+#   ASPECT_RATIO        (optional) — aspect ratio, e.g. "3:4" (default: 3:4)
+#   GEMINI_IMAGE_MODEL  (optional) — model id used to derive the default
+#                        API URL when no explicit api-url positional is
+#                        passed. Defaults to gemini-3.1-flash-image-preview
+#                        (the "fast" Flash model). Set to
+#                        gemini-3-pro-image-preview for the Pro model
+#                        (slower / more expensive / more obedient to
+#                        style directives). Ignored if api-url is set.
 #
 # Reference images are passed as additional positional arguments after
 # the API URL. They are sent as inline_data parts alongside the text
@@ -16,7 +23,16 @@ set -euo pipefail
 
 PROMPT="${1:?Usage: gemini-image.sh <prompt> <output-file> [api-url] [ref-image...]}"
 OUTPUT="${2:?Usage: gemini-image.sh <prompt> <output-file> [api-url] [ref-image...]}"
-API_URL="${3:-https://generativelanguage.googleapis.com/v1beta/models/gemini-3.1-flash-image-preview:generateContent}"
+GEMINI_IMAGE_MODEL="${GEMINI_IMAGE_MODEL:-gemini-3.1-flash-image-preview}"
+DEFAULT_API_URL="https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_IMAGE_MODEL}:generateContent"
+# Treat an empty third arg ("") as "use default" so callers that always
+# pass a positional placeholder (e.g. generate.py) can opt into env-var
+# model selection without rewriting their call sites.
+if [[ $# -ge 3 && -n "${3}" ]]; then
+    API_URL="${3}"
+else
+    API_URL="$DEFAULT_API_URL"
+fi
 REF_IMAGES=()
 if [[ $# -gt 3 ]]; then
     shift 3

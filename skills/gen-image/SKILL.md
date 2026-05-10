@@ -1,7 +1,7 @@
 ---
 name: gen-image
 description: "Analyze content and generate illustrations via Gemini image API"
-argument-hint: "<post-or-topic> [--count N] [--aspect W:H] [--style '...'] [--ref path] [--transparent] [--api-url url]"
+argument-hint: "<post-or-topic> [--count N] [--aspect W:H] [--style '...'] [--ref path] [--transparent] [--fast/--no-fast] [--api-url url]"
 allowed-tools: Bash, Read, Write, Glob, Grep, AskUserQuestion, WebFetch
 ---
 
@@ -20,6 +20,7 @@ Parse the user's input for:
 - **`--count N`**: Max number of images to generate (default: 3)
 - **`--aspect 'W:H'`**: Aspect ratio via `imageConfig` (default: 3:4, portrait). Valid values: `1:1`, `2:3`, `3:2`, `3:4`, `4:3`, `4:5`, `5:4`, `9:16`, `16:9`, `21:9`
 - **`--transparent`**: Generate on a uniform magenta background, then strip it via Recraft's `removeBackground` API. Soft-mask edges on hair/fur, no flood-fill / corner-seed failure modes, and works on AI outputs with irregular edges. **Cost:** ~$0.01/call. **Latency:** ~7-40s/call. **Requires:** `RECRAFT_API_TOKEN` in env or `~/.env` and a network connection. After the strip, two layered evals auto-run — see **Automatic eval** below.
+- **`--fast` / `--no-fast`**: Pick the Gemini image-generation model. **Default is `--fast`** (`gemini-3.1-flash-image-preview`) — cheaper, lower latency, the historical behavior. `--no-fast` swaps in `gemini-3-pro-image-preview` (Pro), which is more obedient to style directives but slower and more expensive. Use `--no-fast` when Flash is ignoring or mangling specific instructions in the prompt (shirt text, exact framing, character details). The selected model is passed to `gemini-image.sh` via the `GEMINI_IMAGE_MODEL` env var.
 - **`--no-eval`**: Skip the alpha-mask eval pass that looks for interior holes and edge fringe (needs numpy/pillow/scipy — the `uv run --script` shebang installs them automatically, but plain `python3` invocations without `uv` may need this flag). The alpha-mean signal still runs.
 - **`--eval-strict`**: Exit nonzero when any alpha-mask eval threshold trips. Useful when a calling agent wants to retry or fail loudly instead of silently shipping a broken alpha mask.
 

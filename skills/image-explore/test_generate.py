@@ -20,16 +20,22 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).parent))
 
 from generate import (  # noqa: E402
+    GEMINI_FAST_MODEL,
+    GEMINI_PRO_MODEL,
     HEALTHY_ALPHA_MAX_PCT,
     HEALTHY_ALPHA_MIN_PCT,
     INTERIOR_HOLE_CLOSE_RADIUS,
+    Direction,
+    GenerateConfig,
     _format_eval_card,
     eval_alpha,
     evaluate_strip,
+    generate_one,
 )
 
 
@@ -297,6 +303,58 @@ class TestEvalAlphaInteriorHoles(unittest.TestCase):
         metrics = self._save_and_eval(self._build_rgba(opaque))
         # Each speckle is 1 px (<100), so they should all be filtered.
         self.assertLess(metrics["interior_hole_largest_px"], 100)
+
+
+class TestGeminiModelSelection(unittest.TestCase):
+    """generate_one plumbs config.gemini_model into the subprocess env via
+    GEMINI_IMAGE_MODEL, which gemini-image.sh reads to derive the API URL.
+
+    These tests mock subprocess.run so they don't hit the network; they
+    just assert on the env dict the subprocess was called with.
+    """
+
+    def _make_config(self, gemini_model):
+        return GenerateConfig(
+            gemini_script="/fake/gemini-image.sh",
+            style="fake-style",
+            ref_image=None,
+            aspect="3:4",
+            transparent=False,  # skip Recraft + eval paths
+            gemini_model=gemini_model,
+        )
+
+    def _make_direction(self):
+        return Direction(scene="fake scene", shirt="X", output="/tmp/fake.webp")
+
+    def test_fast_default_passes_flash_model_in_env(self):
+        config = self._make_config(GEMINI_FAST_MODEL)
+        direction = self._make_direction()
+
+        with patch("generate.subprocess.run") as mock_run:
+            mock_run.return_value = subprocess.CompletedProcess(
+                args=[], returncode=0, stdout="", stderr=""
+            )
+            generate_one(direction, config)
+
+        self.assertEqual(mock_run.call_count, 1)
+        call_kwargs = mock_run.call_args.kwargs
+        env = call_kwargs["env"]
+        self.assertEqual(env["GEMINI_IMAGE_MODEL"], "gemini-3.1-flash-image-preview")
+
+    def test_no_fast_passes_pro_model_in_env(self):
+        config = self._make_config(GEMINI_PRO_MODEL)
+        direction = self._make_direction()
+
+        with patch("generate.subprocess.run") as mock_run:
+            mock_run.return_value = subprocess.CompletedProcess(
+                args=[], returncode=0, stdout="", stderr=""
+            )
+            generate_one(direction, config)
+
+        self.assertEqual(mock_run.call_count, 1)
+        call_kwargs = mock_run.call_args.kwargs
+        env = call_kwargs["env"]
+        self.assertEqual(env["GEMINI_IMAGE_MODEL"], "gemini-3-pro-image-preview")
 
 
 if __name__ == "__main__":
