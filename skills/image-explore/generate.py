@@ -63,6 +63,14 @@ class GenerateConfig:
     # Detects interior holes, residual magenta pockets, and edge fringe.
     eval_alpha: bool = True
     eval_strict: bool = False
+    # Background remover for --transparent: "magenta" (default — offline,
+    # ~1s/image, free) or "recraft" (Recraft API, ~7-15s/image, ~$0.01/call,
+    # cleaner soft-mask edges on hair/fur). The eval pass runs on the output
+    # of EITHER path, so the regression guard is identical. Recraft is opt-in
+    # to preserve offline robustness. See bead igor2-88g.61.
+    bg_remover: str = "magenta"
+    # Path to the Recraft script (only used when bg_remover == "recraft").
+    recraft_script: str | None = None
 
 
 @dataclass
@@ -252,6 +260,43 @@ def _scan_border_for_magenta_seeds(magick_bin, image_path, w, h):
         if abs(r - 255) + abs(g) + abs(b - 255) <= NEAR_MAGENTA_L1_TOLERANCE:
             seeds.append((x, y))
     return seeds, None
+
+
+def remove_background_recraft(image_path, recraft_script):
+    """Strip the background via Recraft's removeBackground API.
+
+    Drop-in replacement for remove_background()'s magenta-flood-fill path.
+    Returns (success: bool, error: str | None) with identical contract so
+    the caller can swap implementations without changing the eval flow.
+
+    Tradeoffs vs the magenta path: ~7-15s of API latency per image (vs
+    ~1s flood-fill), ~$0.01/call, requires RECRAFT_API_TOKEN in env or
+    ~/.env, and a network connection. In return: soft-mask edges on
+    hair/fur, no `subject_eaten` / `interior_pockets` failure modes from
+    flood-fill, and works on AI outputs with irregular edges. The same
+    evaluate_strip + eval_alpha guards still run on the result — if
+    Recraft regresses, the alpha-mean / interior-hole signals catch it.
+
+    See bead igor2-88g.61 for smoke-test results (alpha-mean within 0.2%
+    of magenta, cleaner edges, smaller files).
+    """
+    if not recraft_script or not Path(recraft_script).exists():
+        return False, (
+            f"recraft script not found at {recraft_script!r}; "
+            "expected skills/gen-image/recraft-bg-remove.sh"
+        )
+
+    result = subprocess.run(
+        [recraft_script, image_path, image_path],
+        capture_output=True,
+        text=True,
+    )
+    if result.returncode != 0:
+        return False, (
+            f"recraft-bg-remove.sh failed (exit {result.returncode}): "
+            f"{result.stderr.strip() or result.stdout.strip()}"
+        )
+    return True, None
 
 
 def remove_background(image_path):
@@ -645,8 +690,21 @@ def generate_one(direction: Direction, config: GenerateConfig) -> GenerationResu
     eval_alpha_metrics = None
     eval_alpha_warnings = None
     if config.transparent:
-        print(f"Removing background: {direction.output}", file=sys.stderr)
-        success, err = remove_background(direction.output)
+        # Dispatch on bg_remover. Magenta is offline + ~1s/image; Recraft
+        # is API-backed (~7-15s, ~$0.01/call) but produces cleaner edges on
+        # hair/fur. Either way, the eval pass below runs on the output —
+        # the regression guard (alpha-mean + interior-hole + residual +
+        # fringe) is identical for both paths.
+        print(
+            f"Removing background ({config.bg_remover}): {direction.output}",
+            file=sys.stderr,
+        )
+        if config.bg_remover == "recraft":
+            success, err = remove_background_recraft(
+                direction.output, config.recraft_script
+            )
+        else:
+            success, err = remove_background(direction.output)
         if not success:
             return GenerationResult(
                 output=direction.output,
@@ -726,6 +784,11 @@ def _build_app():
             False,
             help="Generate on magenta chroma-key background, then strip it via ImageMagick edge-connected flood fill from the 4 corners (preserves interior magenta-tinted pixels)",
         ),
+        bg_remover: str = typer.Option(
+            "magenta",
+            "--bg-remover",
+            help="Background remover for --transparent: 'magenta' (default — offline flood-fill, ~1s/image, free) or 'recraft' (Recraft API, ~7-15s/image, ~$0.01/call, cleaner soft-mask edges on hair/fur). Recraft requires RECRAFT_API_TOKEN in env or ~/.env. The alpha-mask eval still runs on either output.",
+        ),
         no_eval: bool = typer.Option(
             False,
             "--no-eval",
@@ -740,6 +803,13 @@ def _build_app():
         """Generate a single raccoon image."""
         chop_root = resolve_chop_root()
         load_env()
+
+        if bg_remover not in ("magenta", "recraft"):
+            print(
+                f"Error: --bg-remover must be 'magenta' or 'recraft' (got {bg_remover!r})",
+                file=sys.stderr,
+            )
+            raise typer.Exit(1)
 
         if not os.environ.get("GOOGLE_API_KEY"):
             print(
@@ -756,6 +826,10 @@ def _build_app():
             transparent=transparent,
             eval_alpha=not no_eval,
             eval_strict=eval_strict,
+            bg_remover=bg_remover,
+            recraft_script=str(
+                chop_root / "skills" / "gen-image" / "recraft-bg-remove.sh"
+            ),
         )
 
         direction = Direction(scene=scene, shirt=shirt, output=output)
@@ -784,6 +858,11 @@ def _build_app():
             False,
             help="Generate on magenta chroma-key background, then strip it via ImageMagick edge-connected flood fill from the 4 corners (preserves interior magenta-tinted pixels)",
         ),
+        bg_remover: str = typer.Option(
+            "magenta",
+            "--bg-remover",
+            help="Background remover for --transparent: 'magenta' (default — offline flood-fill, ~1s/image, free) or 'recraft' (Recraft API, ~7-15s/image, ~$0.01/call, cleaner soft-mask edges on hair/fur). Recraft requires RECRAFT_API_TOKEN in env or ~/.env. The alpha-mask eval still runs on either output.",
+        ),
         no_eval: bool = typer.Option(
             False,
             "--no-eval",
@@ -798,6 +877,13 @@ def _build_app():
         """Generate images in parallel from a JSON manifest."""
         chop_root = resolve_chop_root()
         load_env()
+
+        if bg_remover not in ("magenta", "recraft"):
+            print(
+                f"Error: --bg-remover must be 'magenta' or 'recraft' (got {bg_remover!r})",
+                file=sys.stderr,
+            )
+            raise typer.Exit(1)
 
         if not os.environ.get("GOOGLE_API_KEY"):
             print(
@@ -814,6 +900,10 @@ def _build_app():
             transparent=transparent,
             eval_alpha=not no_eval,
             eval_strict=eval_strict,
+            bg_remover=bg_remover,
+            recraft_script=str(
+                chop_root / "skills" / "gen-image" / "recraft-bg-remove.sh"
+            ),
         )
 
         batch_path = Path(json_file)
