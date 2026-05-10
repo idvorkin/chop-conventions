@@ -269,7 +269,7 @@ def remove_background_recraft(image_path, recraft_script):
     Returns (success: bool, error: str | None) with identical contract so
     the caller can swap implementations without changing the eval flow.
 
-    Tradeoffs vs the magenta path: ~7-15s of API latency per image (vs
+    Tradeoffs vs the magenta path: ~7-40s of API latency per image (vs
     ~1s flood-fill), ~$0.01/call, requires RECRAFT_API_TOKEN in env or
     ~/.env, and a network connection. In return: soft-mask edges on
     hair/fur, no `subject_eaten` / `interior_pockets` failure modes from
@@ -278,22 +278,27 @@ def remove_background_recraft(image_path, recraft_script):
     Recraft regresses, the alpha-mean / interior-hole signals catch it.
 
     See bead igor2-88g.61 for smoke-test results (alpha-mean within 0.2%
-    of magenta, cleaner edges, smaller files).
+    of magenta on the bash-curl smoke, cleaner edges, smaller files).
+
+    Implementation: shells out to skills/gen-image/recraft_bg_remove.py
+    (Typer + uv-shebang, stdlib-only HTTP layer). The script self-bootstraps
+    its typer dep via uv. We invoke its `strip` subcommand by absolute path
+    so the shebang fires.
     """
     if not recraft_script or not Path(recraft_script).exists():
         return False, (
             f"recraft script not found at {recraft_script!r}; "
-            "expected skills/gen-image/recraft-bg-remove.sh"
+            "expected skills/gen-image/recraft_bg_remove.py"
         )
 
     result = subprocess.run(
-        [recraft_script, image_path, image_path],
+        [recraft_script, "strip", image_path, image_path],
         capture_output=True,
         text=True,
     )
     if result.returncode != 0:
         return False, (
-            f"recraft-bg-remove.sh failed (exit {result.returncode}): "
+            f"recraft_bg_remove.py failed (exit {result.returncode}): "
             f"{result.stderr.strip() or result.stdout.strip()}"
         )
     return True, None
@@ -828,7 +833,7 @@ def _build_app():
             eval_strict=eval_strict,
             bg_remover=bg_remover,
             recraft_script=str(
-                chop_root / "skills" / "gen-image" / "recraft-bg-remove.sh"
+                chop_root / "skills" / "gen-image" / "recraft_bg_remove.py"
             ),
         )
 
@@ -902,7 +907,7 @@ def _build_app():
             eval_strict=eval_strict,
             bg_remover=bg_remover,
             recraft_script=str(
-                chop_root / "skills" / "gen-image" / "recraft-bg-remove.sh"
+                chop_root / "skills" / "gen-image" / "recraft_bg_remove.py"
             ),
         )
 
