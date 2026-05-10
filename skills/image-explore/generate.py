@@ -21,18 +21,17 @@
 # directions.json format:
 #   [{"scene": "...", "shirt": "TEXT", "output": "file.webp"}, ...]
 #
-# Numpy/Pillow/Scipy power the --transparent post-strip eval_alpha()
-# pathway (interior holes / residual magenta / edge fringe) and are
-# lazy-imported there. The `uv run --script` shebang auto-installs them;
-# running via plain `python3` works as long as --transparent is off or
-# --no-eval is set.
+# Background removal under --transparent always goes through Recraft's
+# removeBackground API (skills/gen-image/recraft_bg_remove.py). Numpy/
+# Pillow/Scipy power the post-strip eval_alpha() pathway (interior holes
+# / edge fringe) and are lazy-imported there. The `uv run --script`
+# shebang auto-installs them; running via plain `python3` works as long
+# as --transparent is off or --no-eval is set.
 
 import json
 import os
-import shutil
 import subprocess
 import sys
-import tempfile
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
@@ -60,16 +59,10 @@ class GenerateConfig:
     aspect: str
     transparent: bool = False
     # Layered alpha-mask eval on top of evaluate_strip's alpha-mean signal.
-    # Detects interior holes, residual magenta pockets, and edge fringe.
+    # Detects interior holes and edge fringe in the Recraft output.
     eval_alpha: bool = True
     eval_strict: bool = False
-    # Background remover for --transparent: "magenta" (default — offline,
-    # ~1s/image, free) or "recraft" (Recraft API, ~7-15s/image, ~$0.01/call,
-    # cleaner soft-mask edges on hair/fur). The eval pass runs on the output
-    # of EITHER path, so the regression guard is identical. Recraft is opt-in
-    # to preserve offline robustness. See bead igor2-88g.61.
-    bg_remover: str = "magenta"
-    # Path to the Recraft script (only used when bg_remover == "recraft").
+    # Path to the Recraft script (skills/gen-image/recraft_bg_remove.py).
     recraft_script: str | None = None
 
 
@@ -89,27 +82,21 @@ class GenerationResult:
 # triggers a [WARN] on the eval line (and, under --eval-strict, a
 # nonzero exit). These complement evaluate_strip's alpha-mean signal —
 # the mean catches "strip ate the subject" / "nothing stripped"; these
-# catch "Swiss-cheese holes", "trapped magenta pockets", and "halo".
+# catch "Swiss-cheese holes" and "halo".
 EVAL_ALPHA_THRESHOLDS = {
     "interior_hole_px": 500,
-    "residual_magenta_px": 500,
     "edge_fringe_px": 2000,
 }
 
 # Before counting interior holes, morphologically close the opaque mask
-# (dilate then erode by this many pixels). Flood-fill chroma-key can
-# drill 1–2-pixel-wide channels through narrow parts of the character
-# (neck, between fingers, limb outlines), which topologically connect
-# real interior holes to the outside background — naive connected-
-# components then reports holes=0 even when the mask is visibly damaged.
-# Radius 1 seals channels up to 3px wide, which matches every bleed
-# path observed on the Pod Detective calibration set without collapsing
-# legitimate design gaps (between legs, armpit openings) that are 5+ px
-# wide on real character art. See issue #171.
+# (dilate then erode by this many pixels). Recraft's mask is generally
+# clean, but if a thin connector ever pierces the silhouette, sealing
+# 1-2-pixel channels keeps the interior-hole metric accurate. Radius 1
+# matches the original tuning for the calibration set.
 INTERIOR_HOLE_CLOSE_RADIUS = 1
 # After sealing channels, drop interior components smaller than this —
-# antialiasing specks between fingers / between objects aren't real
-# damage, and they dominate the component count on otherwise-clean images.
+# antialiasing specks aren't real damage, and they dominate the
+# component count on otherwise-clean images.
 INTERIOR_HOLE_MIN_COMPONENT_PX = 100
 
 
@@ -175,115 +162,31 @@ def read_default_style(chop_root):
     )
 
 
-# Flood-seed scan: sample points along the image border and seed the
-# flood-fill only from points that are actually near the magenta chroma-key
-# color. This handles the case where Gemini frames the shot with the
-# subject or its scenery extending to some of the image edges — the older
-# "flood from all 4 corners" approach assumed every corner is chroma-bg,
-# and when the bottom corners rendered as grass or stone, a 30%-fuzz flood
-# started from grass and ate the subject.
-#
-# Constants below: sampling step along each edge (smaller = more seeds, more
-# robust; larger = cheaper). Near-magenta tolerance is stricter than the
-# flood fuzz on purpose — we want to seed only from "definitely background"
-# pixels and let the flood itself handle the gradient at the subject edge.
-BORDER_SAMPLE_STEP = 8
-NEAR_MAGENTA_L1_TOLERANCE = 70  # sum of |r-255| + |g| + |b-255|
-FLOOD_FUZZ_PERCENT = 30
-
 # Post-strip eval thresholds — the same metrics the unit tests assert on,
 # reused as a runtime regression guard. See /hill-climbing for why the
 # same eval that drives the search becomes infrastructure after it.
 # Alpha mean (0..100): percentage of pixels fully opaque. Below
-# HEALTHY_ALPHA_MIN_PCT means the strip ate the subject (chroma invariant
-# was violated); above HEALTHY_ALPHA_MAX_PCT means nearly nothing was
-# transparent (subject likely fills the frame, strip effectively a no-op).
+# HEALTHY_ALPHA_MIN_PCT means the strip ate the subject; above
+# HEALTHY_ALPHA_MAX_PCT means nearly nothing was transparent (subject
+# likely fills the frame, strip effectively a no-op).
 HEALTHY_ALPHA_MIN_PCT = 15.0
 HEALTHY_ALPHA_MAX_PCT = 85.0
-
-
-def _parse_srgb(fragment):
-    """Parse 'srgb(r,g,b)' or 'srgba(r,g,b,a)' — return (r,g,b) ints, or None.
-
-    Requires at least 3 comma-separated integer components inside the parens.
-    A malformed 'srgb(1,2)' returns None rather than a 2-tuple, so callers
-    can always unpack the result as (r,g,b) without a bounds check.
-    """
-    fragment = fragment.strip()
-    if not fragment.startswith(("srgb(", "srgba(")):
-        return None
-    try:
-        parts = fragment.split("(", 1)[1].rstrip(")").split(",")
-        if len(parts) < 3:
-            return None
-        return tuple(int(p) for p in parts[:3])
-    except (ValueError, IndexError):
-        return None
-
-
-def _scan_border_for_magenta_seeds(magick_bin, image_path, w, h):
-    """Return list of (x,y) border pixels within NEAR_MAGENTA_L1_TOLERANCE of #FF00FF.
-
-    Uses a single magick invocation: build a format string that dumps every
-    sampled border pixel separated by '|'. Much cheaper than per-pixel
-    subprocess calls on large borders.
-    """
-    positions = []
-    step = BORDER_SAMPLE_STEP
-    for x in range(0, w, step):
-        positions.append((x, 0))
-        positions.append((x, h - 1))
-    for y in range(0, h, step):
-        positions.append((0, y))
-        positions.append((w - 1, y))
-
-    fmt = "|".join(f"%[pixel:p{{{x},{y}}}]" for x, y in positions)
-    result = subprocess.run(
-        [magick_bin, image_path, "-format", fmt, "info:"],
-        capture_output=True,
-        text=True,
-    )
-    if result.returncode != 0:
-        return None, f"magick border probe failed: {result.stderr.strip()}"
-
-    seeds = []
-    fragments = result.stdout.split("|")
-    if len(fragments) != len(positions):
-        return None, (
-            f"border probe returned {len(fragments)} fragments, expected {len(positions)}"
-        )
-    for (x, y), frag in zip(positions, fragments):
-        rgb = _parse_srgb(frag)
-        if rgb is None:
-            continue
-        r, g, b = rgb
-        if abs(r - 255) + abs(g) + abs(b - 255) <= NEAR_MAGENTA_L1_TOLERANCE:
-            seeds.append((x, y))
-    return seeds, None
 
 
 def remove_background_recraft(image_path, recraft_script):
     """Strip the background via Recraft's removeBackground API.
 
-    Drop-in replacement for remove_background()'s magenta-flood-fill path.
-    Returns (success: bool, error: str | None) with identical contract so
-    the caller can swap implementations without changing the eval flow.
-
-    Tradeoffs vs the magenta path: ~7-40s of API latency per image (vs
-    ~1s flood-fill), ~$0.01/call, requires RECRAFT_API_TOKEN in env or
-    ~/.env, and a network connection. In return: soft-mask edges on
-    hair/fur, no `subject_eaten` / `interior_pockets` failure modes from
-    flood-fill, and works on AI outputs with irregular edges. The same
-    evaluate_strip + eval_alpha guards still run on the result — if
-    Recraft regresses, the alpha-mean / interior-hole signals catch it.
-
-    See bead igor2-88g.61 for smoke-test results (alpha-mean within 0.2%
-    of magenta on the bash-curl smoke, cleaner edges, smaller files).
+    Returns (success: bool, error: str | None). The same evaluate_strip +
+    eval_alpha guards run on the result downstream — if Recraft regresses,
+    the alpha-mean / interior-hole signals catch it.
 
     Implementation: shells out to skills/gen-image/recraft_bg_remove.py
     (Typer + uv-shebang, stdlib-only HTTP layer). The script self-bootstraps
     its typer dep via uv. We invoke its `strip` subcommand by absolute path
     so the shebang fires.
+
+    Cost / latency: ~$0.01/call, ~7-40s wall. Requires RECRAFT_API_TOKEN
+    in env or ~/.env.
     """
     if not recraft_script or not Path(recraft_script).exists():
         return False, (
@@ -304,100 +207,8 @@ def remove_background_recraft(image_path, recraft_script):
     return True, None
 
 
-def remove_background(image_path):
-    """Strip the magenta chroma-key background using border-seeded flood fill.
-
-    Images are generated on a KNOWN solid #FF00FF background, so chroma-key
-    stripping is pixel-accurate without ML. The older one-pass
-    `-fuzz 30% -transparent #FF00FF` approach kills every magenta-ish pixel
-    globally, including magenta-tinted highlights *inside* the character
-    (pink fur, specular glass reflections, lobster-claw reds) — leaving
-    swiss-cheese holes in the alpha.
-
-    The flood-fill strategy only transparents pixels reachable from the
-    image border, so interior magenta-tinted pixels are preserved by the
-    character's own silhouette. Seeding the flood needs to find actual
-    chroma-background pixels on the border — hard-coding the 4 corners
-    fails whenever Gemini frames a shot with grass, sky, or scenery
-    touching an image edge (seen in practice: dense grass rendered into
-    the bottom corners, flood started from grass at 30% fuzz and ate the
-    subject). Instead, sample the border ring, keep only samples that are
-    actually near #FF00FF, and seed the flood from all of them.
-
-    If no border pixels are near-magenta — the subject fills the whole
-    frame — skip the strip rather than eat the subject, and let the caller
-    decide what to do.
-    """
-    magick = shutil.which("magick") or shutil.which("convert")
-    if not magick:
-        return False, "magick not found — install ImageMagick"
-
-    probe = subprocess.run(
-        [magick, "identify", "-format", "%w %h", image_path],
-        capture_output=True,
-        text=True,
-    )
-    if probe.returncode != 0:
-        return False, f"magick identify failed: {probe.stderr.strip()}"
-    try:
-        w, h = (int(x) for x in probe.stdout.split())
-    except ValueError:
-        return False, f"could not parse image dimensions: {probe.stdout!r}"
-
-    seeds, err = _scan_border_for_magenta_seeds(magick, image_path, w, h)
-    if err is not None:
-        return False, err
-    if not seeds:
-        return False, (
-            "no magenta chroma-key background detected on the image border; "
-            "skipping strip. Regenerate with a prompt that leaves a magenta "
-            "border on all four sides of the frame."
-        )
-
-    with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as tmp:
-        tmp_path = tmp.name
-
-    draws = []
-    for x, y in seeds:
-        draws += ["-draw", f"color {x},{y} floodfill"]
-
-    try:
-        cmd = [
-            magick,
-            image_path,
-            "-alpha",
-            "set",
-            "-fuzz",
-            f"{FLOOD_FUZZ_PERCENT}%",
-            "-fill",
-            "none",
-            *draws,
-            "-quality",
-            "90",
-            tmp_path,
-        ]
-        result = subprocess.run(cmd, capture_output=True, text=True)
-        if result.returncode != 0:
-            return False, f"magick flood-fill failed: {result.stderr.strip()}"
-
-        ext = Path(image_path).suffix.lower()
-        if ext == ".webp":
-            conv = subprocess.run(
-                [magick, tmp_path, "-quality", "90", image_path],
-                capture_output=True,
-                text=True,
-            )
-            if conv.returncode != 0:
-                return False, f"magick webp convert failed: {conv.stderr.strip()}"
-        else:
-            shutil.copy2(tmp_path, image_path)
-        return True, None
-    finally:
-        Path(tmp_path).unlink(missing_ok=True)
-
-
 def evaluate_strip(image_path):
-    """Compute chroma-strip quality metrics for a finished image.
+    """Compute bg-strip quality metrics for a finished image.
 
     Returns (metrics_dict, warning_str_or_None). The metrics dict always
     has the same keys so the caller can log them uniformly; warning is
@@ -406,12 +217,18 @@ def evaluate_strip(image_path):
     test_generate.py's integration suite, so test + runtime share the
     same definition of "healthy."
 
+    General-purpose alpha-mean signal: works on any RGBA output,
+    including Recraft's PNG-with-alpha. Independent of the upstream
+    bg-removal mechanism.
+
     Keys in the metrics dict:
     - alpha_mean_pct: percentage of pixels fully opaque (0..100)
     - file_size_kb: size on disk, rounded
     - status: one of "healthy", "subject_eaten", "nothing_stripped",
       "eval_failed"
     """
+    import shutil  # noqa: PLC0415
+
     magick = shutil.which("magick") or shutil.which("convert")
     if magick is None:
         return (
@@ -458,9 +275,8 @@ def evaluate_strip(image_path):
         status = "subject_eaten"
         warning = (
             f"alpha_mean={alpha_pct}% is below {HEALTHY_ALPHA_MIN_PCT}%: "
-            "the strip likely ate the subject. Usually means chroma-bg "
-            "wasn't present on every image border — regenerate with a "
-            "prompt that leaves a solid magenta border on all four sides."
+            "the strip likely ate the subject. Recraft may have misidentified "
+            "the subject — regenerate, or inspect the source image."
         )
     elif alpha_pct > HEALTHY_ALPHA_MAX_PCT:
         status = "nothing_stripped"
@@ -515,28 +331,26 @@ def _label_interior(transparent_mask, label):
 
 def eval_alpha(
     image_path,
-    chroma_rgb=(255, 0, 255),
-    tolerance=20,
     close_radius=INTERIOR_HOLE_CLOSE_RADIUS,
     min_component_px=INTERIOR_HOLE_MIN_COMPONENT_PX,
 ):
-    """Compute alpha-mask quality metrics for a post-chroma RGBA image.
+    """Compute alpha-mask quality metrics for a post-strip RGBA image.
 
-    Detects failure modes orthogonal to evaluate_strip's alpha-mean signal:
+    Detects failure modes orthogonal to evaluate_strip's alpha-mean signal.
+    General-purpose: works on any RGBA output, regardless of how the
+    background was removed.
+
       * interior_hole_px — transparent pixels NOT reachable from the image
         border after the opaque mask is morphologically closed. Closing
-        seals the 1–2-pixel bleed channels the flood-fill drills through
-        narrow character parts; without it, a real interior hole connected
-        to the outside by a thin channel gets counted as border-touching
-        and slips through (the issue-#171 failure mode). Tiny components
-        below `min_component_px` are filtered as antialiasing noise.
+        seals 1-2-pixel bleed channels that connect a real interior hole
+        to the outside background, which would otherwise let it slip
+        through a naive border-touching check. Tiny components below
+        `min_component_px` are filtered as antialiasing noise.
       * interior_hole_largest_px — pixels in the single largest interior
         hole. More stable across images than the total; good for
         thresholding because one big hole is what a human sees.
-      * residual_magenta_px — opaque pixels still near the chroma color.
-        Trapped magenta pockets between characters or inside enclosed
-        negative space the flood-fill couldn't reach from the corners.
-      * edge_fringe_px — partial-alpha pixels. Large counts suggest halo.
+      * edge_fringe_px — partial-alpha pixels. Large counts suggest halo —
+        a known Recraft tradeoff on hair/fur edges.
 
     Deps (numpy, pillow, scipy) are lazy-imported so callers that pass
     --no-eval (or don't touch --transparent) never hit an ImportError on
@@ -547,21 +361,15 @@ def eval_alpha(
     from scipy.ndimage import binary_closing, label  # noqa: PLC0415
 
     arr = np.asarray(Image.open(image_path).convert("RGBA"))
-    rgb, a = arr[:, :, :3], arr[:, :, 3]
+    a = arr[:, :, 3]
     opaque = a > 128
     transparent = a < 16
 
-    # Residual magenta: opaque pixels whose RGB is still within tolerance
-    # of the chroma color. L1 distance on int16 to avoid uint8 overflow.
-    chroma = np.array(chroma_rgb, dtype=np.int16)
-    dist = np.abs(rgb.astype(np.int16) - chroma).sum(axis=2)
-    residual = int((opaque & (dist <= tolerance)).sum())
-
-    # Interior holes: we want to flag flood-fill bleed-through damage but
-    # NOT legitimate design-intentional gaps (armpit openings, space
-    # between legs, gap between fingers). Both show up as "transparent
-    # surrounded by opaque" but they behave differently under morphological
-    # closing of the opaque mask:
+    # Interior holes: we want to flag bleed-through damage but NOT
+    # legitimate design-intentional gaps (armpit openings, space between
+    # legs, gap between fingers). Both show up as "transparent surrounded
+    # by opaque" but they behave differently under morphological closing
+    # of the opaque mask:
     #   - Design gap: several pixels wide at its opening; closing by 1 px
     #     barely narrows it, so its topological relationship to the border
     #     is unchanged.
@@ -597,13 +405,12 @@ def eval_alpha(
         interior_largest = 0
 
     # Edge fringe: partial alpha. Some is expected (antialiasing); a lot
-    # suggests the chroma removal left a halo.
+    # suggests a halo around the subject.
     edge = int(((~opaque) & (~transparent)).sum())
 
     return {
         "interior_hole_px": interior,
         "interior_hole_largest_px": interior_largest,
-        "residual_magenta_px": residual,
         "edge_fringe_px": edge,
     }
 
@@ -615,7 +422,6 @@ def format_eval_line(image_path, metrics, warnings):
     return (
         f"[eval] {image_path}: "
         f"holes={metrics['interior_hole_px']} (largest={largest}), "
-        f"residual={metrics['residual_magenta_px']}, "
         f"fringe={metrics['edge_fringe_px']}   {status}"
     )
 
@@ -627,11 +433,6 @@ def check_eval_thresholds(metrics, thresholds=EVAL_ALPHA_THRESHOLDS):
         warnings.append(
             f"interior damage likely (holes={metrics['interior_hole_px']} "
             f"> {thresholds['interior_hole_px']}) — check alpha mask"
-        )
-    if metrics["residual_magenta_px"] > thresholds["residual_magenta_px"]:
-        warnings.append(
-            f"residual magenta (residual={metrics['residual_magenta_px']} "
-            f"> {thresholds['residual_magenta_px']}) — trapped pocket"
         )
     if metrics["edge_fringe_px"] > thresholds["edge_fringe_px"]:
         warnings.append(
@@ -695,21 +496,17 @@ def generate_one(direction: Direction, config: GenerateConfig) -> GenerationResu
     eval_alpha_metrics = None
     eval_alpha_warnings = None
     if config.transparent:
-        # Dispatch on bg_remover. Magenta is offline + ~1s/image; Recraft
-        # is API-backed (~7-15s, ~$0.01/call) but produces cleaner edges on
-        # hair/fur. Either way, the eval pass below runs on the output —
-        # the regression guard (alpha-mean + interior-hole + residual +
-        # fringe) is identical for both paths.
+        # Recraft is the only bg-removal path. ~7-40s of API latency per
+        # image, ~$0.01/call. The eval pass below runs on the result —
+        # alpha-mean catches "subject eaten" / "nothing stripped";
+        # eval_alpha catches interior holes and edge fringe.
         print(
-            f"Removing background ({config.bg_remover}): {direction.output}",
+            f"Removing background (recraft): {direction.output}",
             file=sys.stderr,
         )
-        if config.bg_remover == "recraft":
-            success, err = remove_background_recraft(
-                direction.output, config.recraft_script
-            )
-        else:
-            success, err = remove_background(direction.output)
+        success, err = remove_background_recraft(
+            direction.output, config.recraft_script
+        )
         if not success:
             return GenerationResult(
                 output=direction.output,
@@ -721,17 +518,17 @@ def generate_one(direction: Direction, config: GenerateConfig) -> GenerationResu
         # Auto-eval the strip: the same metrics asserted in test_generate.py
         # become the runtime regression guard. Healthy strips print a quiet
         # one-liner; failed strips print a loud warning with actionable
-        # guidance (regenerate the prompt vs. widen the crop).
+        # guidance.
         metrics, warning = evaluate_strip(direction.output)
         print(
             _format_eval_card(direction.output, metrics, warning),
             file=sys.stderr,
         )
 
-        # Layered alpha-mask eval — catches interior holes, trapped
-        # magenta pockets, and halo fringe that the alpha-mean signal
-        # above can't detect. Best-effort: missing deps or errors log
-        # and continue rather than failing the generation.
+        # Layered alpha-mask eval — catches interior holes and halo
+        # fringe that the alpha-mean signal above can't detect.
+        # Best-effort: missing deps or errors log and continue rather
+        # than failing the generation.
         if config.eval_alpha:
             try:
                 eval_alpha_metrics = eval_alpha(direction.output)
@@ -787,34 +584,22 @@ def _build_app():
         style: str | None = typer.Option(None, help="Override default raccoon style"),
         transparent: bool = typer.Option(
             False,
-            help="Generate on magenta chroma-key background, then strip it via ImageMagick edge-connected flood fill from the 4 corners (preserves interior magenta-tinted pixels)",
-        ),
-        bg_remover: str = typer.Option(
-            "magenta",
-            "--bg-remover",
-            help="Background remover for --transparent: 'magenta' (default — offline flood-fill, ~1s/image, free) or 'recraft' (Recraft API, ~7-15s/image, ~$0.01/call, cleaner soft-mask edges on hair/fur). Recraft requires RECRAFT_API_TOKEN in env or ~/.env. The alpha-mask eval still runs on either output.",
+            help="Generate on a uniform magenta background, then strip it via Recraft's removeBackground API (~$0.01/call, ~7-40s/image, requires RECRAFT_API_TOKEN). Soft-mask edges on hair/fur, no flood-fill failure modes.",
         ),
         no_eval: bool = typer.Option(
             False,
             "--no-eval",
-            help="Skip the post-chroma alpha-mask eval (interior holes, residual magenta, edge fringe). Needs numpy/pillow/scipy — the uv shebang installs them, but bare python3 callers may need this.",
+            help="Skip the post-strip alpha-mask eval (interior holes, edge fringe). Needs numpy/pillow/scipy — the uv shebang installs them, but bare python3 callers may need this.",
         ),
         eval_strict: bool = typer.Option(
             False,
             "--eval-strict",
-            help="Exit 2 if any eval threshold trips (interior holes, residual magenta, edge fringe). Useful for CI / calling agents that want to retry or fail loudly.",
+            help="Exit 2 if any eval threshold trips (interior holes, edge fringe). Useful for CI / calling agents that want to retry or fail loudly.",
         ),
     ) -> None:
         """Generate a single raccoon image."""
         chop_root = resolve_chop_root()
         load_env()
-
-        if bg_remover not in ("magenta", "recraft"):
-            print(
-                f"Error: --bg-remover must be 'magenta' or 'recraft' (got {bg_remover!r})",
-                file=sys.stderr,
-            )
-            raise typer.Exit(1)
 
         if not os.environ.get("GOOGLE_API_KEY"):
             print(
@@ -831,7 +616,6 @@ def _build_app():
             transparent=transparent,
             eval_alpha=not no_eval,
             eval_strict=eval_strict,
-            bg_remover=bg_remover,
             recraft_script=str(
                 chop_root / "skills" / "gen-image" / "recraft_bg_remove.py"
             ),
@@ -861,17 +645,12 @@ def _build_app():
         style: str | None = typer.Option(None, help="Override default raccoon style"),
         transparent: bool = typer.Option(
             False,
-            help="Generate on magenta chroma-key background, then strip it via ImageMagick edge-connected flood fill from the 4 corners (preserves interior magenta-tinted pixels)",
-        ),
-        bg_remover: str = typer.Option(
-            "magenta",
-            "--bg-remover",
-            help="Background remover for --transparent: 'magenta' (default — offline flood-fill, ~1s/image, free) or 'recraft' (Recraft API, ~7-15s/image, ~$0.01/call, cleaner soft-mask edges on hair/fur). Recraft requires RECRAFT_API_TOKEN in env or ~/.env. The alpha-mask eval still runs on either output.",
+            help="Generate on a uniform magenta background, then strip it via Recraft's removeBackground API (~$0.01/call, ~7-40s/image, requires RECRAFT_API_TOKEN). Soft-mask edges on hair/fur, no flood-fill failure modes.",
         ),
         no_eval: bool = typer.Option(
             False,
             "--no-eval",
-            help="Skip the post-chroma alpha-mask eval (interior holes, residual magenta, edge fringe). Needs numpy/pillow/scipy — the uv shebang installs them, but bare python3 callers may need this.",
+            help="Skip the post-strip alpha-mask eval (interior holes, edge fringe). Needs numpy/pillow/scipy — the uv shebang installs them, but bare python3 callers may need this.",
         ),
         eval_strict: bool = typer.Option(
             False,
@@ -882,13 +661,6 @@ def _build_app():
         """Generate images in parallel from a JSON manifest."""
         chop_root = resolve_chop_root()
         load_env()
-
-        if bg_remover not in ("magenta", "recraft"):
-            print(
-                f"Error: --bg-remover must be 'magenta' or 'recraft' (got {bg_remover!r})",
-                file=sys.stderr,
-            )
-            raise typer.Exit(1)
 
         if not os.environ.get("GOOGLE_API_KEY"):
             print(
@@ -905,7 +677,6 @@ def _build_app():
             transparent=transparent,
             eval_alpha=not no_eval,
             eval_strict=eval_strict,
-            bg_remover=bg_remover,
             recraft_script=str(
                 chop_root / "skills" / "gen-image" / "recraft_bg_remove.py"
             ),

@@ -6,7 +6,7 @@
 # ]
 # ///
 # ABOUTME: Strip image background via Recraft's removeBackground API.
-# ABOUTME: Drop-in replacement for the magenta-flood-fill chroma path in gen-image.
+# ABOUTME: The bg-removal path used by gen-image's --transparent flag.
 #
 # Usage:
 #   recraft_bg_remove.py strip <input> <output>      # CLI mode
@@ -54,10 +54,9 @@ SUPPORTED_EXTS = {".png", ".jpg", ".jpeg", ".webp"}
 # unexpected errors (a few hundred bytes); guard against silent truncation.
 MIN_OUTPUT_BYTES = 1024
 
-# WebP conversion quality when the caller asks for `.webp` output. Matches
-# what gemini-image.sh uses (`cwebp -q 90`) so files coming out of the
-# Recraft path are visually consistent with files coming out of the
-# Gemini-magenta path (no quality cliff).
+# WebP conversion quality when the caller asks for `.webp` output.
+# Matches what gemini-image.sh uses (`cwebp -q 90`) so file sizes and
+# visuals stay consistent with Gemini's direct WebP output.
 WEBP_QUALITY = 90
 
 
@@ -104,9 +103,7 @@ def _validate_input(input_path: str) -> str | None:
     if size == 0:
         return f"input is empty: {input_path}"
     if size > MAX_FILE_BYTES:
-        return (
-            f"input is {size} bytes, exceeds Recraft's {MAX_FILE_BYTES}-byte limit"
-        )
+        return f"input is {size} bytes, exceeds Recraft's {MAX_FILE_BYTES}-byte limit"
     if p.suffix.lower() not in SUPPORTED_EXTS:
         return (
             f"unsupported extension {p.suffix!r}; "
@@ -157,19 +154,17 @@ def _build_multipart(input_path: str) -> tuple[bytes, str]:
     return body, f"multipart/form-data; boundary={boundary}"
 
 
-def _write_with_format(
-    img_bytes: bytes, output_path: str
-) -> tuple[bool, str | None]:
+def _write_with_format(img_bytes: bytes, output_path: str) -> tuple[bool, str | None]:
     """Persist Recraft's PNG bytes at output_path, converting if the
     caller requested .webp.
 
     Recraft's removeBackground endpoint only emits PNG with alpha. If
     the caller asks for .webp, we go PNG → cwebp → WebP-with-alpha (same
-    `cwebp -q 90` invocation gemini-image.sh uses for the magenta path,
-    so visual quality stays consistent). For any other extension, we
-    write the PNG bytes verbatim (caller's problem if they asked for
-    .jpg — alpha would be dropped). Falls back to PNG if cwebp is
-    missing, with a clear message rather than silent rename.
+    `cwebp -q 90` invocation gemini-image.sh uses, so visual quality
+    stays consistent with the upstream Gemini output). For any other
+    extension, we write the PNG bytes verbatim (caller's problem if they
+    asked for .jpg — alpha would be dropped). Falls back to PNG if cwebp
+    is missing, with a clear message rather than silent rename.
     """
     out = Path(output_path)
     out.parent.mkdir(parents=True, exist_ok=True)
@@ -215,9 +210,10 @@ def strip_background(
 ) -> tuple[bool, str | None]:
     """Strip the background from input_path; write transparent image to output_path.
 
-    Drop-in replacement for the magenta flood-fill — same (success, error)
-    contract as remove_background() in generate.py so the caller can swap
-    implementations without touching the eval flow.
+    Returns (success: bool, error: str | None). Called from generate.py's
+    remove_background_recraft() under --transparent — Recraft is the only
+    bg-removal path. The post-strip eval pass (alpha-mean + interior-hole +
+    edge-fringe) runs on the result downstream.
 
     Output format follows the extension on `output_path`:
         - .png  → Recraft's PNG-with-alpha bytes verbatim
