@@ -63,6 +63,21 @@ Thresholds for the mask-quality signal are conservative by default (holes > 500,
 
 When `--style` is provided, it **replaces** the default raccoon style entirely (it is not appended).
 
+## Recipes
+
+Scene recipes that have been dialed in — pass the scene to `generate.py single`/`batch` with the noted flags.
+
+### Metal AI twin ("me and my AI")
+
+The raccoon mascot beside a chrome **metal twin of itself** — an "AI" version of the mascot. Used as the blog's default AI-post image (`raccoon-ai-native`; see [`/raccoon-history`](https://idvork.in/raccoon-history)).
+
+- **Reference:** `--ref <blog>/images/raccoon-nerd.webp` (the canonical mascot). A reference locks the _shape_ far better than prose. **Caveat:** a ref also pulls its **shirt text** and incidental details, not just style — so state the shirt explicitly and negate the ref's, e.g. `green t-shirt reading exactly 'YEAR OF WONDER' (NOT 'technologist')`.
+- **Model:** `--no-fast` (Gemini Pro) — Flash mangles multi-word shirt text.
+- **Aspect:** `--aspect 3:4`.
+- **The twin (scene snippet):** _"a METAL TWIN of the exact same raccoon — identical chibi proportions and silhouette (same head, ears, snout, ringed tail, same scale), NOT a humanoid robot — cast in iridescent anodized chrome (shifting rainbow/oil-slick, not flat grey) with warm glowing eyes and thin glowing energy-seams along the joints and tail."_
+- **Why iridescent + glow:** flat mirror-chrome reads "frozen"; iridescent metal + glowing eyes + energy-seams read "alive." The material does the emotional work.
+- **Background:** white for an `og:image` (transparent renders unpredictably on social cards); `--transparent` for an in-post float.
+
 ## Workflow
 
 ### Phase 1: Read & Analyze Content
