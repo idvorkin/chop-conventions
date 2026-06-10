@@ -75,6 +75,16 @@ class CherryAnalysis:
 
 
 @dataclass(frozen=True)
+class AheadAnalysis:
+    """How HEAD's commits ahead of the source default should be treated."""
+
+    can_force_align: bool
+    ahead_patch_unique_commits: list[str]
+    ahead_patch_equivalent_commits: list[str]
+    leftover_commits: list[str]
+
+
+@dataclass(frozen=True)
 class MachineInfo:
     """Classification result for the machine running `diagnose.py`.
 
@@ -222,6 +232,58 @@ def parse_cherry_status(raw: str) -> CherryAnalysis:
     )
 
 
+def compute_cherry_targets(
+    local_branch_names: list[str],
+    worktree_branches: list[str],
+    default_branch: str,
+    current_branch: str,
+) -> set[str]:
+    """Branches to run `git cherry -v <src_default> <branch>` against.
+
+    Every local branch, plus any worktree branch, is a candidate. The
+    source's default branch is normally excluded — we never audit it
+    against itself for absorption (it IS the absorption target). The one
+    exception: when HEAD is checked out ON the default branch, its cherry
+    result is still needed to tell whether the commits it is ahead of
+    `src_default` are genuinely unique (which drives `can_force_align`).
+    The absorption loop independently skips the default branch, so
+    retaining it here only feeds the HEAD block — without it, the HEAD
+    lookup falls back to an empty analysis and `can_force_align` reports
+    True for any ahead default branch, even one carrying unique work.
+    """
+    targets = set(local_branch_names)
+    targets.update(b for b in worktree_branches if b)
+    if current_branch != default_branch:
+        targets.discard(default_branch)
+    return targets
+
+
+def analyze_ahead_commits(
+    cherry: CherryAnalysis, is_main: bool, ahead: int
+) -> AheadAnalysis:
+    """Classify HEAD's ahead-of-default commits for the force-align decision.
+
+    `cherry` is `git cherry -v <src_default> HEAD` split into unique
+    (`+`, genuinely new) and patch-equivalent (`-`, already upstream)
+    commits. A force-align — the fork workflow's `--force-with-lease`
+    reset of the default branch to the upstream tip — is safe ONLY on the
+    default branch when *every* ahead commit is patch-equivalent, i.e.
+    there are zero unique commits to lose. Unique commits on the default
+    branch are real, unsynced work, so `can_force_align` MUST be False to
+    stop the skill from discarding them.
+    """
+    unique = cherry.unique_commits[:10]
+    equivalent = cherry.equivalent_commits[:10]
+    can_force_align = is_main and ahead > 0 and not cherry.unique_commits
+    leftover = [] if is_main else unique
+    return AheadAnalysis(
+        can_force_align=can_force_align,
+        ahead_patch_unique_commits=unique,
+        ahead_patch_equivalent_commits=equivalent,
+        leftover_commits=leftover,
+    )
+
+
 def parse_worktree_list(raw: str) -> list[WorktreeRef]:
     """Parse `git worktree list --porcelain` output into branch-bearing entries.
 
@@ -309,9 +371,7 @@ def classify_machine(
         if mac_ver_nonempty:
             reasons.append("platform.system()==Darwin + mac_ver non-empty")
             return "mac", reasons
-        reasons.append(
-            "platform.system()==Darwin but mac_ver empty — falling through"
-        )
+        reasons.append("platform.system()==Darwin but mac_ver empty — falling through")
         return "unknown", reasons
     if system == "Linux":
         if home_developer_exists:
@@ -610,7 +670,9 @@ def check_shared_claude_md(
 # ---------- post-up-to-date hook detection ----------
 
 
-def check_post_up_to_date(repo_toplevel: Path | None) -> tuple[str | None, list[dict[str, Any]]]:
+def check_post_up_to_date(
+    repo_toplevel: Path | None,
+) -> tuple[str | None, list[dict[str, Any]]]:
     """Locate `<repo>/.claude/post-up-to-date.md` and enforce symlink refusal.
 
     Returns `(path_or_none, errors)`. If the hook exists as a symlink,
@@ -904,13 +966,12 @@ def run_diagnose() -> dict[str, Any]:
     #
     # Include any worktree branch not already in local_branch_names (e.g.
     # a worktree branch from a different remote context). De-dupe via set.
-    cherry_targets = set(local_branch_names)
-    for wt in worktree_entries:
-        if wt.branch:
-            cherry_targets.add(wt.branch)
-    # Skip the source's default branch — we never audit it against itself
-    # for absorption (it IS the absorption target).
-    cherry_targets.discard(default_branch)
+    cherry_targets = compute_cherry_targets(
+        local_branch_names,
+        [wt.branch for wt in worktree_entries if wt.branch],
+        default_branch,
+        branch_name,
+    )
 
     cherry_by_branch: dict[str, CherryAnalysis] = {}
     if cherry_targets:
@@ -928,15 +989,18 @@ def run_diagnose() -> dict[str, Any]:
                     continue
                 cherry_by_branch[b] = parse_cherry_status(proc.stdout.strip())
 
-    # HEAD's cherry result flows into the existing branch block.
+    # HEAD's cherry result flows into the existing branch block. When HEAD
+    # is on the default branch, compute_cherry_targets keeps it in the
+    # batch above, so this lookup reflects HEAD's real unique/equivalent
+    # split instead of an empty fallback.
     cherry = cherry_by_branch.get(
         branch_name, CherryAnalysis(unique_commits=[], equivalent_commits=[])
     )
-    ahead_patch_unique_commits = cherry.unique_commits[:10]
-    ahead_patch_equivalent_commits = cherry.equivalent_commits[:10]
-    can_force_align = is_main and ahead > 0 and not cherry.unique_commits
-
-    leftover_commits = [] if is_main else ahead_patch_unique_commits
+    ahead_analysis = analyze_ahead_commits(cherry, is_main, ahead)
+    ahead_patch_unique_commits = ahead_analysis.ahead_patch_unique_commits
+    ahead_patch_equivalent_commits = ahead_analysis.ahead_patch_equivalent_commits
+    can_force_align = ahead_analysis.can_force_align
+    leftover_commits = ahead_analysis.leftover_commits
 
     # Absorbable branches: local branches whose work is fully in $src_default,
     # caught via either (a) zero unique patch-ids from `git cherry`, or

@@ -17,15 +17,18 @@ from pathlib import Path
 # pyright rely on the conftest shim.
 import diagnose
 from diagnose import (
+    AheadAnalysis,
     CherryAnalysis,
     MachineInfo,
     Remote,
     WorktreeRef,
+    analyze_ahead_commits,
     check_post_up_to_date,
     check_shared_claude_md,
     classify_dev_machine,
     classify_machine,
     classify_remotes,
+    compute_cherry_targets,
     compute_slot_action,
     gh_pr_list_merged_heads,
     is_fork_url,
@@ -165,6 +168,182 @@ class TestParseCherryStatus(unittest.TestCase):
             parse_cherry_status(""),
             CherryAnalysis(unique_commits=[], equivalent_commits=[]),
         )
+
+
+class TestComputeCherryTargets(unittest.TestCase):
+    """`compute_cherry_targets` decides which branches get a `git cherry`.
+
+    Regression guard for the false-positive `can_force_align`: when HEAD
+    is on the default branch, that branch MUST stay in the target set so
+    its real unique/equivalent split is computed. Dropping it (the old
+    behavior) made the HEAD lookup fall back to an empty analysis and
+    `can_force_align` report True for any ahead default branch — even one
+    carrying genuinely unique commits.
+    """
+
+    def test_default_branch_retained_when_checked_out(self):
+        targets = compute_cherry_targets(
+            local_branch_names=["main", "feature"],
+            worktree_branches=[],
+            default_branch="main",
+            current_branch="main",
+        )
+        self.assertIn("main", targets)
+        self.assertIn("feature", targets)
+
+    def test_default_branch_dropped_on_feature_branch(self):
+        # On a feature branch the default branch is still skipped — we
+        # never audit it against itself for absorption.
+        targets = compute_cherry_targets(
+            local_branch_names=["main", "feature"],
+            worktree_branches=[],
+            default_branch="main",
+            current_branch="feature",
+        )
+        self.assertEqual(targets, {"feature"})
+
+    def test_default_branch_dropped_on_detached_head(self):
+        # Detached HEAD reports an empty current branch; the default
+        # branch is dropped and HEAD gets no cherry (empty fallback).
+        targets = compute_cherry_targets(
+            local_branch_names=["main", "feature"],
+            worktree_branches=[],
+            default_branch="main",
+            current_branch="",
+        )
+        self.assertNotIn("main", targets)
+
+    def test_worktree_branches_included_and_deduped(self):
+        targets = compute_cherry_targets(
+            local_branch_names=["feature"],
+            worktree_branches=["feature", "wt-only"],
+            default_branch="main",
+            current_branch="feature",
+        )
+        self.assertEqual(targets, {"feature", "wt-only"})
+
+    def test_non_main_default_branch_name_retained_when_checked_out(self):
+        # `default_branch` need not literally be "main".
+        targets = compute_cherry_targets(
+            local_branch_names=["master", "topic"],
+            worktree_branches=[],
+            default_branch="master",
+            current_branch="master",
+        )
+        self.assertIn("master", targets)
+
+
+class TestAnalyzeAheadCommits(unittest.TestCase):
+    """`analyze_ahead_commits` is the force-align decision in isolation."""
+
+    def test_unique_commits_block_force_align_on_default_branch(self):
+        cherry = CherryAnalysis(
+            unique_commits=["89abcde real work"],
+            equivalent_commits=["1234567 already upstream"],
+        )
+        result = analyze_ahead_commits(cherry, is_main=True, ahead=2)
+        self.assertEqual(
+            result,
+            AheadAnalysis(
+                can_force_align=False,
+                ahead_patch_unique_commits=["89abcde real work"],
+                ahead_patch_equivalent_commits=["1234567 already upstream"],
+                leftover_commits=[],
+            ),
+        )
+
+    def test_all_equivalent_allows_force_align_on_default_branch(self):
+        cherry = CherryAnalysis(
+            unique_commits=[],
+            equivalent_commits=["1234567 already upstream", "2345678 also upstream"],
+        )
+        result = analyze_ahead_commits(cherry, is_main=True, ahead=2)
+        self.assertTrue(result.can_force_align)
+        self.assertEqual(result.ahead_patch_unique_commits, [])
+        # leftover_commits is suppressed on the default branch.
+        self.assertEqual(result.leftover_commits, [])
+
+    def test_not_ahead_never_force_aligns(self):
+        cherry = CherryAnalysis(unique_commits=[], equivalent_commits=[])
+        result = analyze_ahead_commits(cherry, is_main=True, ahead=0)
+        self.assertFalse(result.can_force_align)
+
+    def test_feature_branch_never_force_aligns_and_surfaces_leftover(self):
+        cherry = CherryAnalysis(
+            unique_commits=["89abcde real work"], equivalent_commits=[]
+        )
+        result = analyze_ahead_commits(cherry, is_main=False, ahead=1)
+        self.assertFalse(result.can_force_align)
+        self.assertEqual(result.leftover_commits, ["89abcde real work"])
+
+    def test_unique_commits_truncated_to_ten(self):
+        cherry = CherryAnalysis(
+            unique_commits=[f"sha{i} commit" for i in range(15)],
+            equivalent_commits=[],
+        )
+        result = analyze_ahead_commits(cherry, is_main=True, ahead=15)
+        self.assertEqual(len(result.ahead_patch_unique_commits), 10)
+
+
+class TestForceAlignWiring(unittest.TestCase):
+    """End-to-end of the force-align path, mirroring run_diagnose's wiring.
+
+    Reproduces the original false positive: on the default branch with
+    genuinely unique ahead commits, `can_force_align` must be False and
+    the unique commits must surface. Drives compute_cherry_targets →
+    (simulated) cherry batch → analyze_ahead_commits, the same chain
+    run_diagnose uses, so a regression in either half is caught. With the
+    pre-fix code this test fails: the default branch is dropped from the
+    batch, the lookup falls back to empty, and can_force_align is True.
+    """
+
+    @staticmethod
+    def _wire(branch_name, default_branch, local_branches, cherry_outputs, ahead):
+        # cherry_outputs maps branch -> raw `git cherry -v` text.
+        targets = compute_cherry_targets(
+            local_branches, [], default_branch, branch_name
+        )
+        cherry_by_branch = {
+            b: parse_cherry_status(cherry_outputs.get(b, "")) for b in targets
+        }
+        cherry = cherry_by_branch.get(
+            branch_name, CherryAnalysis(unique_commits=[], equivalent_commits=[])
+        )
+        is_main = branch_name == default_branch
+        return analyze_ahead_commits(cherry, is_main, ahead)
+
+    def test_unique_ahead_on_default_branch_does_not_force_align(self):
+        result = self._wire(
+            branch_name="main",
+            default_branch="main",
+            local_branches=["main"],
+            cherry_outputs={
+                "main": (
+                    "+ aaaa111 unique work one\n"
+                    "+ bbbb222 unique work two\n"
+                    "- cccc333 already upstream\n"
+                )
+            },
+            ahead=3,
+        )
+        self.assertFalse(result.can_force_align)
+        self.assertEqual(
+            result.ahead_patch_unique_commits,
+            ["aaaa111 unique work one", "bbbb222 unique work two"],
+        )
+
+    def test_all_equivalent_ahead_on_default_branch_force_aligns(self):
+        result = self._wire(
+            branch_name="main",
+            default_branch="main",
+            local_branches=["main"],
+            cherry_outputs={
+                "main": "- cccc333 already upstream\n- dddd444 also upstream\n"
+            },
+            ahead=2,
+        )
+        self.assertTrue(result.can_force_align)
+        self.assertEqual(result.ahead_patch_unique_commits, [])
 
 
 class TestParseLeftRightCount(unittest.TestCase):
