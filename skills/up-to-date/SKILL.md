@@ -324,6 +324,26 @@ The helper returns a JSON object with `status`:
 Hooks fire on every `/up-to-date` run regardless of whether commits
 were pulled; the markdown is responsible for its own idempotency.
 
+## Step 6 — PR hygiene
+
+Sweep the user's open PRs for genuinely unaddressed review feedback:
+
+```bash
+pr-hygiene --no-fail   # in this repo: skills/pr-hygiene/pr_hygiene.py
+```
+
+**Non-blocking — report, don't gate.** Surface any 🔴 needs-action PRs
+(unresolved review threads, `CHANGES_REQUESTED`, or a reviewer's last
+word the author never answered) so stale comments get caught at sync
+time, not only at session close. `--no-fail` keeps the tool's
+nonzero-on-🔴 exit from aborting the sync.
+
+This complements Step 1's `pr` field, which covers only the **current
+branch's** PR — `pr-hygiene` sweeps **all** the user's open PRs across
+both GitHub identities, filtering out CodeRabbit auto-summaries and
+CI-bot noise so only real asks surface. Skip silently if `pr-hygiene`
+is not installed.
+
 ## Post-Sync
 
 Ask: "Want to `/clear` context for a fresh start?"
