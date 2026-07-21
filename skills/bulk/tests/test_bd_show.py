@@ -1,11 +1,19 @@
 """Unit tests for bulk-bd-show.
 
 Mocks subprocess.run so no real `bd` calls happen. Covers:
-    - normalize_bead slices parent/blocks/blocked_by out of dependencies.
+    - normalize_bead slices parent/blocks/blocked_by out of
+      dependencies/dependents using bd's REAL schema.
     - fetch_bead unwraps `bd show --json`'s single-element array.
     - fetch_bead handles the object-not-array response shape too.
     - bd nonzero exit handled as per-item error.
     - run_cli preserves input order on fan-out.
+
+Dependency fixtures mirror real payloads captured 2026-07-21 from
+bd 1.0.5 via `bd show <id> --json` / `bd show <id> --json
+--include-dependents` against a sandbox beads db: `dependencies` and
+`dependents` are lists of FULL ISSUE OBJECTS carrying `id` +
+`dependency_type` (no `{type, source, target}` edge shape exists), and
+bd emits a top-level `parent` field on children of a parent-child dep.
 """
 
 from __future__ import annotations
@@ -56,29 +64,142 @@ class TestNormalizeBead(unittest.TestCase):
         self.assertEqual(out["blocks"], [])
         self.assertEqual(out["blocked_by"], [])
 
-    def test_parent_resolved_from_dependencies(self):
+    def test_blocks_dep_routes_to_blocked_by(self):
+        # Mirrors `bd show sandbox-5k6 --json` (bd 1.0.5): a
+        # dependency_type "blocks" entry under `dependencies` is a bead
+        # THIS bead depends on, i.e. one blocking it.
         raw = {
-            "id": "child-1",
-            "title": "Child",
+            "id": "sandbox-5k6",
+            "title": "Blocked bead",
+            "status": "open",
+            "priority": 2,
+            "issue_type": "task",
             "dependencies": [
-                {"type": "parent-child", "source": "parent-1", "target": "child-1"},
+                {
+                    "id": "sandbox-eh3",
+                    "title": "Blocker bead",
+                    "status": "open",
+                    "priority": 2,
+                    "issue_type": "task",
+                    "dependency_type": "blocks",
+                }
             ],
+            "dependent_count": 0,
+            "dependency_count": 1,
         }
-        out = normalize_bead(raw, "child-1")
-        self.assertEqual(out["parent"], "parent-1")
+        out = normalize_bead(raw, "sandbox-5k6")
+        self.assertEqual(out["blocked_by"], ["sandbox-eh3"])
+        self.assertEqual(out["blocks"], [])
+        self.assertIsNone(out["parent"])
 
-    def test_blocks_and_blocked_by(self):
+    def test_parent_child_dep_sets_parent(self):
+        # Mirrors `bd show sandbox-cal --json` (bd 1.0.5): the child's
+        # `dependencies` holds the parent with dependency_type
+        # "parent-child", AND bd emits a top-level `parent` field.
         raw = {
-            "id": "b2",
-            "title": "Middle",
+            "id": "sandbox-cal",
+            "title": "Child bead",
+            "status": "open",
+            "priority": 2,
+            "issue_type": "task",
             "dependencies": [
-                {"type": "blocks", "source": "b2", "target": "b3"},
-                {"type": "blocks", "source": "b1", "target": "b2"},
+                {
+                    "id": "sandbox-f4p",
+                    "title": "Parent epic",
+                    "status": "open",
+                    "priority": 2,
+                    "issue_type": "epic",
+                    "dependency_type": "parent-child",
+                }
+            ],
+            "parent": "sandbox-f4p",
+            "dependent_count": 0,
+            "dependency_count": 1,
+        }
+        out = normalize_bead(raw, "sandbox-cal")
+        self.assertEqual(out["parent"], "sandbox-f4p")
+        self.assertEqual(out["blocks"], [])
+        self.assertEqual(out["blocked_by"], [])
+
+    def test_parent_derived_from_dep_when_top_level_absent(self):
+        # Defensive: derive parent from the parent-child dep entry even
+        # if bd omits the top-level `parent` field.
+        raw = {
+            "id": "sandbox-cal",
+            "title": "Child bead",
+            "dependencies": [
+                {
+                    "id": "sandbox-f4p",
+                    "title": "Parent epic",
+                    "dependency_type": "parent-child",
+                },
             ],
         }
-        out = normalize_bead(raw, "b2")
-        self.assertEqual(out["blocks"], ["b3"])
-        self.assertEqual(out["blocked_by"], ["b1"])
+        out = normalize_bead(raw, "sandbox-cal")
+        self.assertEqual(out["parent"], "sandbox-f4p")
+
+    def test_dependents_route_to_blocks(self):
+        # Mirrors `bd show sandbox-eh3 --json --include-dependents`
+        # (bd 1.0.5): `dependents` lists beads that depend on this one;
+        # its "blocks" entries are beads this bead blocks.
+        raw = {
+            "id": "sandbox-eh3",
+            "title": "Blocker bead",
+            "status": "open",
+            "priority": 2,
+            "issue_type": "task",
+            "dependents": [
+                {
+                    "id": "sandbox-5k6",
+                    "title": "Blocked bead",
+                    "status": "open",
+                    "priority": 2,
+                    "issue_type": "task",
+                    "dependency_type": "blocks",
+                }
+            ],
+            "dependent_count": 1,
+            "dependency_count": 0,
+        }
+        out = normalize_bead(raw, "sandbox-eh3")
+        self.assertEqual(out["blocks"], ["sandbox-5k6"])
+        self.assertEqual(out["blocked_by"], [])
+        self.assertIsNone(out["parent"])
+
+    def test_unknown_dependency_type_ignored(self):
+        raw = {
+            "id": "b1",
+            "title": "T",
+            "dependencies": [
+                {"id": "b2", "dependency_type": "related"},
+                {"id": "b3", "dependency_type": "tracks"},
+                {"id": "b4"},  # missing dependency_type entirely
+            ],
+            "dependents": [
+                {"id": "b5", "dependency_type": "parent-child"},
+            ],
+        }
+        out = normalize_bead(raw, "b1")
+        self.assertIsNone(out["parent"])
+        self.assertEqual(out["blocks"], [])
+        self.assertEqual(out["blocked_by"], [])
+
+    def test_dependencies_key_absent(self):
+        # Real bd omits `dependencies`/`dependents` entirely when a bead
+        # has none (captured: `bd show chop-conventions-jge --json`).
+        raw = {
+            "id": "chop-conventions-jge",
+            "title": "bulk: bd_show parses fabricated dependency schema",
+            "status": "open",
+            "priority": 2,
+            "issue_type": "bug",
+            "dependent_count": 0,
+            "dependency_count": 0,
+        }
+        out = normalize_bead(raw, "chop-conventions-jge")
+        self.assertIsNone(out["parent"])
+        self.assertEqual(out["blocks"], [])
+        self.assertEqual(out["blocked_by"], [])
 
     def test_fallback_type_key(self):
         # Older bd schemas used `type` instead of `issue_type`.
@@ -95,10 +216,11 @@ class TestNormalizeBead(unittest.TestCase):
         raw = {
             "id": "b1",
             "title": "T",
-            "dependencies": ["not-a-dict", None, {"type": "blocks"}],
+            "dependencies": ["not-a-dict", None, {"dependency_type": "blocks"}],
+            "dependents": ["also-not-a-dict", {"dependency_type": "blocks"}],
         }
         out = normalize_bead(raw, "b1")
-        # Should not crash; blocks/blocked_by stay empty.
+        # Should not crash; entries without an `id` are skipped.
         self.assertEqual(out["blocks"], [])
         self.assertEqual(out["blocked_by"], [])
 
@@ -124,6 +246,11 @@ class TestFetchBead(unittest.TestCase):
         self.assertEqual(out["type"], "task")
         self.assertNotIn("error", out)
         mock_run.assert_called_once()
+        cmd = mock_run.call_args[0][0]
+        self.assertEqual(cmd[:3], ["bd", "show", "abc-1"])
+        self.assertIn("--json", cmd)
+        # Without --include-dependents, `blocks` could never populate.
+        self.assertIn("--include-dependents", cmd)
 
     def test_success_with_object_response(self):
         # Future-proofing: if bd ever returns a bare object, we cope.
@@ -166,7 +293,10 @@ class TestFetchBead(unittest.TestCase):
 
 class TestRunCli(unittest.TestCase):
     def test_empty_exits_2(self):
-        with patch("sys.stdout", new=io.StringIO()), patch("sys.stderr", new=io.StringIO()):
+        with (
+            patch("sys.stdout", new=io.StringIO()),
+            patch("sys.stderr", new=io.StringIO()),
+        ):
             rc = run_cli([])
         self.assertEqual(rc, 2)
 
@@ -183,9 +313,11 @@ class TestRunCli(unittest.TestCase):
             return _mk_result(stdout=json.dumps(responses[bid]))
 
         captured = io.StringIO()
-        with patch("chop_bulk.bd_show.subprocess.run", side_effect=fake_run), \
-             patch("sys.stdout", new=captured), \
-             patch("sys.stderr", new=io.StringIO()):
+        with (
+            patch("chop_bulk.bd_show.subprocess.run", side_effect=fake_run),
+            patch("sys.stdout", new=captured),
+            patch("sys.stderr", new=io.StringIO()),
+        ):
             rc = run_cli(["a-1", "b-2", "c-3"], max_workers=3)
         self.assertEqual(rc, 0)
         parsed = json.loads(captured.getvalue())
@@ -197,12 +329,16 @@ class TestRunCli(unittest.TestCase):
             bid = cmd[2]
             if bid == "b-2":
                 return _mk_result(stdout="", stderr="not found", returncode=1)
-            return _mk_result(stdout=json.dumps([{"id": bid, "title": bid, "dependencies": []}]))
+            return _mk_result(
+                stdout=json.dumps([{"id": bid, "title": bid, "dependencies": []}])
+            )
 
         captured = io.StringIO()
-        with patch("chop_bulk.bd_show.subprocess.run", side_effect=fake_run), \
-             patch("sys.stdout", new=captured), \
-             patch("sys.stderr", new=io.StringIO()):
+        with (
+            patch("chop_bulk.bd_show.subprocess.run", side_effect=fake_run),
+            patch("sys.stdout", new=captured),
+            patch("sys.stderr", new=io.StringIO()),
+        ):
             rc = run_cli(["a-1", "b-2", "c-3"], max_workers=2)
         self.assertEqual(rc, 0)
         parsed = json.loads(captured.getvalue())
