@@ -252,6 +252,20 @@ def classify(pr: dict, author_login: str | None) -> dict:
             dt = _parse_dt(c.get("createdAt"))
             if dt:
                 author_events.append(dt)
+    # Author replies INSIDE review threads count as responses too — all
+    # threads, resolved or not (a reply in a since-resolved thread is still
+    # the author having the last word). Without this, an author who only
+    # replied inline stays 🔴 forever (same false-positive class as the
+    # tweego#35 fix above). Deliberately asymmetric: human THREAD comments
+    # are NOT added to human_events — unresolved real-ask threads already
+    # force red via real_ask_threads, and resolved ones are settled. Don't
+    # "fix" that.
+    for t in threads:
+        for c in ((t.get("comments") or {}).get("nodes")) or []:
+            if _login(c) == author_login:
+                dt = _parse_dt(c.get("createdAt"))
+                if dt:
+                    author_events.append(dt)
     author_latest = max(author_events) if author_events else None
 
     human_last_word = False
