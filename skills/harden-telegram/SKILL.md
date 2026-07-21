@@ -8,11 +8,11 @@ allowed-tools: Bash, Read, Glob, Grep
 
 Diagnose and repair the two-process Telegram MCP channel. Three tiers:
 
-| Invocation | Scope |
-|---|---|
-| `/harden-telegram doctor` | Quick health check via `telegram_debug.py doctor` |
-| `/harden-telegram reload` | Hot redeploy + reload plugins without dropping MCP |
-| `/harden-telegram deep` | Walk known failure modes if the doctor is clean but the channel is still broken |
+| Invocation                                | Scope                                                                                                                                                                                                                                                          |
+| ----------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `/harden-telegram doctor`                 | Quick health check via `telegram_debug.py doctor`                                                                                                                                                                                                              |
+| `/harden-telegram reload`                 | Hot redeploy + reload plugins without dropping MCP                                                                                                                                                                                                             |
+| `/harden-telegram deep`                   | Walk known failure modes if the doctor is clean but the channel is still broken                                                                                                                                                                                |
 | **`telegram_debug.py direct-send "..."`** | **Emergency escape hatch** — POST straight to Telegram Bot API, bypass MCP entirely. Use when `server.ts` is dead and you still need to reach Igor. Message is auto-prefixed with `[direct-send]` so it's visually distinct. See §Emergency Direct-Send below. |
 
 ## 🧭 Principle: diagnostics live in code, not here
@@ -27,13 +27,13 @@ Full principle in [`../../CLAUDE.md`](../../CLAUDE.md) §"Diagnostics: Code Over
 
 The Python tooling this skill drives ships with the skill itself under `tools/`. The canonical `server.ts` + `telegram_bot.py` source now ships alongside it under `server/`. All paths are discoverable from any repo via the chop-conventions auto-link.
 
-| Tool | Path |
-|---|---|
-| Doctor / diagnostics | `~/.claude/skills/harden-telegram/tools/telegram_debug.py` |
-| Plugin-reload watchdog | `~/.claude/skills/harden-telegram/tools/watchdog.py` |
-| Canonical source (deploy-from) | `~/.claude/skills/harden-telegram/server/` |
-| Runtime state dir | `$LARRY_TELEGRAM_DIR` (default `~/larry-telegram/`) |
-| Canonical source dir override | `$TELEGRAM_SOURCE_DIR` (optional — defaults to the `server/` subdir) |
+| Tool                           | Path                                                                 |
+| ------------------------------ | -------------------------------------------------------------------- |
+| Doctor / diagnostics           | `~/.claude/skills/harden-telegram/tools/telegram_debug.py`           |
+| Plugin-reload watchdog         | `~/.claude/skills/harden-telegram/tools/watchdog.py`                 |
+| Canonical source (deploy-from) | `~/.claude/skills/harden-telegram/server/`                           |
+| Runtime state dir              | `$LARRY_TELEGRAM_DIR` (default `~/larry-telegram/`)                  |
+| Canonical source dir override  | `$TELEGRAM_SOURCE_DIR` (optional — defaults to the `server/` subdir) |
 
 Two env vars parameterize the tool:
 
@@ -93,12 +93,14 @@ When the doctor is red, the MCP `reply` tool may be unavailable — you can't us
 ```
 
 How it works:
+
 - Reads `TELEGRAM_BOT_TOKEN` from `~/.claude/channels/telegram/.env` (the same file the doctor checks).
 - POSTs straight to `https://api.telegram.org/bot<TOKEN>/sendMessage` via stdlib `urllib` — no MCP, no `server.ts`, no `bot.sock`, no inbound.db. The only moving parts are the token file and Telegram's HTTPS endpoint.
 - Chat id defaults to the most recent `inbound.chat_id` in `inbound.db`. Override with `--chat-id` if you need a specific target.
 - Every outgoing message is auto-prefixed with `[direct-send] ` so Igor can tell on his phone that MCP was down when it landed. **Do not remove the tag** — the visual signal is the whole point.
 
 Use it when:
+
 - The hourly watchdog cron detects a red doctor and needs to notify Igor.
 - You're walking Tier 2 recovery and need to send status updates that don't depend on `server.ts` being alive.
 - You restart `telegram_bot.py` or redeploy `server.ts` and want to confirm the fix landed — the next message Igor sees without a `[direct-send]` tag proves MCP is back.
@@ -110,6 +112,7 @@ The watchdog cron scheduled by `/startup-larry` step 3 item 4 uses this exclusiv
 When an interactive Claude session detects the Telegram MCP has died — `mcp__plugin_telegram_telegram__*` tools vanish from the available tool list, or a `reply` call fails, or the doctor shows red — **follow this order. Do not skip the first direct-send.**
 
 1. **Ping Igor's phone FIRST via `direct-send`, before diagnosing.** One second of cost, guarantees Igor knows something is happening even if he's on Telegram-only and not watching the terminal:
+
    ```bash
    ~/.claude/skills/harden-telegram/tools/telegram_debug.py \
      direct-send "⚠️ Larry: Telegram MCP down. Starting recovery."
@@ -128,6 +131,7 @@ When an interactive Claude session detects the Telegram MCP has died — `mcp__p
 **Why the first direct-send is mandatory.** Silent recovery looks identical to "Claude crashed" from Igor's perspective. A 1-second notification is cheap insurance against a 30-minute silence. This is the same principle as the hourly watchdog cron documented above: **the thing watching Telegram must not depend on Telegram's MCP bridge.** The cron already follows this principle; the interactive recovery path must too.
 
 **What counts as "detecting MCP is down".** Any of:
+
 - System-reminder arrives saying `plugin:telegram:telegram` has disconnected
 - `mcp__plugin_telegram_telegram__reply` or related tools are no longer in the tool list
 - A reply-tool call returns a "tool not available" or transport error
@@ -169,9 +173,9 @@ kill -TERM <pid-from-doctor>
 # Then run /reload-plugins from another context (or via the watchdog below).
 ```
 
-**Pair the kill with a polling cron.** In the same parallel tool-call batch as the kill, schedule `CronCreate` at `*/1 * * * *` to poll `telegram_debug.py undelivered`. The respawn window is 3–4 minutes; any inbound during that gap goes to a different session's bun and is invisible to this session. Delete the cron when the next untagged MCP reply confirms the bridge is back.
+**Pair the kill with a polling cron.** In the same parallel tool-call batch as the kill, schedule `CronCreate` at `*/1 * * * *` to poll `telegram_debug.py undelivered`. The respawn window is 3–4 minutes; any inbound during that gap goes to a different session's bun and is invisible to this session. Delete the cron when the next untagged MCP reply confirms the bridge is back. `undelivered` only shows gate-allowed rows — dropped/unauthorized senders and pairing spam never surface, so emergency reads aren't a prompt-injection vector.
 
-**DO NOT** use `pkill -f 'bun.*server.ts'` — that's a broadcast kill that also nukes bridges owned by *other* Claude sessions on the same machine. Each Claude session spawns its own bun `server.ts` child. The doctor classifies them as `ours` / `other-session` / `orphaned` by walking the `ppid` chain up to the nearest `claude` ancestor; trust that, never age or count. The historical "older bun = zombie" heuristic is wrong — multi-session machines routinely have several legitimate bridges running concurrently.
+**DO NOT** use `pkill -f 'bun.*server.ts'` — that's a broadcast kill that also nukes bridges owned by _other_ Claude sessions on the same machine. Each Claude session spawns its own bun `server.ts` child. The doctor classifies them as `ours` / `other-session` / `orphaned` by walking the `ppid` chain up to the nearest `claude` ancestor; trust that, never age or count. The historical "older bun = zombie" heuristic is wrong — multi-session machines routinely have several legitimate bridges running concurrently.
 
 ### 2c. Watchdog reload (from a background shell — NEVER foreground)
 
@@ -192,6 +196,7 @@ disown
 Result log: `cat /tmp/watchdog_reload.log`.
 
 Flags:
+
 - `--pane %N` — target pane
 - `--pid <n>` — auto-detect pane from bun pid
 - `-m "message"` — follow-up text to send after reload lands
@@ -209,7 +214,7 @@ The `flock` singleton inside the script prevents double-launch — safe to run w
 
 ### 2e. Full restart (nuclear)
 
-Exit the Claude session, then re-launch via whatever script bootstraps `telegram_bot.py` on your setup. Whatever launcher you use should start `telegram_bot.py` *before* starting Claude (singleton-safe), then let Claude's MCP loader spawn `server.ts` from the plugin cache.
+Exit the Claude session, then re-launch via whatever script bootstraps `telegram_bot.py` on your setup. Whatever launcher you use should start `telegram_bot.py` _before_ starting Claude (singleton-safe), then let Claude's MCP loader spawn `server.ts` from the plugin cache.
 
 ---
 
@@ -266,7 +271,7 @@ Diagnosis order:
 ### Permission-reply outcome reaction gets clobbered
 
 **Symptom:** User replied `y abcde` or `n abcde` to a permission request, but the reaction on their reply is 🫡 instead of ✔️/✖️.
-**Cause:** `server.ts`'s `deliverRow` stamped the outer 🫡 on every delivered row. Free-tier reactions *replace* rather than *stack*, so the outer 🫡 clobbered `telegram_bot.py`'s outcome glyph.
+**Cause:** `server.ts`'s `deliverRow` stamped the outer 🫡 on every delivered row. Free-tier reactions _replace_ rather than _stack_, so the outer 🫡 clobbered `telegram_bot.py`'s outcome glyph.
 **Fix:** Gate the outer reaction on `row.message_type === 'message'` in `deliverRow`. (Closed: igor2-bgt.3.3.)
 
 ### DB has values but app reads NULL for specific columns

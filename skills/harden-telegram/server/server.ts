@@ -861,8 +861,24 @@ const RECONNECT_BACKOFFS_MS = [1_000, 2_000, 4_000, 8_000, 16_000, 30_000]
 let socketClient: Socket | null = null
 let reconnectAttempt = 0
 
+// Stale-socket guard: if telegram_bot.py crashed leaving bot.sock ON DISK,
+// connectSocket() loops ECONNREFUSED → scheduleReconnect forever and none of
+// the normal catchup triggers fire — 'connect' and 'data' need a live socket,
+// and the fallback poller only installs when the socket FILE is missing at
+// startup. Any undelivered backlog would stall behind a socket file that
+// looks alive. Fire a rate-limited catchup from the reconnect path so the
+// backlog still drains while the socket is down (once per interval, not on
+// every retry tick — backoff bottoms out at 1s).
+const RECONNECT_CATCHUP_MIN_INTERVAL_MS = 30_000
+let lastReconnectCatchupAt = 0
+
 function scheduleReconnect(): void {
   if (shuttingDown) return
+  const now = Date.now()
+  if (now - lastReconnectCatchupAt >= RECONNECT_CATCHUP_MIN_INTERVAL_MS) {
+    lastReconnectCatchupAt = now
+    void catchup()
+  }
   const delay = RECONNECT_BACKOFFS_MS[Math.min(reconnectAttempt, RECONNECT_BACKOFFS_MS.length - 1)]
   reconnectAttempt++
   setTimeout(connectSocket, delay).unref()

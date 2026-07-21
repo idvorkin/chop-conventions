@@ -1,5 +1,6 @@
 """Unit tests for telegram_bot.py — persistent Telegram poller."""
 
+import asyncio
 import sqlite3
 import subprocess
 import sys
@@ -464,6 +465,142 @@ def test_log_rotation(tmp_path, monkeypatch):
     assert (tmp_path / "server.log.1").exists()
     assert log_file.stat().st_size < 1024  # just the fresh line
     assert b"rotation trigger" in log_file.read_bytes()
+
+
+class _FakeTxnCursor:
+    lastrowid = 1
+
+
+class _FakeTxnDb:
+    """Minimal aiosqlite stand-in enforcing sqlite's real nesting rule:
+    BEGIN while a transaction is already open raises — exactly what the
+    long-lived autocommit connection in telegram_bot.py does after a
+    failed, un-rolled-back transaction."""
+
+    def __init__(self, fail_commits=0, fail_rollback=False):
+        self.calls = []
+        self.in_txn = False
+        self.fail_commits = fail_commits
+        self.fail_rollback = fail_rollback
+
+    async def execute(self, sql, params=None):
+        self.calls.append(sql)
+        if sql == "BEGIN IMMEDIATE":
+            if self.in_txn:
+                raise sqlite3.OperationalError(
+                    "cannot start a transaction within a transaction"
+                )
+            self.in_txn = True
+        elif sql == "ROLLBACK":
+            if self.fail_rollback:
+                raise sqlite3.OperationalError("rollback: disk I/O error")
+            self.in_txn = False
+        return _FakeTxnCursor()
+
+    async def commit(self):
+        self.calls.append("COMMIT")
+        if self.fail_commits > 0:
+            self.fail_commits -= 1
+            raise sqlite3.OperationalError("commit: disk I/O error")
+        self.in_txn = False
+
+
+def test_immediate_txn_rolls_back_on_commit_failure():
+    """COMMIT blows up (disk full / I/O error) → ROLLBACK is issued, the
+    error propagates, and the SAME connection can run the next transaction."""
+    import telegram_bot
+
+    db = _FakeTxnDb(fail_commits=1)
+
+    async def scenario():
+        try:
+            async with telegram_bot._immediate_txn(db):
+                await db.execute("INSERT INTO inbound (text) VALUES ('a')")
+        except sqlite3.OperationalError:
+            pass
+        else:
+            raise AssertionError("commit failure must propagate")
+        assert "ROLLBACK" in db.calls
+        assert db.in_txn is False
+        # Regression core: without the rollback, this BEGIN IMMEDIATE raises
+        # "cannot start a transaction within a transaction" and all inbound
+        # persistence stays dead until restart.
+        async with telegram_bot._immediate_txn(db):
+            await db.execute("INSERT INTO inbound (text) VALUES ('b')")
+        assert db.calls.count("COMMIT") == 2
+
+    asyncio.run(scenario())
+
+
+def test_immediate_txn_rollback_failure_does_not_mask_original_error(
+    tmp_path, monkeypatch
+):
+    """Dead connection: ROLLBACK itself fails too. The ORIGINAL commit error
+    must surface, not the rollback error."""
+    monkeypatch.setenv("LARRY_TELEGRAM_DIR", str(tmp_path))  # keep log() in tmp
+    import telegram_bot
+
+    db = _FakeTxnDb(fail_commits=1, fail_rollback=True)
+
+    async def scenario():
+        try:
+            async with telegram_bot._immediate_txn(db):
+                await db.execute("INSERT INTO inbound (text) VALUES ('a')")
+        except sqlite3.OperationalError as e:
+            assert "commit" in str(e)
+        else:
+            raise AssertionError("commit failure must propagate")
+        assert "ROLLBACK" in db.calls
+
+    asyncio.run(scenario())
+
+
+class _AsyncConnWrapper:
+    """Wrap a real sqlite3 autocommit connection in the minimal async surface
+    _immediate_txn needs — proves recovery against real sqlite semantics."""
+
+    def __init__(self, conn):
+        self._conn = conn
+
+    async def execute(self, sql, params=()):
+        return self._conn.execute(sql, params)
+
+    async def commit(self):
+        self._conn.commit()
+
+
+def test_immediate_txn_recovers_real_sqlite_connection(tmp_path):
+    """Statement fails mid-transaction on a REAL sqlite connection → the next
+    BEGIN IMMEDIATE on the same connection succeeds and the insert lands."""
+    import telegram_bot
+
+    db_path = tmp_path / "inbound.db"
+    telegram_bot.init_db_sync(db_path)
+    raw = sqlite3.connect(db_path, isolation_level=None)  # autocommit, like aiosqlite
+    db = _AsyncConnWrapper(raw)
+
+    async def scenario():
+        try:
+            async with telegram_bot._immediate_txn(db):
+                # NOT NULL violation on gate_action → statement throws after
+                # BEGIN IMMEDIATE succeeded.
+                await db.execute(
+                    "INSERT INTO inbound (ts, chat_id, gate_action) VALUES ('t', 'c', NULL)"
+                )
+        except sqlite3.IntegrityError:
+            pass
+        else:
+            raise AssertionError("NOT NULL violation must propagate")
+        # Without ROLLBACK this raises "cannot start a transaction within a
+        # transaction" — the poisoned-connection failure mode.
+        async with telegram_bot._immediate_txn(db):
+            await db.execute(
+                "INSERT INTO inbound (ts, chat_id, gate_action) VALUES ('t', 'c', 'allow')"
+            )
+
+    asyncio.run(scenario())
+    assert raw.execute("SELECT COUNT(*) FROM inbound").fetchone()[0] == 1
+    raw.close()
 
 
 def test_log_writes_line(tmp_path, monkeypatch):

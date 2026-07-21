@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import contextlib
 import datetime as _dt
 import fcntl
 import json
@@ -321,6 +322,30 @@ def persist_inbound_sync(
         return int(cur.lastrowid or 0)
     finally:
         conn.close()
+
+
+@contextlib.asynccontextmanager
+async def _immediate_txn(db: Any):
+    """BEGIN IMMEDIATE … COMMIT with guaranteed ROLLBACK on failure.
+
+    The bot holds ONE long-lived aiosqlite connection in autocommit mode
+    (see _post_init). If an INSERT/UPDATE/COMMIT throws after BEGIN
+    succeeded (disk full, I/O error), the transaction stays open and every
+    later BEGIN IMMEDIATE raises "cannot start a transaction within a
+    transaction" — all inbound persistence silently dead until restart.
+    Rolling back here returns the connection to autocommit. The ROLLBACK
+    itself is guarded so a dead connection doesn't mask the original error.
+    """
+    await db.execute("BEGIN IMMEDIATE")
+    try:
+        yield
+        await db.commit()
+    except BaseException:
+        try:
+            await db.execute("ROLLBACK")
+        except Exception as rollback_err:
+            log(f"ROLLBACK failed after aborted transaction: {rollback_err}")
+        raise
 
 
 # -----------------------------------------------------------------------------
@@ -962,24 +987,23 @@ async def handle_any_message(
         if perm_match:
             message_type = "permission_reply"
 
-    await db.execute("BEGIN IMMEDIATE")
-    cur = await db.execute(
-        """INSERT INTO inbound
-           (ts, chat_id, message_id, user_id, username, message_type, text, gate_action)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
-        (
-            evt["ts"],
-            evt["chat_id"],
-            evt["message_id"],
-            evt["from_id"],
-            evt["username"],
-            message_type,
-            evt["text"],
-            gate_res["action"],
-        ),
-    )
-    row_id = cur.lastrowid
-    await db.commit()
+    async with _immediate_txn(db):
+        cur = await db.execute(
+            """INSERT INTO inbound
+               (ts, chat_id, message_id, user_id, username, message_type, text, gate_action)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+            (
+                evt["ts"],
+                evt["chat_id"],
+                evt["message_id"],
+                evt["from_id"],
+                evt["username"],
+                message_type,
+                evt["text"],
+                gate_res["action"],
+            ),
+        )
+        row_id = cur.lastrowid
 
     # Inner 👀 reaction FIRST — must hit Telegram before server.ts fires its
     # own setMessageReaction with 🫡. Telegram's free-tier API only allows
@@ -1017,7 +1041,9 @@ async def handle_any_message(
     # server.ts wakes on the initial NULL-attachments row, marks it
     # delivered, and never re-reads once the UPDATE populates fields.
     # Race-condition fix: 2026-04-15.
-    has_attachment = gate_res["action"] == "allow" and _extract_attachment(msg) is not None
+    has_attachment = (
+        gate_res["action"] == "allow" and _extract_attachment(msg) is not None
+    )
 
     # Fired AFTER the inner reaction so the race with server.ts's outer
     # reaction is deterministic (see comment above). For attachment-bearing
@@ -1054,29 +1080,28 @@ async def handle_any_message(
             )
             update_ok = False
             try:
-                await db.execute("BEGIN IMMEDIATE")
-                await db.execute(
-                    """UPDATE inbound
-                       SET attachment_kind = ?,
-                           attachment_path = ?,
-                           attachment_file_id = ?,
-                           attachment_size = ?,
-                           attachment_mime = ?,
-                           attachment_name = ?,
-                           error = ?
-                       WHERE id = ?""",
-                    (
-                        attachment["kind"],
-                        local_path,
-                        attachment["file_id"],
-                        attachment.get("size"),
-                        attachment.get("mime"),
-                        attachment.get("name"),
-                        err,
-                        row_id,
-                    ),
-                )
-                await db.commit()
+                async with _immediate_txn(db):
+                    await db.execute(
+                        """UPDATE inbound
+                           SET attachment_kind = ?,
+                               attachment_path = ?,
+                               attachment_file_id = ?,
+                               attachment_size = ?,
+                               attachment_mime = ?,
+                               attachment_name = ?,
+                               error = ?
+                           WHERE id = ?""",
+                        (
+                            attachment["kind"],
+                            local_path,
+                            attachment["file_id"],
+                            attachment.get("size"),
+                            attachment.get("mime"),
+                            attachment.get("name"),
+                            err,
+                            row_id,
+                        ),
+                    )
                 update_ok = True
             except Exception as e:
                 log(f"attachment UPDATE failed: {e}")
@@ -1086,7 +1111,9 @@ async def handle_any_message(
             # above deferred the initial notify; this is the gated wakeup.
             await notify_clients()
             if not update_ok:
-                log(f"attachment UPDATE failed for row {row_id} — delivering with NULL attachments")
+                log(
+                    f"attachment UPDATE failed for row {row_id} — delivering with NULL attachments"
+                )
 
 
 async def handle_callback_query(
@@ -1143,24 +1170,23 @@ async def handle_callback_query(
     row_id: int | None = None
     if db is not None:
         try:
-            await db.execute("BEGIN IMMEDIATE")
-            cur = await db.execute(
-                """INSERT INTO inbound
-                   (ts, chat_id, message_id, user_id, username, message_type, text,
-                    callback_data, gate_action)
-                   VALUES (?, ?, ?, ?, ?, 'callback_query', ?, ?, 'allow')""",
-                (
-                    ts,
-                    chat_id,
-                    message_id,
-                    sender_id,
-                    username,
-                    "",
-                    data,
-                ),
-            )
-            row_id = cur.lastrowid
-            await db.commit()
+            async with _immediate_txn(db):
+                cur = await db.execute(
+                    """INSERT INTO inbound
+                       (ts, chat_id, message_id, user_id, username, message_type, text,
+                        callback_data, gate_action)
+                       VALUES (?, ?, ?, ?, ?, 'callback_query', ?, ?, 'allow')""",
+                    (
+                        ts,
+                        chat_id,
+                        message_id,
+                        sender_id,
+                        username,
+                        "",
+                        data,
+                    ),
+                )
+                row_id = cur.lastrowid
             await notify_clients()
         except Exception as e:
             log(f"callback_query INSERT failed: {e}")
