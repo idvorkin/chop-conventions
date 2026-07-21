@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """Cost-impact analysis for Claude Code sessions.
 
-Correct pricing per model (Opus/Sonnet/Haiku 4.5+/4.6), includes subagents,
-groups sessions by repo, sorted by actual cost. Source of truth for prices:
-https://platform.claude.com/docs/en/about-claude/pricing
+Correct pricing per model (Fable 5, Opus 4.x, Sonnet 4.x/5, Haiku), includes
+subagents, groups sessions by repo, sorted by actual cost. Source of truth for
+prices: https://platform.claude.com/docs/en/about-claude/pricing
 """
 
 import argparse
@@ -17,17 +17,31 @@ from collections import defaultdict
 from datetime import date, datetime, timedelta
 from pathlib import Path
 
-# Pricing per million tokens (flat — Opus 4.6 & Sonnet 4.6 have no >200k premium)
+# Pricing per million tokens, at published list rates (current-gen models are
+# flat-priced across the full 1M context window — no >200k premium).
+# Cache rates derive from the input rate: 1h write = 2x, 5m write = 1.25x,
+# read = 0.1x. Keys must match what normalize_model() produces from raw API
+# model ids (date suffix stripped).
 PRICING = {
+    "claude-fable-5": dict(inp=10.00, out=50.00, c1h=20.00, c5m=12.50, cread=1.00),
+    "claude-opus-4-8": dict(inp=5.00, out=25.00, c1h=10.00, c5m=6.25, cread=0.50),
+    "claude-opus-4-7": dict(inp=5.00, out=25.00, c1h=10.00, c5m=6.25, cread=0.50),
     "claude-opus-4-6": dict(inp=5.00, out=25.00, c1h=10.00, c5m=6.25, cread=0.50),
     "claude-opus-4-5": dict(inp=5.00, out=25.00, c1h=10.00, c5m=6.25, cread=0.50),
     "claude-opus-4-1": dict(inp=15.00, out=75.00, c1h=30.00, c5m=18.75, cread=1.50),
     "claude-opus-4": dict(inp=15.00, out=75.00, c1h=30.00, c5m=18.75, cread=1.50),
+    # Sonnet 5 billed here at the $3/$15 sticker list rate; the intro rate
+    # ($2/$10 through 2026-08-31) is NOT applied — consistent with pricing
+    # every other row at list.
+    "claude-sonnet-5": dict(inp=3.00, out=15.00, c1h=6.00, c5m=3.75, cread=0.30),
     "claude-sonnet-4-6": dict(inp=3.00, out=15.00, c1h=6.00, c5m=3.75, cread=0.30),
     "claude-sonnet-4-5": dict(inp=3.00, out=15.00, c1h=6.00, c5m=3.75, cread=0.30),
     "claude-sonnet-4": dict(inp=3.00, out=15.00, c1h=6.00, c5m=3.75, cread=0.30),
     "claude-haiku-4-5": dict(inp=1.00, out=5.00, c1h=2.00, c5m=1.25, cread=0.10),
-    "claude-haiku-3-5": dict(inp=0.80, out=4.00, c1h=1.60, c5m=1.00, cread=0.08),
+    # The real legacy API id is claude-3-5-haiku-20241022, which
+    # normalize_model() reduces to "claude-3-5-haiku". The previous key
+    # ("claude-haiku-3-5") never matched any real turn — dead config.
+    "claude-3-5-haiku": dict(inp=0.80, out=4.00, c1h=1.60, c5m=1.00, cread=0.08),
 }
 
 MAX_PLAN_MONTHLY = 200.00
@@ -151,6 +165,50 @@ def pct_or_na(num, denom):
     return f"{num / denom * 100:.0f}%"
 
 
+def fmt_pricing_summary(pricing=None):
+    """Render the per-model $in/$out rate list from PRICING itself.
+
+    Derived from the dict rather than hardcoded prose so the footnote can
+    never drift from the rates actually used to compute the totals
+    ("Measure, Don't Hardcode"). Resolves PRICING at call time so tests can
+    patch a rate and watch the footnote follow.
+    """
+    if pricing is None:
+        pricing = PRICING
+    return ", ".join(f"{m} ${p['inp']:g}/${p['out']:g}" for m, p in pricing.items())
+
+
+def empty_unknown():
+    """Per-model accumulator for turns billed on model IDs missing from PRICING."""
+    return dict(turns=0, inp=0, out=0, cread=0, c1h=0, c5m=0)
+
+
+def record_unknown(unknown_models, model_raw, usage):
+    """Accumulate token volumes for an unpriced model turn.
+
+    Token counts (not just turn counts) let the report state the *size* of
+    the exclusion — a dominant new model landing here silently zeroes the
+    dollar totals, so the reader must be able to gauge the hole.
+    """
+    u = unknown_models.setdefault(model_raw, empty_unknown())
+    u["turns"] += 1
+    u["inp"] += usage.get("input_tokens", 0) or 0
+    u["out"] += usage.get("output_tokens", 0) or 0
+    u["cread"] += usage.get("cache_read_input_tokens", 0) or 0
+    cc = usage.get("cache_creation", {}) or {}
+    u["c1h"] += cc.get("ephemeral_1h_input_tokens", 0) or 0
+    u["c5m"] += cc.get("ephemeral_5m_input_tokens", 0) or 0
+
+
+def fmt_unknown_detail(u):
+    """One-line token summary for a single unpriced model's accumulator."""
+    cache = u["cread"] + u["c1h"] + u["c5m"]
+    return (
+        f"{u['turns']} turn(s), {u['inp']:,} input / {u['out']:,} output / "
+        f"{cache:,} cache tokens"
+    )
+
+
 # ---------- Impure helpers ----------
 
 
@@ -205,11 +263,13 @@ def ingest(f, is_sub, root, start_date, today, bucket, unknown_models):
                 if s["last"] is None or ts > s["last"]:
                     s["last"] = ts
             elif usage and model_raw and not model and model_raw != "<synthetic>":
-                # Priced turn with a model we don't recognize — surface it so
-                # users know the report under-reports when a new model ID ships
-                # before PRICING is updated. `<synthetic>` is Claude Code's
-                # placeholder for internal turns that aren't billable, skip it.
-                unknown_models[model_raw] = unknown_models.get(model_raw, 0) + 1
+                # Priced turn with a model we don't recognize — accumulate its
+                # token volumes so the report can state the exclusion's size,
+                # not just its turn count. When a new model ID ships before
+                # PRICING is updated, these turns are the dominant spend and
+                # the dollar totals silently under-report. `<synthetic>` is
+                # Claude Code's placeholder for unbillable internal turns.
+                record_unknown(unknown_models, model_raw, usage)
 
             content = msg.get("content")
             if isinstance(content, list):
@@ -327,8 +387,12 @@ def build_report(entries, bucket_meta, days_back, start_date, today, titles):
         L.append(f"- Host: `{hostname}`")
         if unknown_models:
             L.append(
-                f"- ⚠ Saw {sum(unknown_models.values())} turn(s) with unpriced models: "
-                + ", ".join(f"`{k}`" for k in sorted(unknown_models))
+                f"- ⚠ Saw {sum(u['turns'] for u in unknown_models.values())} turn(s) "
+                "with unpriced models: "
+                + ", ".join(
+                    f"`{k}` ({fmt_unknown_detail(u)})"
+                    for k, u in sorted(unknown_models.items())
+                )
             )
         return "\n".join(L)
 
@@ -461,7 +525,11 @@ def build_report(entries, bucket_meta, days_back, start_date, today, titles):
         "- **Subagent coverage**: script scans `~/.claude/projects/*/*.jsonl` (main sessions) and `~/.claude/projects/*/*/subagents/agent-*.jsonl` (subagents). Subagent tokens are rolled into the parent session's totals so the per-session cost reflects all work done on behalf of that session."
     )
     L.append(
-        "- **Per-model pricing**: each turn is billed at its model's listed rate (Opus 4.6/4.5 $5/$25, Sonnet 4.6/4.5 $3/$15, Haiku 4.5 $1/$5, older Opus tiers at their higher historic rates). Opus 4.6 and Sonnet 4.6 are flat-priced across the full 1M context window — no 200k threshold."
+        "- **Per-model pricing** ($/MTok input/output, rendered from the `PRICING` "
+        "table this report actually billed with): "
+        + fmt_pricing_summary()
+        + ". Current-gen models are flat-priced across the full 1M context "
+        "window — no 200k threshold."
     )
     L.append(
         "- **Without-cache reference** = `input + cache_read + cache_create` all billed at that model's base input rate, plus output. Shows what you'd pay if caching were disabled entirely. Not a prediction — a reference point."
@@ -502,10 +570,20 @@ def build_report(entries, bucket_meta, days_back, start_date, today, titles):
         "- **Sidechain PRs**: subagents can also run `gh pr create`; those are attributed to the parent session day since the extractor walks both main and sub files."
     )
     if unknown_models:
+        tot_unknown_turns = sum(u["turns"] for u in unknown_models.values())
+        tot_unknown_tokens = sum(
+            u["inp"] + u["out"] + u["cread"] + u["c1h"] + u["c5m"]
+            for u in unknown_models.values()
+        )
+        detail = ", ".join(
+            f"`{k}` ({fmt_unknown_detail(u)})"
+            for k, u in sorted(unknown_models.items())
+        )
         L.append(
-            f"- ⚠ **Unpriced models**: saw {sum(unknown_models.values())} turn(s) with "
-            f"unrecognised model IDs: {', '.join(f'`{k}` ({v})' for k, v in sorted(unknown_models.items()))}. "
-            f"These turns were excluded from the cost totals — update `PRICING` in `_impl.py` "
+            f"- ⚠ **Unpriced models**: saw {tot_unknown_turns} turn(s) totalling "
+            f"{tot_unknown_tokens:,} tokens on unrecognised model IDs: {detail}. "
+            f"These tokens were EXCLUDED from every dollar total above, so the "
+            f"report under-states real spend — update `PRICING` in `_impl.py` "
             f"when a new model ships."
         )
 
@@ -655,9 +733,10 @@ def main(argv=None):
         ingest(f, True, root, start_date, today, bucket, unknown_models)
 
     if unknown_models:
-        for m, n in sorted(unknown_models.items()):
+        for m, u in sorted(unknown_models.items()):
             print(
-                f"warning: unpriced model {m!r} ({n} turn(s)) — cost report excludes these",
+                f"warning: unpriced model {m!r} ({fmt_unknown_detail(u)}) "
+                f"— cost report excludes these tokens from every dollar total",
                 file=sys.stderr,
             )
 

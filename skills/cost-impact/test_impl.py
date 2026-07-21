@@ -18,14 +18,18 @@ sys.path.insert(0, str(Path(__file__).parent))
 
 from _impl import (  # noqa: E402
     PR_CREATE_RE,
+    PRICING,
     TITLE_RE,
     URL_RE,
     aggregate,
     build_report,
     cost_breakdown,
     empty_stats,
+    empty_unknown,
     fetch_pr_titles,
     fmt_duration,
+    fmt_pricing_summary,
+    fmt_unknown_detail,
     humanize_project,
     ingest,
     money,
@@ -35,6 +39,7 @@ from _impl import (  # noqa: E402
     parse_ts,
     pct_or_na,
     positive_int,
+    record_unknown,
 )
 
 
@@ -60,6 +65,24 @@ class TestNormalizeModel(unittest.TestCase):
     def test_accepts_known_bare_model(self):
         self.assertEqual(normalize_model("claude-opus-4-6"), "claude-opus-4-6")
         self.assertEqual(normalize_model("claude-sonnet-4-6"), "claude-sonnet-4-6")
+
+    def test_accepts_current_gen_models(self):
+        # Current-gen API ids are bare aliases (no date suffix) — they must
+        # match PRICING directly or the dominant spend lands in unknown_models.
+        self.assertEqual(normalize_model("claude-fable-5"), "claude-fable-5")
+        self.assertEqual(normalize_model("claude-opus-4-8"), "claude-opus-4-8")
+        self.assertEqual(normalize_model("claude-opus-4-7"), "claude-opus-4-7")
+        self.assertEqual(normalize_model("claude-sonnet-5"), "claude-sonnet-5")
+
+    def test_legacy_haiku_id_resolves(self):
+        # The real legacy id claude-3-5-haiku-20241022 normalizes to
+        # claude-3-5-haiku. The old PRICING key "claude-haiku-3-5" was dead
+        # config — it never matched any real API id.
+        self.assertEqual(
+            normalize_model("claude-3-5-haiku-20241022"), "claude-3-5-haiku"
+        )
+        self.assertIn("claude-3-5-haiku", PRICING)
+        self.assertNotIn("claude-haiku-3-5", PRICING)
 
 
 class TestPctOrNa(unittest.TestCase):
@@ -116,6 +139,55 @@ class TestCostBreakdown(unittest.TestCase):
         self.assertAlmostEqual(by_model["claude-opus-4-6"], 5.00)
         self.assertAlmostEqual(by_model["claude-sonnet-4-6"], 3.00)
         self.assertAlmostEqual(total, 8.00)
+
+
+class TestCurrentGenPricing(unittest.TestCase):
+    """New PRICING rows bill at the published list rates."""
+
+    def test_fable_5_rates(self):
+        # $10/$50 per MTok (claude-api skill pricing reference)
+        s = empty_stats()
+        s["models"]["claude-fable-5"]["inp"] = 1_000_000
+        s["models"]["claude-fable-5"]["out"] = 1_000_000
+        total, comps, by_model, _naive = cost_breakdown(s)
+        self.assertAlmostEqual(comps["inp"], 10.00)
+        self.assertAlmostEqual(comps["out"], 50.00)
+        self.assertAlmostEqual(by_model["claude-fable-5"], 60.00)
+        self.assertAlmostEqual(total, 60.00)
+
+    def test_opus_4_8_and_4_7_rates(self):
+        # Both $5/$25 per MTok, same as Opus 4.6
+        for m in ("claude-opus-4-8", "claude-opus-4-7"):
+            s = empty_stats()
+            s["models"][m]["inp"] = 1_000_000
+            s["models"][m]["out"] = 1_000_000
+            total, _comps, _by_model, _naive = cost_breakdown(s)
+            self.assertAlmostEqual(total, 30.00, msg=m)
+
+    def test_sonnet_5_rates(self):
+        # $3/$15 sticker list rate (intro $2/$10 through 2026-08-31 NOT applied)
+        s = empty_stats()
+        s["models"]["claude-sonnet-5"]["inp"] = 1_000_000
+        s["models"]["claude-sonnet-5"]["out"] = 1_000_000
+        total, _comps, _by_model, _naive = cost_breakdown(s)
+        self.assertAlmostEqual(total, 18.00)
+
+    def test_legacy_haiku_row_prices(self):
+        # The re-keyed claude-3-5-haiku row is live: $0.80/$4.00 per MTok
+        s = empty_stats()
+        s["models"]["claude-3-5-haiku"]["inp"] = 1_000_000
+        s["models"]["claude-3-5-haiku"]["out"] = 1_000_000
+        total, _comps, _by_model, _naive = cost_breakdown(s)
+        self.assertAlmostEqual(total, 4.80)
+
+    def test_cache_multipliers_hold_for_all_models(self):
+        # Cache rates derive from input rate: 1h write 2x, 5m write 1.25x,
+        # read 0.1x. Enforced for every row so a future edit can't silently
+        # break the derivation on one model.
+        for m, p in PRICING.items():
+            self.assertAlmostEqual(p["c1h"], p["inp"] * 2.0, msg=m)
+            self.assertAlmostEqual(p["c5m"], p["inp"] * 1.25, msg=m)
+            self.assertAlmostEqual(p["cread"], p["inp"] * 0.1, msg=m)
 
 
 class TestHumanizeProject(unittest.TestCase):
@@ -310,12 +382,15 @@ class TestBuildReportEmptyWindow(unittest.TestCase):
 
     def test_empty_window_surfaces_unknown_models(self):
         agg = aggregate(defaultdict(empty_stats))
-        bucket_meta = dict(agg, unknown_models={"claude-opus-5-0": 3})
+        unknown = empty_unknown()
+        unknown.update(turns=3, inp=1_000, out=500)
+        bucket_meta = dict(agg, unknown_models={"claude-opus-5-0": unknown})
         today = date(2026, 4, 13)
         start = date(2026, 4, 7)
         report = build_report([], bucket_meta, 7, start, today, {})
         self.assertIn("claude-opus-5-0", report)
-        self.assertIn("3", report)
+        self.assertIn("3 turn(s)", report)
+        self.assertIn("1,000 input", report)
 
 
 class TestBuildReportWithData(unittest.TestCase):
@@ -461,8 +536,13 @@ class TestIngestStreaming(unittest.TestCase):
             unknown = {}
             ingest(f, False, root, start, today, bucket, unknown)
 
-            # Bucket populated with no usage, but unknown model tracked
-            self.assertEqual(unknown, {"claude-opus-5-0": 1})
+            # Bucket populated with no usage, but unknown model tracked with
+            # full token volumes, not just a turn count.
+            self.assertEqual(list(unknown), ["claude-opus-5-0"])
+            u = unknown["claude-opus-5-0"]
+            self.assertEqual(u["turns"], 1)
+            self.assertEqual(u["inp"], 100)
+            self.assertEqual(u["out"], 50)
 
     def test_filters_out_of_window(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -489,6 +569,117 @@ class TestIngestStreaming(unittest.TestCase):
             # but no models should have been recorded.
             for s in bucket.values():
                 self.assertEqual(sum(t["turns"] for t in s["models"].values()), 0)
+
+
+class TestRecordUnknown(unittest.TestCase):
+    def test_accumulates_all_token_classes(self):
+        unknown = {}
+        record_unknown(
+            unknown,
+            "claude-fable-6",
+            dict(
+                input_tokens=10,
+                output_tokens=20,
+                cache_read_input_tokens=30,
+                cache_creation=dict(
+                    ephemeral_1h_input_tokens=40, ephemeral_5m_input_tokens=50
+                ),
+            ),
+        )
+        record_unknown(unknown, "claude-fable-6", dict(input_tokens=1))
+        u = unknown["claude-fable-6"]
+        self.assertEqual(u["turns"], 2)
+        self.assertEqual(u["inp"], 11)
+        self.assertEqual(u["out"], 20)
+        self.assertEqual(u["cread"], 30)
+        self.assertEqual(u["c1h"], 40)
+        self.assertEqual(u["c5m"], 50)
+
+    def test_fmt_unknown_detail(self):
+        u = empty_unknown()
+        u.update(turns=2, inp=1_000_000, out=50_000, cread=100, c1h=200, c5m=300)
+        detail = fmt_unknown_detail(u)
+        self.assertIn("2 turn(s)", detail)
+        self.assertIn("1,000,000 input", detail)
+        self.assertIn("50,000 output", detail)
+        self.assertIn("600 cache tokens", detail)  # cread + c1h + c5m
+
+
+class TestUnknownModelFootnoteQuantified(unittest.TestCase):
+    """The unpriced-models footnote must state the exclusion in TOKENS,
+    not just turn counts, so the reader can size the hole in the totals."""
+
+    def _report_with_unknown(self, unknown_models):
+        bucket = defaultdict(empty_stats)
+        key = ("-home-developer-gits-example", "abc12345", date(2026, 4, 13))
+        s = bucket[key]
+        s["models"]["claude-opus-4-6"]["inp"] = 1_000_000
+        s["models"]["claude-opus-4-6"]["turns"] = 1
+        s["main_turns"] = 1
+        s["first"] = datetime(2026, 4, 13, 10, 0, 0)
+        s["last"] = datetime(2026, 4, 13, 10, 5, 0)
+        agg = aggregate(bucket)
+        bucket_meta = dict(agg, unknown_models=unknown_models)
+        return build_report(
+            agg["entries"], bucket_meta, 1, date(2026, 4, 13), date(2026, 4, 13), {}
+        )
+
+    def test_footnote_states_token_volumes(self):
+        unknown = empty_unknown()
+        unknown.update(turns=7, inp=2_500_000, out=800_000, cread=4_000_000)
+        report = self._report_with_unknown({"claude-fable-6": unknown})
+        self.assertIn("Unpriced models", report)
+        self.assertIn("claude-fable-6", report)
+        self.assertIn("7 turn(s)", report)
+        self.assertIn("2,500,000 input", report)
+        self.assertIn("800,000 output", report)
+        self.assertIn("4,000,000 cache tokens", report)
+        # Grand total across all token classes: 2.5M + 0.8M + 4M = 7.3M
+        self.assertIn("7,300,000 tokens", report)
+        self.assertIn("EXCLUDED", report)
+
+    def test_no_footnote_when_no_unknowns(self):
+        report = self._report_with_unknown({})
+        self.assertNotIn("Unpriced models", report)
+
+
+class TestPricingFootnoteDerived(unittest.TestCase):
+    """The pricing footnote must render from PRICING, not hardcoded prose."""
+
+    def test_summary_lists_every_model_and_rate(self):
+        summary = fmt_pricing_summary()
+        for m, p in PRICING.items():
+            self.assertIn(m, summary)
+        self.assertIn("claude-fable-5 $10/$50", summary)
+        self.assertIn("claude-opus-4-8 $5/$25", summary)
+        self.assertIn("claude-sonnet-5 $3/$15", summary)
+        self.assertIn("claude-3-5-haiku $0.8/$4", summary)
+
+    def test_footnote_follows_pricing_mutation(self):
+        """Mutate a rate in PRICING and the rendered footnote must follow —
+        proving the prose is derived, not a string literal."""
+        bucket = defaultdict(empty_stats)
+        key = ("-home-developer-gits-example", "abc12345", date(2026, 4, 13))
+        s = bucket[key]
+        s["models"]["claude-opus-4-6"]["inp"] = 1_000_000
+        s["main_turns"] = 1
+        s["first"] = datetime(2026, 4, 13, 10, 0, 0)
+        s["last"] = datetime(2026, 4, 13, 10, 5, 0)
+        agg = aggregate(bucket)
+        bucket_meta = dict(agg, unknown_models={})
+
+        mutated = dict(PRICING["claude-fable-5"], inp=99.00, out=999.00)
+        with mock.patch.dict(PRICING, {"claude-fable-5": mutated}):
+            report = build_report(
+                agg["entries"],
+                bucket_meta,
+                1,
+                date(2026, 4, 13),
+                date(2026, 4, 13),
+                {},
+            )
+        self.assertIn("claude-fable-5 $99/$999", report)
+        self.assertNotIn("claude-fable-5 $10/$50", report)
 
 
 if __name__ == "__main__":
