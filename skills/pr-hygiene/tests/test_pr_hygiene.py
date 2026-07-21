@@ -211,6 +211,49 @@ class TestClassifyRegressions(unittest.TestCase):
         r = classify(pr, "me")
         self.assertNotEqual(r["tier"], "red")
 
+    def test_author_thread_reply_after_human_is_not_red(self):
+        # Same false-positive class as tweego#35, different response channel:
+        # reviewer left an ISSUE comment 3 days ago; author replied inside a
+        # review thread 1 day ago (thread since resolved), no push, no issue
+        # comment -> author has the last word -> not red.
+        pr = _pr(
+            author="me",
+            push_days=10,
+            threads=[
+                _thread(
+                    [
+                        _comment("alice", "what about edge case Y?", days_ago=4),
+                        _comment("me", "handled, see test", days_ago=1),
+                    ],
+                    resolved=True,
+                )
+            ],
+            comments=[_comment("alice", "any update?", days_ago=3)],
+        )
+        r = classify(pr, "me")
+        self.assertNotEqual(r["tier"], "red")
+
+    def test_author_thread_reply_older_than_human_comment_still_red(self):
+        # Guard: an OLD thread reply must not clear a NEWER human comment.
+        # Author replied in a thread 3 days ago; reviewer issue-commented 1 day
+        # ago and the author has been silent since -> still red.
+        pr = _pr(
+            author="me",
+            push_days=10,
+            threads=[
+                _thread(
+                    [
+                        _comment("alice", "what about edge case Y?", days_ago=4),
+                        _comment("me", "handled, see test", days_ago=3),
+                    ],
+                    resolved=True,
+                )
+            ],
+            comments=[_comment("alice", "any update?", days_ago=1)],
+        )
+        r = classify(pr, "me")
+        self.assertEqual(r["tier"], "red")
+
     def test_author_pushed_after_human_is_not_red(self):
         # Reviewer commented 3 days ago; author pushed 1 day ago -> acted.
         pr = _pr(
