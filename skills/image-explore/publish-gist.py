@@ -15,6 +15,8 @@
 # Requirements: gh (GitHub CLI), git, magick (ImageMagick), python3
 
 import argparse
+import base64
+import os
 import re
 import shutil
 import subprocess
@@ -31,6 +33,24 @@ def run(cmd, **kwargs):
         print(result.stderr, file=sys.stderr)
         sys.exit(1)
     return result.stdout.strip()
+
+
+def build_git_auth_env(token, base_env=None):
+    """Build env vars giving git ephemeral credentials for gist.github.com.
+
+    Uses GIT_CONFIG_COUNT/GIT_CONFIG_KEY_0/GIT_CONFIG_VALUE_0 to inject an
+    http.extraheader scoped to gist.github.com that exists only in the child
+    process's environment. Unlike embedding the token in the remote URL, the
+    credential never appears in argv (readable by any user via ps/procfs) and
+    is never persisted into the temp clone's .git/config; /proc/<pid>/environ
+    is owner-readable only.
+    """
+    basic = base64.b64encode(f"x-access-token:{token}".encode()).decode()
+    env = dict(os.environ if base_env is None else base_env)
+    env["GIT_CONFIG_COUNT"] = "1"
+    env["GIT_CONFIG_KEY_0"] = "http.https://gist.github.com/.extraheader"
+    env["GIT_CONFIG_VALUE_0"] = f"Authorization: basic {basic}"
+    return env
 
 
 def find_images_in_html(html_path):
@@ -93,66 +113,68 @@ def main():
     # Get the authenticated user
     gist_user = run(["gh", "api", "user", "-q", ".login"])
 
-    # Step 2: Clone the gist
+    # Step 2: Clone the gist with the PLAIN url — the token must never appear
+    # in argv or in the on-disk .git/config of the temp clone. Auth is passed
+    # via ephemeral env-based git config (see build_git_auth_env).
     work_dir = tempfile.mkdtemp(prefix="gist-publish-")
-    token = run(["gh", "auth", "token"])
-    run(
-        [
-            "git",
-            "clone",
-            f"https://x-access-token:{token}@gist.github.com/{gist_id}.git",
-            work_dir,
-        ]
-    )
+    try:
+        token = run(["gh", "auth", "token"])
+        auth_env = build_git_auth_env(token)
+        run(
+            ["git", "clone", f"https://gist.github.com/{gist_id}.git", work_dir],
+            env=auth_env,
+        )
 
-    # Step 3: Rename HTML to index.html and convert images to JPEG
-    src_html = Path(work_dir) / html_path.name
-    dst_html = Path(work_dir) / "index.html"
-    if src_html.exists() and src_html != dst_html:
-        src_html.rename(dst_html)
+        # Step 3: Rename HTML to index.html and convert images to JPEG
+        src_html = Path(work_dir) / html_path.name
+        dst_html = Path(work_dir) / "index.html"
+        if src_html.exists() and src_html != dst_html:
+            src_html.rename(dst_html)
 
-    gist_raw = f"https://gist.githubusercontent.com/{gist_user}/{gist_id}/raw"
-    url_map = {}  # old src -> new absolute URL
+        gist_raw = f"https://gist.githubusercontent.com/{gist_user}/{gist_id}/raw"
+        url_map = {}  # old src -> new absolute URL
 
-    for img in image_files:
-        # Convert to JPEG with descriptive name
-        stem = img.stem
-        # Strip UUID-style names, try to keep descriptive ones
-        jpg_name = f"{stem}.jpg"
-        jpg_path = Path(work_dir) / jpg_name
+        for img in image_files:
+            # Convert to JPEG with descriptive name
+            stem = img.stem
+            # Strip UUID-style names, try to keep descriptive ones
+            jpg_name = f"{stem}.jpg"
+            jpg_path = Path(work_dir) / jpg_name
 
-        has_magick = shutil.which("magick") is not None
-        if has_magick:
-            run(["magick", str(img), "-quality", "75", str(jpg_path)])
-        else:
-            # Fallback: just copy the file
-            shutil.copy2(img, Path(work_dir) / img.name)
-            jpg_name = img.name
+            has_magick = shutil.which("magick") is not None
+            if has_magick:
+                run(["magick", str(img), "-quality", "75", str(jpg_path)])
+            else:
+                # Fallback: just copy the file
+                shutil.copy2(img, Path(work_dir) / img.name)
+                jpg_name = img.name
 
-        url_map[img.name] = f"{gist_raw}/{jpg_name}"
-        print(f"  {img.name} -> {jpg_name}")
+            url_map[img.name] = f"{gist_raw}/{jpg_name}"
+            print(f"  {img.name} -> {jpg_name}")
 
-    # Step 4: Rewrite image URLs in index.html
-    with open(dst_html) as f:
-        html = f.read()
+        # Step 4: Rewrite image URLs in index.html
+        with open(dst_html) as f:
+            html = f.read()
 
-    for old_name, new_url in url_map.items():
-        html = html.replace(f'src="{old_name}"', f'src="{new_url}"')
+        for old_name, new_url in url_map.items():
+            html = html.replace(f'src="{old_name}"', f'src="{new_url}"')
 
-    with open(dst_html, "w") as f:
-        f.write(html)
+        with open(dst_html, "w") as f:
+            f.write(html)
 
-    # Step 5: Git add, commit, push
-    print("Pushing to gist...")
-    run(["git", "add", "."], cwd=work_dir)
-    run(
-        ["git", "commit", "-m", "Add images and update HTML with absolute URLs"],
-        cwd=work_dir,
-    )
-    run(["git", "push"], cwd=work_dir)
-
-    # Cleanup
-    shutil.rmtree(work_dir, ignore_errors=True)
+        # Step 5: Git add, commit, push
+        print("Pushing to gist...")
+        run(["git", "add", "."], cwd=work_dir)
+        run(
+            ["git", "commit", "-m", "Add images and update HTML with absolute URLs"],
+            cwd=work_dir,
+        )
+        run(["git", "push"], cwd=work_dir, env=auth_env)
+    finally:
+        # run() calls sys.exit(1) on failure, which raises SystemExit — this
+        # finally still executes, so the temp clone is removed even when a
+        # step between clone and push fails.
+        shutil.rmtree(work_dir, ignore_errors=True)
 
     # Step 6: Print the shareable URL
     gisthost_url = f"https://gisthost.github.io/?{gist_id}"
