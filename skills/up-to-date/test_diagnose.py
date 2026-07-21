@@ -692,8 +692,12 @@ class TestRunDiagnoseChopRootUnresolved(unittest.TestCase):
             _git("add", "README.md")
             _git("commit", "-q", "-m", "initial")
 
+            # Build from the scrubbed git_env, NOT os.environ — inheriting
+            # GIT_DIR / GIT_INDEX_FILE / GIT_WORK_TREE from a pre-commit
+            # runner would redirect diagnose.py's child git calls
+            # (including `git fetch --prune`) into the outer repo (#109).
             env = {
-                **os.environ,
+                **git_env,
                 "CHOP_CONVENTIONS_ROOT": str(Path(td) / "nowhere"),
                 "HOME": str(fake_home),
             }
@@ -725,6 +729,138 @@ class TestRunDiagnoseChopRootUnresolved(unittest.TestCase):
                 f"expected exactly one chop_root_unresolved error, "
                 f"got errors={data['errors']!r}",
             )
+
+
+class TestRunDiagnoseForceAlignOnMain(unittest.TestCase):
+    """Regression tests for can_force_align computed ON the default branch.
+
+    diagnose.py discards the default branch from the parallel `git
+    cherry` batch (it must stay out of the absorption audit), and a
+    prior version then read HEAD's cherry result from that same batch —
+    so on main the lookup always hit the empty fallback and
+    `can_force_align` was True whenever main was ahead for ANY reason,
+    including genuinely unique local commits. That granted destructive
+    force-push license (SKILL.md: true only when every ahead commit is
+    patch-equivalent upstream). The fix runs a dedicated `git cherry`
+    call for HEAD when HEAD *is* the default branch.
+
+    Exercised end-to-end via a subprocess invocation against a real
+    throwaway origin repo + clone, like TestRunDiagnoseChopRootUnresolved.
+    """
+
+    DIAGNOSE_PATH = Path(__file__).parent / "diagnose.py"
+
+    @staticmethod
+    def _scrubbed_env() -> dict[str, str]:
+        # Drop GIT_* vars a pre-commit runner may have set — otherwise
+        # GIT_DIR / GIT_INDEX_FILE / GIT_WORK_TREE redirect every git
+        # call below (and diagnose.py's child git calls) into the outer
+        # repo running the hook (#109).
+        return {k: v for k, v in os.environ.items() if not k.startswith("GIT_")}
+
+    def _git(self, cwd: Path, *args: str, env: dict[str, str]) -> None:
+        subprocess.run(
+            ["git", *args], cwd=cwd, check=True, capture_output=True, env=env
+        )
+
+    def _configure_identity(self, repo: Path, env: dict[str, str]) -> None:
+        self._git(repo, "config", "user.email", "test@test", env=env)
+        self._git(repo, "config", "user.name", "test", env=env)
+        self._git(repo, "config", "commit.gpgsign", "false", env=env)
+
+    def _setup_origin_and_clone(
+        self, td: str, git_env: dict[str, str]
+    ) -> tuple[Path, Path]:
+        """Origin repo with one commit on `main`, plus a clone of it."""
+        origin = Path(td) / "origin"
+        local = Path(td) / "local"
+        origin.mkdir()
+        self._git(origin, "init", "-q", "-b", "main", env=git_env)
+        self._configure_identity(origin, git_env)
+        (origin / "README.md").write_text("# r\n", encoding="utf-8")
+        self._git(origin, "add", "README.md", env=git_env)
+        self._git(origin, "commit", "-q", "-m", "initial", env=git_env)
+        subprocess.run(
+            ["git", "clone", "-q", str(origin), str(local)],
+            cwd=td,
+            check=True,
+            capture_output=True,
+            env=git_env,
+        )
+        self._configure_identity(local, git_env)
+        return origin, local
+
+    def _commit_file(
+        self,
+        repo: Path,
+        filename: str,
+        content: str,
+        message: str,
+        git_env: dict[str, str],
+    ) -> None:
+        (repo / filename).write_text(content, encoding="utf-8")
+        self._git(repo, "add", filename, env=git_env)
+        self._git(repo, "commit", "-q", "-m", message, env=git_env)
+
+    def _run_diagnose(self, local: Path, td: str, git_env: dict[str, str]) -> dict:
+        fake_home = Path(td) / "fake-home"
+        fake_home.mkdir(exist_ok=True)
+        env = {
+            **git_env,
+            "CHOP_CONVENTIONS_ROOT": str(Path(td) / "nowhere"),
+            "HOME": str(fake_home),
+        }
+        proc = subprocess.run(
+            [sys.executable, str(self.DIAGNOSE_PATH)],
+            cwd=local,
+            env=env,
+            capture_output=True,
+            text=True,
+        )
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        return json.loads(proc.stdout)
+
+    def test_unique_local_commit_on_main_blocks_force_align(self):
+        """Main ahead with genuinely unique work → force-align forbidden."""
+        with tempfile.TemporaryDirectory() as td:
+            git_env = self._scrubbed_env()
+            _, local = self._setup_origin_and_clone(td, git_env)
+            self._commit_file(
+                local, "feature.txt", "local-only work\n", "local-only work", git_env
+            )
+
+            branch = self._run_diagnose(local, td, git_env)["branch"]
+            self.assertTrue(branch["is_main"])
+            self.assertEqual(branch["ahead"], 1)
+            self.assertFalse(
+                branch["can_force_align"],
+                "can_force_align must be False when main's ahead commit is "
+                "unique local work — force-aligning would destroy it",
+            )
+            self.assertEqual(len(branch["ahead_patch_unique_commits"]), 1)
+            self.assertEqual(branch["ahead_patch_equivalent_commits"], [])
+
+    def test_patch_equivalent_commit_on_main_allows_force_align(self):
+        """Main ahead only by a commit already upstream under a different
+        SHA (same patch-id) → force-align loses no work and is allowed."""
+        with tempfile.TemporaryDirectory() as td:
+            git_env = self._scrubbed_env()
+            origin, local = self._setup_origin_and_clone(td, git_env)
+            # Land the identical change on both sides with different
+            # commit messages → different SHAs, same patch-id.
+            self._commit_file(
+                local, "feature.txt", "shared change\n", "local copy", git_env
+            )
+            self._commit_file(
+                origin, "feature.txt", "shared change\n", "upstream copy", git_env
+            )
+
+            branch = self._run_diagnose(local, td, git_env)["branch"]
+            self.assertTrue(branch["is_main"])
+            self.assertEqual(branch["ahead"], 1)
+            self.assertTrue(branch["can_force_align"])
+            self.assertEqual(branch["ahead_patch_unique_commits"], [])
+            self.assertEqual(len(branch["ahead_patch_equivalent_commits"]), 1)
 
 
 class TestGhPrListMergedHeads(unittest.TestCase):
