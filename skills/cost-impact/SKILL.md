@@ -1,6 +1,6 @@
 ---
 name: cost-impact
-description: Compute a Claude Code cost-impact report across a time window, grouped by repo with per-session detail. Prices per-turn per-model at Opus 4.6 / Sonnet 4.6 / Haiku 4.5 list rates, includes subagent tokens, outputs markdown with clickable PR links and collapsible per-repo sections. Use when user asks "how much did I spend on Claude this week", "cost report", "/cost-impact", or wants a weekly retrospective on Claude usage.
+description: Compute a Claude Code cost-impact report across a time window, grouped by repo with per-session detail. Prices per-turn per-model at published list rates (Fable 5 / Opus 4.x / Sonnet 4.x-5 / Haiku), includes subagent tokens, outputs markdown with clickable PR links and collapsible per-repo sections. Use when user asks "how much did I spend on Claude this week", "cost report", "/cost-impact", or wants a weekly retrospective on Claude usage.
 allowed-tools: Bash, Read
 ---
 
@@ -50,7 +50,7 @@ Sequence:
 5. If no → done
 
 **Do not ask about destination up front.** That order forces the user to
-context-switch before the script's output exists; asking *after* the local
+context-switch before the script's output exists; asking _after_ the local
 save lets them glance at the file (or its summary) before deciding to share.
 
 If the user has an existing cost-impact gist they want updated in place,
@@ -70,8 +70,8 @@ The script:
 2. Filters to turns whose `timestamp` (converted to local TZ) falls in
    the requested window
 3. Bills each turn at its model's published list price — pricing table
-   in `_impl.py::PRICING` tracks Opus 4.6/4.5, Sonnet 4.6/4.5/4,
-   Haiku 4.5/3.5, and older tiers
+   in `_impl.py::PRICING` tracks Fable 5, Opus 4.8/4.7/4.6/4.5,
+   Sonnet 5/4.6/4.5/4, Haiku 4.5/3.5, and older tiers
 4. Rolls subagent costs into the parent session so per-session totals
    reflect all work done on behalf of that session
 5. Groups results by project, then by parent-session UUID, then by day
@@ -138,7 +138,7 @@ a mechanical check. Look for:
   user's already-public setup
 
 **If the report looks sensitive: STOP the gist upload.** Do NOT publish.
-Tell the user *what specifically* looked sensitive (cite the repo name,
+Tell the user _what specifically_ looked sensitive (cite the repo name,
 PR URL, or line), and offer the local-save path instead:
 
 > "Holding off on the gist — I see `<specific thing>` in the report which
@@ -174,10 +174,10 @@ unsent once the gist URL is indexed.
 
 Edit these constants at the top of the file if your setup differs:
 
-| Constant           | Purpose                                                                    | Default                                             |
-| ------------------ | -------------------------------------------------------------------------- | --------------------------------------------------- |
-| `PRICING`          | Per-model price table (input/output/cache-write-1h/5m/cache-read per MTok) | Opus 4.6 $5/$25, Sonnet 4.6 $3/$15, Haiku 4.5 $1/$5 |
-| `MAX_PLAN_MONTHLY` | Used only for the subsidy footnote                                         | `200.00`                                            |
+| Constant           | Purpose                                                                    | Default                                                                    |
+| ------------------ | -------------------------------------------------------------------------- | -------------------------------------------------------------------------- |
+| `PRICING`          | Per-model price table (input/output/cache-write-1h/5m/cache-read per MTok) | Fable 5 $10/$50, Opus 4.8-4.5 $5/$25, Sonnet 5/4.6 $3/$15, Haiku 4.5 $1/$5 |
+| `MAX_PLAN_MONTHLY` | Used only for the subsidy footnote                                         | `200.00`                                                                   |
 
 Pricing is sourced from
 [platform.claude.com/docs/en/about-claude/pricing](https://platform.claude.com/docs/en/about-claude/pricing).
@@ -207,9 +207,9 @@ Update the table if Anthropic changes published rates.
   Max plan session quota gets consumed, not the $ per token. The
   report prices at list; peak vs off-peak is not reflected in the
   dollar column.
-- **Opus 4.6 / Sonnet 4.6 flat pricing**: no 200k threshold — older
-  4 / 4.1 tiers had 2× above 200k, but 4.5+ bill flat across the
-  full 1M context window.
+- **Current-gen flat pricing**: no 200k threshold — older 4 / 4.1
+  tiers had 2× above 200k, but 4.5+ (incl. Fable 5, Opus 4.8/4.7,
+  Sonnet 5) bill flat across the full 1M context window.
 - **TTL bug ([anthropics/claude-code#45381](https://github.com/anthropics/claude-code/issues/45381))**:
   if `DISABLE_TELEMETRY` or `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC`
   is set, sessions silently fall from 1h to 5m cache tier, costing
@@ -217,8 +217,10 @@ Update the table if Anthropic changes published rates.
   directly and reports whether you were hit.
 - **Unknown / unpriced models**: turns with a model ID not in
   `PRICING` are excluded from totals and surfaced as a stderr warning
-  at run time + an `⚠ Unpriced models` line in the report's footnotes.
-  Update the `PRICING` table in `_impl.py` when a new model ships.
+  at run time + an `⚠ Unpriced models` line in the report's footnotes,
+  both quantified in token volumes (input/output/cache) so the size of
+  the exclusion is visible. Update the `PRICING` table in `_impl.py`
+  when a new model ships.
 
 ## Related
 
