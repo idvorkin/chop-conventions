@@ -4,16 +4,16 @@ description: Diagnose and fix system health issues — rogue processes, Gas Town
 allowed-tools: Bash, Read, Glob, Grep
 ---
 
-# Doctor
+# Machine Doctor
 
-Diagnose and repair system health. Three tiers:
+Diagnose and repair system health. Four tiers:
 
-| Invocation | Scope |
-|---|---|
-| `/doctor` | Quick vitals — CPU hogs, memory, disk |
-| `/doctor gastown` | Gas Town agent shutdown and cleanup |
-| `/doctor guards` | Set up / verify two-layer CPU guard (OrbStack VM cap + in-VM watchdog) |
-| `/doctor deep` | Full probe — git locks, orphaned worktrees, stale servers, MCP |
+| Invocation                | Scope                                                                  |
+| ------------------------- | ---------------------------------------------------------------------- |
+| `/machine-doctor`         | Quick vitals — CPU hogs, memory, disk                                  |
+| `/machine-doctor gastown` | Gas Town agent shutdown and cleanup                                    |
+| `/machine-doctor guards`  | Set up / verify two-layer CPU guard (OrbStack VM cap + in-VM watchdog) |
+| `/machine-doctor deep`    | Full probe — git locks, orphaned worktrees, stale servers, MCP         |
 
 Always start with **Step 0: Platform Detection**, then run the requested tier.
 
@@ -28,19 +28,19 @@ echo "Platform: $OS"
 
 Set these aliases for the rest of the skill:
 
-| Task | Mac | Linux |
-|---|---|---|
-| Top CPU processes | `ps aux -r \| head -20` | `procs --sortd cpu \| head -20` (falls back to `ps aux --sort=-%cpu \| head -20`) |
-| Memory overview | `vm_stat` | `free -h` or `cat /proc/meminfo \| head -5` |
-| Disk usage | `df -h /` | `df -h /` |
-| Process search | `pgrep -af '<pattern>'` | `pgrep -af '<pattern>'` |
-| Process tree | `ps -o pid,ppid,comm -p <PID>` | `/usr/bin/ps -o pid,ppid,comm -p <PID>` |
+| Task              | Mac                            | Linux                                                                             |
+| ----------------- | ------------------------------ | --------------------------------------------------------------------------------- |
+| Top CPU processes | `ps aux -r \| head -20`        | `procs --sortd cpu \| head -20` (falls back to `ps aux --sort=-%cpu \| head -20`) |
+| Memory overview   | `vm_stat`                      | `free -h` or `cat /proc/meminfo \| head -5`                                       |
+| Disk usage        | `df -h /`                      | `df -h /`                                                                         |
+| Process search    | `pgrep -af '<pattern>'`        | `pgrep -af '<pattern>'`                                                           |
+| Process tree      | `ps -o pid,ppid,comm -p <PID>` | `/usr/bin/ps -o pid,ppid,comm -p <PID>`                                           |
 
 **Linux note:** Many machines alias `ps` to `procs` and `top` to `btm`. Use `/usr/bin/ps` when you need standard flags like `--ppid` or `-o`.
 
-### Environment Detection (Linux only)
+### Environment Detection
 
-CPU/memory cap recommendations (Tier 3f) depend on *where* you are — a bare-metal box with systemd behaves nothing like a rootless container with a read-only cgroup fs.
+CPU/memory cap recommendations (Tier 3f) depend on _where_ you are — a bare-metal box with systemd behaves nothing like a rootless container with a read-only cgroup fs, or a Mac host.
 
 ```bash
 if [ "$OS" = "Linux" ]; then
@@ -54,15 +54,17 @@ if [ "$OS" = "Linux" ]; then
   else
     ENV="linux-host"        # real VM or bare metal with systemd
   fi
-  echo "ENV=$ENV"
+else
+  ENV="darwin"              # Mac host
 fi
+echo "ENV=$ENV"
 ```
 
 **If `ENV=linux-container`, resource caps cannot be applied from inside** — `/sys/fs/cgroup` is read-only and there is no systemd. They must be set on the host (see Tier 3f).
 
 ---
 
-## Tier 1: Quick Vitals (`/doctor`)
+## Tier 1: Quick Vitals (`/machine-doctor`)
 
 Run these checks and present a summary table:
 
@@ -126,25 +128,25 @@ pgrep -af 'bin/cpu-watchdog.sh$' >/dev/null && echo ok || echo MISSING
 tail -1 /tmp/cpu-watchdog.log 2>/dev/null
 ```
 
-Flag if the watchdog is **not running**. The boot hook lives in `~/.zshrc`, but it only fires once an interactive shell has started — if no shell has opened since reboot, or if the watchdog was manually killed, it will be missing. Recovery: run `setsid ~/bin/cpu-watchdog.sh &>/dev/null &`, or open any shell. If the script itself is missing, see `/doctor guards` for the recovery template.
+Flag if the watchdog is **not running**. The boot hook lives in `~/.zshrc`, but it only fires once an interactive shell has started — if no shell has opened since reboot, or if the watchdog was manually killed, it will be missing. Recovery: run `setsid ~/bin/cpu-watchdog.sh &>/dev/null &`, or open any shell. If the script itself is missing, see `/machine-doctor guards` for the recovery template.
 
 ### Output Format
 
 Present results as:
 
-| Check | Status | Detail |
-|---|---|---|
-| CPU | ok / **high** | List processes >20% |
-| Memory | ok / **low** | Available RAM |
-| Disk | ok / **full** | Usage % |
-| Zombies | ok / **found** | Count |
+| Check      | Status           | Detail                       |
+| ---------- | ---------------- | ---------------------------- |
+| CPU        | ok / **high**    | List processes >20%          |
+| Memory     | ok / **low**     | Available RAM                |
+| Disk       | ok / **full**    | Usage %                      |
+| Zombies    | ok / **found**   | Count                        |
 | CPU guards | ok / **missing** | watchdog running, VM cap set |
 
-If everything is clean, say so and stop. If problems found, offer to kill the offenders. If the same process class repeatedly shows up as a hog (e.g., multiple Claude/node processes summing to >80% of cores), also suggest running `/doctor deep` for a CPU cap recommendation (Tier 3f).
+If everything is clean, say so and stop. If problems found, offer to kill the offenders. If the same process class repeatedly shows up as a hog (e.g., multiple Claude/node processes summing to >80% of cores), also suggest running `/machine-doctor deep` for a CPU cap recommendation (Tier 3f).
 
 ---
 
-## Tier 2: Gas Town Shutdown (`/doctor gastown`)
+## Tier 2: Gas Town Shutdown (`/machine-doctor gastown`)
 
 Gas Town is a multi-agent orchestration system that runs many Claude processes, a dolt database, and various supervisors. When it goes rogue, it can consume 400%+ CPU.
 
@@ -234,15 +236,15 @@ Report results. If anything survived, escalate to user — something unexpected 
 
 ---
 
-## Tier: Guards (`/doctor guards`)
+## Tier: Guards (`/machine-doctor guards`)
 
 Set up or verify the two-layer CPU guard for Igor's OrbStack Linux VM. Layer 1 is a Mac-side hypervisor cap (`orb config set cpu <N>`). Layer 2 is an in-VM reactive watchdog (`cpu-watchdog.sh` from [idvorkin/Settings](https://github.com/idvorkin/Settings/blob/main/shared/cpu-watchdog.sh)) that attaches `cpulimit` to runaway processes.
 
-**This tier lives in a separate file to keep SKILL.md lean.** When the user invokes `/doctor guards`, or when Tier 1e reports the guards as missing, Read [`doctor-guards.md`](./doctor-guards.md) in this directory for the full runbook — why the canonical `systemd-run --scope` approach doesn't work on OrbStack, Layer 1 / Layer 2 setup recipes, the `~/.zshrc` boot hook, the smoke test, and caveats.
+**This tier lives in a separate file to keep SKILL.md lean.** When the user invokes `/machine-doctor guards`, or when Tier 1e reports the guards as missing, Read [`doctor-guards.md`](./doctor-guards.md) in this directory for the full runbook — why the canonical `systemd-run --scope` approach doesn't work on OrbStack, Layer 1 / Layer 2 setup recipes, the `~/.zshrc` boot hook, the smoke test, and caveats.
 
 ---
 
-## Tier 3: Deep Probe (`/doctor deep`)
+## Tier 3: Deep Probe (`/machine-doctor deep`)
 
 Run Tier 1 vitals first, then these additional checks. Run Gas Town checks only if Gas Town processes are detected.
 
@@ -324,10 +326,10 @@ If Tier 1 found repeated CPU hogs, or you're here because "the machine keeps get
 
 **Key gotcha (all Linux/systemd):** `CPUQuota=` is percent **of one core**, not of the whole machine. This trips everyone up the first time. On an N-core box:
 
-| You want | Set |
-|---|---|
-| 80% of one core | `CPUQuota=80%` |
-| 80% of the whole machine | `CPUQuota=$((N * 80))%` |
+| You want                            | Set                                |
+| ----------------------------------- | ---------------------------------- |
+| 80% of one core                     | `CPUQuota=80%`                     |
+| 80% of the whole machine            | `CPUQuota=$((N * 80))%`            |
 | **Leave 1 core free (recommended)** | **`CPUQuota=$(((N - 1) * 100))%`** |
 
 "Leave 1 core free" is the default recommendation — 80% rounds ugly on small-core boxes, and one free core keeps the OS responsive.
@@ -365,7 +367,7 @@ You cannot set a true cgroup cap from inside — `/sys/fs/cgroup` is read-only a
 - **Docker container:** `docker update --cpus="<N>"` on the host.
 - **k8s pod:** edit `resources.limits.cpu` on the pod spec.
 
-**For OrbStack specifically:** after setting the Mac-side cap above, run `/doctor guards` (see the Guards tier earlier in this doc) to install the in-VM `cpu-watchdog` reactive layer. That's the two-layer pattern — Layer 1 ceiling from the host, Layer 2 early throttle from inside. For Docker/k8s with no in-container fallback, report to the user and stop.
+**For OrbStack specifically:** after setting the Mac-side cap above, run `/machine-doctor guards` (see the Guards tier earlier in this doc) to install the in-VM `cpu-watchdog` reactive layer. That's the two-layer pattern — Layer 1 ceiling from the host, Layer 2 early throttle from inside. For Docker/k8s with no in-container fallback, report to the user and stop.
 
 #### `ENV=darwin` (Mac host)
 
@@ -381,19 +383,19 @@ Verify with `top -o cpu` or Activity Monitor.
 
 ### Output Format
 
-| Check | Status | Detail |
-|---|---|---|
-| CPU | ok / **high** | Processes >20% |
-| Memory | ok / **low** | Available RAM |
-| Disk | ok / **full** | Usage % |
-| Zombies | ok / **found** | Count |
-| CPU guards | ok / **missing** | watchdog running, VM cap set |
-| Gas Town | clean / **running** | Process count |
-| Git locks | ok / **stale** | Files found |
-| Worktrees | ok / **orphaned** | Count |
-| Dev servers | ok / **stale** | Unresponsive servers |
-| MCP servers | ok / **heavy** | High resource usage |
-| npm/node | ok / **hung** | Long-running processes |
+| Check       | Status              | Detail                       |
+| ----------- | ------------------- | ---------------------------- |
+| CPU         | ok / **high**       | Processes >20%               |
+| Memory      | ok / **low**        | Available RAM                |
+| Disk        | ok / **full**       | Usage %                      |
+| Zombies     | ok / **found**      | Count                        |
+| CPU guards  | ok / **missing**    | watchdog running, VM cap set |
+| Gas Town    | clean / **running** | Process count                |
+| Git locks   | ok / **stale**      | Files found                  |
+| Worktrees   | ok / **orphaned**   | Count                        |
+| Dev servers | ok / **stale**      | Unresponsive servers         |
+| MCP servers | ok / **heavy**      | High resource usage          |
+| npm/node    | ok / **hung**       | Long-running processes       |
 
 ---
 
