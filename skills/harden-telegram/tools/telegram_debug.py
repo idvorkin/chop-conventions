@@ -19,7 +19,7 @@ Subcommands (run `telegram_debug.py --help` for the current list):
     direct-send "hi" [--chat-id N]                     # EMERGENCY Bot API send (bypasses MCP)
     send-reply "hi" --reply-to N --chat-id N           # Threaded reply
     react 👍 --message-id N --chat-id N                 # Set reaction
-    undelivered                                        # Undelivered inbound rows as JSON
+    undelivered                                        # Undelivered gate-allowed inbound rows as JSON
 """
 
 import hashlib
@@ -1651,8 +1651,15 @@ def show_undelivered() -> int:
     surfaces messages that telegram_bot.py captured but server.ts hasn't
     delivered to Claude. Does NOT mark rows delivered (the bridge handles
     that on reconnect; duplicates are harmless).
+
+    Only gate-allowed rows are shown (gate_action = 'allow'), matching
+    server.ts's selectUndelivered and the doctor's undelivered count.
+    Dropped/unauthorized senders and pairing spam must never surface here —
+    emergency mode has Claude reading raw rows, a prompt-injection surface.
     """
-    base = Path(os.environ.get("LARRY_TELEGRAM_DIR", str(Path.home() / "larry-telegram")))
+    base = Path(
+        os.environ.get("LARRY_TELEGRAM_DIR", str(Path.home() / "larry-telegram"))
+    )
     db_path = base / "inbound.db"
     if not db_path.exists():
         print(f"inbound.db not found at {db_path}", file=sys.stderr)
@@ -1662,7 +1669,7 @@ def show_undelivered() -> int:
     rows = conn.execute(
         "SELECT id, ts, chat_id, message_id, user_id, username, message_type, text,"
         " attachment_kind, attachment_file_id, attachment_mime, attachment_name"
-        " FROM inbound WHERE delivered = 0 ORDER BY id"
+        " FROM inbound WHERE delivered = 0 AND gate_action = 'allow' ORDER BY id"
     ).fetchall()
     result = [dict(r) for r in rows]
     print(json.dumps(result, indent=2, default=str))
@@ -1728,8 +1735,12 @@ def _build_app():
     @app.callback(invoke_without_command=True)
     def root(
         ctx: typer.Context,
-        json_out: bool = typer.Option(False, "--json", help="JSON output (pipe to jq)."),
-        tail: int = typer.Option(20, "--tail", help="Number of log lines/messages to show."),
+        json_out: bool = typer.Option(
+            False, "--json", help="JSON output (pipe to jq)."
+        ),
+        tail: int = typer.Option(
+            20, "--tail", help="Number of log lines/messages to show."
+        ),
     ) -> None:
         """Run the full diagnostic report when no subcommand is given."""
         if ctx.invoked_subcommand is not None:
@@ -1800,7 +1811,8 @@ def _build_app():
         Used by emergency-comms-mode polling when the MCP bridge is dead —
         surfaces messages that telegram_bot.py captured but server.ts hasn't
         delivered. Does NOT mark rows delivered (the bridge handles that on
-        reconnect; duplicates are harmless).
+        reconnect; duplicates are harmless). Only gate-allowed rows are
+        shown — dropped/unauthorized senders and pairing spam never surface.
         """
         raise typer.Exit(show_undelivered())
 

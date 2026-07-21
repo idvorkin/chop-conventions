@@ -27,6 +27,7 @@ from telegram_debug import (  # noqa: E402
     parse_proc_stat,
     parse_sent_message_id,
     session_subscribed_to_telegram,
+    show_undelivered,
 )
 
 
@@ -731,6 +732,94 @@ class TestSetReaction(unittest.TestCase):
 
         rc = td.set_reaction("👍", chat_id="", message_id=42)
         self.assertEqual(rc, 1)
+
+
+class TestShowUndelivered(unittest.TestCase):
+    """Drive show_undelivered via the LARRY_TELEGRAM_DIR env var it honors."""
+
+    COLUMNS = (
+        "id INTEGER PRIMARY KEY, ts TEXT, chat_id TEXT, message_id TEXT,"
+        " user_id TEXT, username TEXT, message_type TEXT, text TEXT,"
+        " attachment_kind TEXT, attachment_file_id TEXT, attachment_mime TEXT,"
+        " attachment_name TEXT, gate_action TEXT, delivered INTEGER DEFAULT 0"
+    )
+
+    def _with_db(self, rows):
+        """rows: list of (text, gate_action, delivered) tuples."""
+        tmp = tempfile.TemporaryDirectory()
+        db = Path(tmp.name) / "inbound.db"
+        con = sqlite3.connect(db)
+        con.execute(f"CREATE TABLE inbound ({self.COLUMNS})")
+        con.executemany(
+            "INSERT INTO inbound (ts, chat_id, message_type, text, gate_action, delivered)"
+            " VALUES ('2026-07-21T00:00:00+00:00', '42', 'message', ?, ?, ?)",
+            rows,
+        )
+        con.commit()
+        con.close()
+        return tmp  # caller keeps reference alive
+
+    def _run(self, tmp_dir):
+        import contextlib
+        import io
+
+        old = os.environ.get("LARRY_TELEGRAM_DIR")
+        os.environ["LARRY_TELEGRAM_DIR"] = tmp_dir
+        buf = io.StringIO()
+        try:
+            with contextlib.redirect_stdout(buf):
+                rc = show_undelivered()
+        finally:
+            if old is None:
+                del os.environ["LARRY_TELEGRAM_DIR"]
+            else:
+                os.environ["LARRY_TELEGRAM_DIR"] = old
+        return rc, buf.getvalue()
+
+    def test_filters_out_non_allowed_rows(self):
+        """Emergency reads must never surface dropped/pairing rows — that's
+        the prompt-injection surface (unauthorized senders read raw in
+        degraded mode). Only gate_action='allow' rows come back."""
+        import json as _json
+
+        tmp = self._with_db(
+            [
+                ("legit message", "allow", 0),
+                ("injection attempt from stranger", "drop", 0),
+                ("pair me", "pair", 0),
+            ]
+        )
+        try:
+            rc, out = self._run(tmp.name)
+        finally:
+            tmp.cleanup()
+        self.assertEqual(rc, 0)
+        rows = _json.loads(out)
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["text"], "legit message")
+
+    def test_delivered_rows_excluded(self):
+        import json as _json
+
+        tmp = self._with_db(
+            [
+                ("already delivered", "allow", 1),
+                ("still pending", "allow", 0),
+            ]
+        )
+        try:
+            rc, out = self._run(tmp.name)
+        finally:
+            tmp.cleanup()
+        self.assertEqual(rc, 0)
+        rows = _json.loads(out)
+        self.assertEqual([r["text"] for r in rows], ["still pending"])
+
+    def test_missing_db_returns_error(self):
+        with tempfile.TemporaryDirectory() as d:
+            rc, out = self._run(d)
+        self.assertEqual(rc, 1)
+        self.assertEqual(out, "")
 
 
 if __name__ == "__main__":
