@@ -17,7 +17,7 @@ Spawn a background Agent that reads and executes `_impl.md` in this skill's dire
 ```
 Agent(
   description: "Check usage",
-  prompt: "Read and execute ~/gits/chop-conventions/skills/background-usage/_impl.md — follow all steps and return the one-line summary.",
+  prompt: "Read and execute ~/.claude/skills/background-usage/_impl.md — follow all steps and return the one-line summary.",
   run_in_background: true
 )
 ```

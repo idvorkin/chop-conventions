@@ -1,9 +1,9 @@
-# Tier: Guards (`/doctor guards`)
+# Tier: Guards (`/machine-doctor guards`)
 
 > This file is loaded on demand by the `machine-doctor` skill. If the user
-> invokes `/doctor guards`, Read this file after completing Step 0 (Platform
-> Detection) from `SKILL.md`. It is not part of the default `/doctor` or
-> `/doctor deep` flow — Tier 1e in `SKILL.md` only *checks* whether the guard
+> invokes `/machine-doctor guards`, Read this file after completing Step 0 (Platform
+> Detection) from `SKILL.md`. It is not part of the default `/machine-doctor` or
+> `/machine-doctor deep` flow — Tier 1e in `SKILL.md` only _checks_ whether the guard
 > is live, not how to install it.
 
 Set up or verify the **two-layer CPU guard** for Igor's OrbStack Linux VM. Layer 1 is a Mac-side hypervisor cap. Layer 2 is an in-VM reactive watchdog that attaches `cpulimit` to runaway processes. Run this when Tier 1e reports the guards as missing, or when first configuring a new machine.
@@ -15,7 +15,7 @@ The canonical 2026 best practice on Linux is `systemd-run --scope -p CPUQuota=N%
 1. **No systemd.** PID 1 is `sh -c 'while true; do tmux...'`, not systemd. `systemd-run --user` fails with `DBUS_SESSION_BUS_ADDRESS` missing, and `sudo systemd-run` fails with "System has not been booted with systemd as init system".
 2. **Read-only cgroup2 fs.** `/sys/fs/cgroup` is mounted `ro,nsdelegate`. `sudo mount -o remount,rw /sys/fs/cgroup` returns "permission denied" — OrbStack strips the container's capability to remount. Direct writes like `echo "400000 100000" > /sys/fs/cgroup/cpu.max` therefore also fail.
 
-Userspace `cpulimit` is the fallback. It polls (~2s), has a fork-window gap, uses blunt SIGSTOP/SIGCONT duty-cycle throttling, and can only signal processes owned by the user running it. Pairing it with a Mac-side OrbStack cap gives you a hard ceiling *and* an early reactive throttle, which is good enough for a dev VM.
+Userspace `cpulimit` is the fallback. It polls (~2s), has a fork-window gap, uses blunt SIGSTOP/SIGCONT duty-cycle throttling, and can only signal processes owned by the user running it. Pairing it with a Mac-side OrbStack cap gives you a hard ceiling _and_ an early reactive throttle, which is good enough for a dev VM.
 
 ## Layer 1: OrbStack VM cap (runs on the Mac host)
 

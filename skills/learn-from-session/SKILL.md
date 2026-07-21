@@ -128,7 +128,7 @@ Route each target:
 - **No git context** (e.g. `~/.claude/CLAUDE.md` with `TARGET_REPO` empty) → machine-local, apply in-place. No prompt needed.
 - **Different repo** (`SESSION_REPO != TARGET_REPO`, both non-empty) → **STOP and ask the user**. Do not edit. Do not auto-delegate.
 
-The most common different-repo case is a lesson routing to `chop-conventions`' shared fragments (`claude-md/global.md`, `claude-md/machine.md`, `claude-md/dev-machine.md`, `machines/*.md`). Symlinks under `~/.claude/skills/` and `~/.claude/claude-md/` resolve back into `chop-conventions`, so a lesson about a skill's behavior lands here too — the toplevel check catches this correctly as long as you resolve symlinks first (`realpath <target>` before the `git -C` call).
+The most common different-repo case is a lesson routing to `chop-conventions`' shared fragments (`claude-md/global.md`, `claude-md/dev-machine.md`, `claude-md/machines/<name>.md` — e.g. `claude-md/machines/orbstack-dev.md`). Symlinks under `~/.claude/skills/` and `~/.claude/claude-md/` resolve back into `chop-conventions`, so a lesson about a skill's behavior lands here too — the toplevel check catches this correctly as long as you resolve symlinks first (`realpath <target>` before the `git -C` call).
 
 ### The cross-repo prompt
 

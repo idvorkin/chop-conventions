@@ -8,7 +8,7 @@ allowed-tools: Agent
 
 Parent Claude is handed an image path (Telegram attachment, screenshot the user pasted, photo dropped into the session). Reading it directly with the `Read` tool loads ~1000–2000 tokens of image payload into the parent's context and keeps them there for the rest of the session. Over a day of photos that adds up fast.
 
-Instead: dispatch a subagent at a cheap model (Haiku 4.5), have it return a rich text description, and keep the pixel payload out of the parent. Only the text summary lands in main context.
+Instead: dispatch a subagent at a cheap model (Haiku), have it return a rich text description, and keep the pixel payload out of the parent. Only the text summary lands in main context.
 
 **Sibling scope.** This skill is about READ/describe only. For image _generation_ see `gen-image` and `image-explore`. For hosting images in PRs see `gist-image`.
 
@@ -35,7 +35,7 @@ Dispatch a subagent with a purpose-aware prompt. The `<purpose>` slot is the mos
 Agent(
   description: "Read image",
   subagent_type: "general-purpose",
-  model: "claude-haiku-4-5",
+  model: "haiku",
   prompt: """
 Read the image at <ABSOLUTE_PATH>. Do NOT write anything to disk, do NOT
 call any other tools — just read it and describe it.
@@ -70,13 +70,13 @@ Always `run_in_background: true`. Never block the main thread on an image read �
 
 ## Escalation
 
-Re-dispatch at Sonnet 4.6 or Opus 4.7 when any of these fire:
+Re-dispatch at Sonnet or Opus when any of these fire:
 
 - Subagent returned `confidence: 6/10` or lower
 - The returned summary reads as ambiguous or hand-wavy on a point the parent needs (e.g. caller asked "what does the error say" and the summary just says "there's an error message")
 - Caller now needs a specific visual detail the Haiku pass didn't cover
 
-To escalate, re-invoke the same template with `model: "claude-sonnet-4-6"` (or `claude-opus-4-7` for load-bearing detail), and **tighten `<purpose>`** to name the specific detail you need. Don't re-run Haiku with the same prompt — Haiku already returned its best pass.
+To escalate, re-invoke the same template with `model: "sonnet"` (or `model: "opus"` for load-bearing detail), and **tighten `<purpose>`** to name the specific detail you need. Don't re-run Haiku with the same prompt — Haiku already returned its best pass.
 
 Never escalate past what's needed. Most inbound images are fine at Haiku.
 
@@ -84,9 +84,9 @@ Never escalate past what's needed. Most inbound images are fine at Haiku.
 
 Rough order-of-magnitude for a single image read:
 
-- **Haiku 4.5 subagent** (default): cheap, ~25× cheaper than Opus for the same image
-- **Sonnet 4.6 subagent** (escalate): mid-tier, use when Haiku's confidence was low
-- **Opus 4.7 subagent** (escalate): expensive, only for load-bearing detail
+- **Haiku subagent** (default): cheap, ~5× cheaper than Opus for the same image at current list rates
+- **Sonnet subagent** (escalate): mid-tier, use when Haiku's confidence was low
+- **Opus subagent** (escalate): expensive, only for load-bearing detail
 - **Parent `Read` direct** (avoid): cheapest per single operation but pixels stay in the parent's context for the rest of the session — the cost isn't the read, it's the carried payload
 
 The tradeoff: one-shot sessions with a single image are fine to Read directly. Anything resembling a multi-turn session with several images should go through this skill.
