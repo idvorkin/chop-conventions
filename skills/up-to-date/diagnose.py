@@ -309,9 +309,7 @@ def classify_machine(
         if mac_ver_nonempty:
             reasons.append("platform.system()==Darwin + mac_ver non-empty")
             return "mac", reasons
-        reasons.append(
-            "platform.system()==Darwin but mac_ver empty — falling through"
-        )
+        reasons.append("platform.system()==Darwin but mac_ver empty — falling through")
         return "unknown", reasons
     if system == "Linux":
         if home_developer_exists:
@@ -610,7 +608,9 @@ def check_shared_claude_md(
 # ---------- post-up-to-date hook detection ----------
 
 
-def check_post_up_to_date(repo_toplevel: Path | None) -> tuple[str | None, list[dict[str, Any]]]:
+def check_post_up_to_date(
+    repo_toplevel: Path | None,
+) -> tuple[str | None, list[dict[str, Any]]]:
     """Locate `<repo>/.claude/post-up-to-date.md` and enforce symlink refusal.
 
     Returns `(path_or_none, errors)`. If the hook exists as a symlink,
@@ -898,9 +898,10 @@ def run_diagnose() -> dict[str, Any]:
     else:
         worktree_entries = parse_worktree_list(worktree_proc.stdout)
 
-    # Run per-branch `git cherry` in parallel. This subsumes the old
-    # single-HEAD cherry call — HEAD is in local_branch_names if it's not
-    # detached, so we get its result from the same batch.
+    # Run per-branch `git cherry` in parallel for the absorption/worktree
+    # audit. HEAD's result comes from this batch when HEAD is a feature
+    # branch; when HEAD *is* the default branch it gets a dedicated call
+    # (head_cherry below) because the batch deliberately excludes it.
     #
     # Include any worktree branch not already in local_branch_names (e.g.
     # a worktree branch from a different remote context). De-dupe via set.
@@ -909,16 +910,32 @@ def run_diagnose() -> dict[str, Any]:
         if wt.branch:
             cherry_targets.add(wt.branch)
     # Skip the source's default branch — we never audit it against itself
-    # for absorption (it IS the absorption target).
+    # for absorption (it IS the absorption target), and downstream
+    # consumers of cherry_by_branch (absorbable_branches, the worktree
+    # "absorbed" flags) rely on it being absent.
     cherry_targets.discard(default_branch)
 
+    # When HEAD is the default branch it was excluded from the batch
+    # above, yet can_force_align and the ahead_patch_* fields still need
+    # real patch-equivalence data — so run a dedicated cherry call for it.
+    # The result stays OUT of cherry_by_branch so the absorption audit
+    # never sees the default branch.
+    head_cherry: CherryAnalysis | None = None
+    total_cherry_calls = len(cherry_targets) + (1 if is_main else 0)
     cherry_by_branch: dict[str, CherryAnalysis] = {}
-    if cherry_targets:
-        with ThreadPoolExecutor(max_workers=min(10, len(cherry_targets))) as pool:
+    if total_cherry_calls:
+        with ThreadPoolExecutor(max_workers=min(10, total_cherry_calls)) as pool:
             cherry_futs = {
                 b: pool.submit(git_proc, "cherry", "-v", src_default, b, check=False)
                 for b in cherry_targets
             }
+            head_cherry_fut = (
+                pool.submit(
+                    git_proc, "cherry", "-v", src_default, branch_name, check=False
+                )
+                if is_main
+                else None
+            )
             for b, fut in cherry_futs.items():
                 proc = fut.result()
                 if proc.returncode != 0:
@@ -927,14 +944,37 @@ def run_diagnose() -> dict[str, Any]:
                     )
                     continue
                 cherry_by_branch[b] = parse_cherry_status(proc.stdout.strip())
+            if head_cherry_fut is not None:
+                proc = head_cherry_fut.result()
+                if proc.returncode != 0:
+                    errors.append(
+                        f"git cherry -v {src_default} {branch_name} failed: "
+                        f"{proc.stderr.strip()}"
+                    )
+                else:
+                    head_cherry = parse_cherry_status(proc.stdout.strip())
 
-    # HEAD's cherry result flows into the existing branch block.
-    cherry = cherry_by_branch.get(
-        branch_name, CherryAnalysis(unique_commits=[], equivalent_commits=[])
-    )
+    # HEAD's cherry result: the dedicated call when HEAD is the default
+    # branch, the batch otherwise. The empty fallback covers detached
+    # HEAD and errored cherry calls.
+    if head_cherry is not None:
+        cherry = head_cherry
+    else:
+        cherry = cherry_by_branch.get(
+            branch_name, CherryAnalysis(unique_commits=[], equivalent_commits=[])
+        )
     ahead_patch_unique_commits = cherry.unique_commits[:10]
     ahead_patch_equivalent_commits = cherry.equivalent_commits[:10]
-    can_force_align = is_main and ahead > 0 and not cherry.unique_commits
+    # True only when a *successful* cherry call proved every ahead commit
+    # patch-equivalent upstream. head_cherry is None when the call failed
+    # (or HEAD isn't the default branch) — never grant force-push license
+    # on missing data.
+    can_force_align = (
+        is_main
+        and ahead > 0
+        and head_cherry is not None
+        and not head_cherry.unique_commits
+    )
 
     leftover_commits = [] if is_main else ahead_patch_unique_commits
 
