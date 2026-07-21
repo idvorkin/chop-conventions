@@ -60,7 +60,9 @@ RESPONSE_FILE="$WORK_DIR/response.json"
 # Build the parts array: text prompt first, then any reference images
 jq -n --arg prompt "$PROMPT" '[{ text: $prompt }]' > "$PARTS_FILE"
 
-for ref in "${REF_IMAGES[@]}"; do
+# ${arr[@]+...} guards against "unbound variable" on empty arrays under
+# set -u with bash 3.2 (macOS /bin/bash).
+for ref in ${REF_IMAGES[@]+"${REF_IMAGES[@]}"}; do
     if [[ ! -f "$ref" ]]; then
         echo "Warning: Reference image not found, skipping: $ref" >&2
         continue
@@ -100,11 +102,26 @@ jq -n \
 
 echo "Calling Gemini API..." >&2
 
-# Make the API call using file input to avoid argument length limits
-curl -s -X POST \
-    "${API_URL}?key=${GOOGLE_API_KEY}" \
+# Authenticate via the x-goog-api-key header, passed through a curl config
+# file so the key never appears in curl's argv (argv is world-readable via
+# /proc/*/cmdline for the duration of the call). A -H argument or a ?key=
+# query parameter would both leak. The config file lives in $WORK_DIR, so
+# the EXIT trap removes it on any exit; umask 077 creates it mode 600.
+CURL_CONF="$WORK_DIR/curl.conf"
+(umask 077; printf 'header = "x-goog-api-key: %s"\n' "$GOOGLE_API_KEY" > "$CURL_CONF")
+
+# Make the API call using file input to avoid argument length limits.
+# -sS: silent progress, but still print curl's own error on failure.
+CURL_STATUS=0
+curl -sS -X POST \
+    "$API_URL" \
+    -K "$CURL_CONF" \
     -H "Content-Type: application/json" \
-    -d @"$PAYLOAD_FILE" > "$RESPONSE_FILE"
+    -d @"$PAYLOAD_FILE" > "$RESPONSE_FILE" || CURL_STATUS=$?
+if [[ $CURL_STATUS -ne 0 ]]; then
+    echo "Error: curl request to Gemini API failed (exit $CURL_STATUS)" >&2
+    exit 1
+fi
 
 # Check for errors in the response
 ERROR=$(jq -r '.error.message // empty' "$RESPONSE_FILE" 2>/dev/null)
@@ -142,14 +159,17 @@ esac
 OUTPUT_EXT="${OUTPUT##*.}"
 OUTPUT_EXT="${OUTPUT_EXT,,}"  # lowercase
 
-# Decode the image to a temp file first
-TMPFILE=$(mktemp "/tmp/gemini-img-XXXXXX.${NATIVE_EXT}")
+# Decode the image to a temp file first — inside $WORK_DIR so the EXIT
+# trap cleans it up even when the script dies before the mv/rm below.
+TMPFILE="$WORK_DIR/decoded.${NATIVE_EXT}"
 echo "$IMAGE_DATA" | base64 -d > "$TMPFILE"
 
 # Convert if needed
 if [[ "$OUTPUT_EXT" == "webp" && "$NATIVE_EXT" != "webp" ]]; then
     if command -v cwebp &>/dev/null; then
-        cwebp -q 90 "$TMPFILE" -o "$OUTPUT" 2>/dev/null
+        # Don't suppress stderr: a cwebp failure aborts the script under
+        # set -e, and its diagnostic is the only clue why.
+        cwebp -q 90 "$TMPFILE" -o "$OUTPUT"
         rm -f "$TMPFILE"
     else
         # Fall back: save as png with the requested name but warn
