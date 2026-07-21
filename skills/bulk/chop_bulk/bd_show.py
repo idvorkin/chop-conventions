@@ -6,13 +6,13 @@ Output: JSON array, one entry per bead:
     {id, title, status, priority, type, parent, blocks, blocked_by, error?}
 
 Under the hood:
-    bd show <id> --json
+    bd show <id> --json --include-dependents
 
 **Array-vs-object quirk**: `bd show --json` returns a single-element
 array when the bead is found. Normalize with
 `payload[0] if isinstance(payload, list) else payload`.
-`parent`/`blocks`/`blocked_by` are derived from the bead's dependencies
-list (see `normalize_bead`).
+`parent`/`blocks`/`blocked_by` are derived from the bead's
+`dependencies` and `dependents` lists (see `normalize_bead`).
 """
 
 import json
@@ -26,9 +26,20 @@ def normalize_bead(raw: Any, requested_id: str) -> dict:
     """Pick the fields we surface from a raw `bd show` JSON payload.
 
     `bd show` returns a JSON array; the caller has already unwrapped it.
-    Dependency links live under `raw['dependencies']` as a list of
-    `{type, source, target}` entries. We re-slice that into
-    `parent` (single string), `blocks`, and `blocked_by` lists.
+
+    Real bd (verified against bd 1.0.5) emits `dependencies` as a list
+    of FULL ISSUE OBJECTS, each carrying the peer bead's `id` plus a
+    `dependency_type` string — there is no `{type, source, target}`
+    edge shape. Semantics: `dependencies` lists what THIS bead depends
+    on, so:
+      - `dependency_type: "blocks"` → that peer blocks us → `blocked_by`
+      - `dependency_type: "parent-child"` → that peer is our parent
+        (`bd dep add <child> <parent> -t parent-child`; bd also emits a
+        top-level `parent` field on the child, which we prefer)
+    Beads THIS bead blocks arrive in a separate `dependents` list
+    (same object shape), present only because `fetch_bead` passes
+    `--include-dependents`; its `"blocks"` entries feed `blocks`.
+    Other dependency types (tracks, related, ...) are ignored.
     """
     if not isinstance(raw, dict):
         return {
@@ -36,26 +47,30 @@ def normalize_bead(raw: Any, requested_id: str) -> dict:
             "error": f"bd show returned non-object: {type(raw).__name__}",
         }
     deps = raw.get("dependencies") or []
-    parent: str | None = None
+    dependents = raw.get("dependents") or []
+    top_parent = raw.get("parent")
+    parent: str | None = (
+        top_parent if isinstance(top_parent, str) and top_parent else None
+    )
     blocks: list[str] = []
     blocked_by: list[str] = []
     for d in deps if isinstance(deps, list) else []:
         if not isinstance(d, dict):
             continue
-        dtype = d.get("type")
-        source = d.get("source")
-        target = d.get("target")
-        # `parent-child`: the *parent* is whichever end is NOT this bead.
-        if dtype == "parent-child":
-            other = source if target == raw.get("id") else target
-            if other and parent is None:
-                parent = other
-        elif dtype == "blocks":
-            # This bead (source) blocks target; or target blocks us.
-            if source == raw.get("id") and target:
-                blocks.append(target)
-            elif target == raw.get("id") and source:
-                blocked_by.append(source)
+        peer = d.get("id")
+        if not peer:
+            continue
+        dtype = d.get("dependency_type")
+        if dtype == "blocks":
+            blocked_by.append(peer)
+        elif dtype == "parent-child" and parent is None:
+            parent = peer
+    for d in dependents if isinstance(dependents, list) else []:
+        if not isinstance(d, dict):
+            continue
+        peer = d.get("id")
+        if peer and d.get("dependency_type") == "blocks":
+            blocks.append(peer)
     return {
         "id": raw.get("id", requested_id),
         "title": raw.get("title"),
@@ -73,10 +88,12 @@ def fetch_bead(
     *,
     run: Any = None,
 ) -> dict:
-    """Fetch one bead via `bd show <id> --json`.
+    """Fetch one bead via `bd show <id> --json --include-dependents`.
 
-    Handles the `bd show` array-vs-object normalization. Failures
-    capture as `error` in the result.
+    `--include-dependents` (bd 1.0.5+) adds the `dependents` list that
+    `normalize_bead` needs to populate `blocks`; without it that field
+    could never fill. Handles the `bd show` array-vs-object
+    normalization. Failures capture as `error` in the result.
 
     `run=None` resolves to `subprocess.run` at call time so tests can
     `patch('chop_bulk.bd_show.subprocess.run', ...)` and have every
@@ -88,7 +105,7 @@ def fetch_bead(
     bid = str(bead_id).strip()
     if not bid:
         return {"id": bead_id, "error": "empty bead id"}
-    cmd = ["bd", "show", bid, "--json"]
+    cmd = ["bd", "show", bid, "--json", "--include-dependents"]
     try:
         result = run(cmd, capture_output=True, text=True, timeout=30)
     except Exception as exc:  # noqa: BLE001
@@ -148,10 +165,14 @@ def _build_app():  # pragma: no cover
             None, "--input-file", help="JSON file: array of bead IDs."
         ),
         max_workers: int = typer.Option(
-            DEFAULT_MAX_WORKERS, "--max-workers", min=1,
+            DEFAULT_MAX_WORKERS,
+            "--max-workers",
+            min=1,
             help="Max parallel `bd show` calls.",
         ),
-        pretty: bool = typer.Option(False, "--pretty", help="Pretty-print JSON output."),
+        pretty: bool = typer.Option(
+            False, "--pretty", help="Pretty-print JSON output."
+        ),
     ) -> None:
         if ctx.invoked_subcommand is not None:
             return
