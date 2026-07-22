@@ -22,7 +22,7 @@ import { z } from 'zod'
 import { Bot, InlineKeyboard, InputFile } from 'grammy'
 import type { ReactionTypeEmoji } from 'grammy/types'
 import { readFileSync, writeFileSync, mkdirSync, statSync, renameSync, realpathSync, chmodSync, appendFileSync } from 'fs'
-import { homedir } from 'os'
+import { homedir, hostname } from 'os'
 import { join, extname, sep } from 'path'
 import { Database } from 'bun:sqlite'
 import { createConnection, type Socket } from 'net'
@@ -562,7 +562,8 @@ CREATE TABLE IF NOT EXISTS inbound (
     callback_data TEXT,
     gate_action TEXT NOT NULL,
     delivered INTEGER DEFAULT 0,
-    error TEXT
+    error TEXT,
+    delivered_to TEXT
 );
 
 CREATE INDEX IF NOT EXISTS idx_inbound_undelivered ON inbound(delivered, id) WHERE delivered = 0;
@@ -591,6 +592,19 @@ type InboundRow = {
   error: string | null
 }
 
+// This bridge's identity for delivery attribution (bead igor2-bgt.25).
+// delivered=1 alone is anonymous: with N bun bridges (one per Claude session)
+// racing to claim rows from the same inbound.db, a message can be delivered
+// to a session the operator isn't watching with zero signal (rows 5884/5888,
+// 2026-07-22). Every claim stamps delivered_to with this id so the doctor's
+// DELIVERY check can flag foreign-session deliveries. Prefer the harness-
+// provided session id (present in plugin-spawned env — verified 2026-07-22);
+// fall back to hostname:pid:starttime, where starttime (ms epoch of process
+// start via performance.timeOrigin) disambiguates pid reuse.
+const BRIDGE_ID =
+  process.env.CLAUDE_CODE_SESSION_ID ??
+  `${hostname()}:${process.pid}:${Math.round(performance.timeOrigin)}`
+
 // Ensure the base directory exists — telegram_bot.py normally creates it,
 // but if server.ts starts first the bun:sqlite open would fail on ENOENT.
 mkdirSync(BASE_DIR, { recursive: true, mode: 0o700 })
@@ -610,7 +624,17 @@ try {
     process.exit(1)
   }
   inboundDb.run(INBOUND_SCHEMA)
-  log(`telegram channel: inbound.db opened at ${INBOUND_DB_PATH}`)
+  // delivered_to migration — telegram_bot.py owns the schema and applies the
+  // same guarded ALTER on startup, but this bridge may open a DB created by
+  // an older bot. Idempotent: ALTER only when the column is missing.
+  const inboundCols = inboundDb
+    .query<{ name: string }, []>('PRAGMA table_info(inbound)')
+    .all()
+  if (!inboundCols.some(c => c.name === 'delivered_to')) {
+    inboundDb.run('ALTER TABLE inbound ADD COLUMN delivered_to TEXT')
+    log('telegram channel: migrated inbound.db — added delivered_to column')
+  }
+  log(`telegram channel: inbound.db opened at ${INBOUND_DB_PATH} bridge_id=${BRIDGE_ID}`)
 } catch (err) {
   log(`telegram channel: failed to open inbound.db: ${err} — exiting`)
   process.exit(1)
@@ -627,10 +651,12 @@ const selectUndelivered = inboundDb.query<InboundRow, []>(
    ORDER BY id`,
 )
 
-// Mark delivered. BEGIN IMMEDIATE surfaces lock conflicts at the statement
-// boundary rather than at COMMIT (faster error path under contention).
-const markDelivered = inboundDb.query<unknown, [number]>(
-  'UPDATE inbound SET delivered = 1 WHERE id = ?',
+// Mark delivered + stamp WHICH bridge claimed the row (delivery attribution,
+// see BRIDGE_ID above). BEGIN IMMEDIATE surfaces lock conflicts at the
+// statement boundary rather than at COMMIT (faster error path under
+// contention).
+const markDelivered = inboundDb.query<unknown, [string, number]>(
+  'UPDATE inbound SET delivered = 1, delivered_to = ? WHERE id = ?',
 )
 
 // ---------------------------------------------------------------------------
@@ -696,14 +722,14 @@ async function deliverRow(row: InboundRow): Promise<void> {
       break
     default:
       log(`telegram channel: unknown message_type '${row.message_type}' for row id=${row.id} — marking delivered`)
-      markDelivered.run(row.id)
+      markDelivered.run(BRIDGE_ID, row.id)
       return
   }
 
   // Mark before the outer reaction — reaction is cosmetic (UX, not durability)
   // and swallows errors, so we don't want a botched reaction to re-deliver
   // the row on the next catch-up pass.
-  markDelivered.run(row.id)
+  markDelivered.run(BRIDGE_ID, row.id)
 
   // OUTER reaction — 🫡 liveness signal. Skip for permission_reply: bot.py
   // already set the outcome glyph (✔️/✖️) and free-tier reactions replace

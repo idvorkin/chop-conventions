@@ -64,10 +64,48 @@ def test_init_db_creates_schema(tmp_path):
         "gate_action",
         "delivered",
         "error",
+        "delivered_to",
     }
     assert required.issubset(cols), f"missing: {required - cols}"
     assert conn.execute("PRAGMA journal_mode").fetchone()[0] == "wal"
     conn.close()
+
+
+def test_init_db_migrates_delivered_to(tmp_path):
+    """A pre-migration DB (no delivered_to) gains the column on init.
+
+    CREATE TABLE IF NOT EXISTS is a no-op on existing DBs, so new columns
+    ship via the guarded ALTER in migrate_inbound_schema. Running init twice
+    proves idempotence (a second ALTER would raise 'duplicate column name').
+    Existing rows keep delivered_to NULL — that's the documented state for
+    rows delivered before attribution existed.
+    """
+    from telegram_bot import init_db_sync
+
+    db_path = tmp_path / "inbound.db"
+    conn = sqlite3.connect(db_path)
+    conn.execute(
+        "CREATE TABLE inbound ("
+        " id INTEGER PRIMARY KEY AUTOINCREMENT, ts TEXT NOT NULL,"
+        " chat_id TEXT NOT NULL, gate_action TEXT NOT NULL,"
+        " delivered INTEGER DEFAULT 0)"
+    )
+    conn.execute(
+        "INSERT INTO inbound (ts, chat_id, gate_action, delivered)"
+        " VALUES ('2026-07-22T09:00:00+00:00', '42', 'allow', 1)"
+    )
+    conn.commit()
+    conn.close()
+
+    init_db_sync(db_path)  # applies the guarded ALTER
+    init_db_sync(db_path)  # idempotent — must not raise
+
+    conn = sqlite3.connect(db_path)
+    cols = {r[1] for r in conn.execute("PRAGMA table_info(inbound)")}
+    assert "delivered_to" in cols
+    row = conn.execute("SELECT delivered, delivered_to FROM inbound").fetchone()
+    conn.close()
+    assert row == (1, None)  # old rows stay NULL — never an error
 
 
 def test_access_load_missing(tmp_path, monkeypatch):

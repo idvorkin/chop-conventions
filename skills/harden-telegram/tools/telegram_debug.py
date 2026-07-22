@@ -267,6 +267,87 @@ def classify_bridges(
     return bridges
 
 
+def parse_bridge_pid(identity: str) -> int | None:
+    """Extract the bridge pid from a `hostname:pid:starttime` delivered_to stamp.
+
+    server.ts stamps `inbound.delivered_to` with either the harness session id
+    (an opaque uuid, no colons) or `hostname:pid:starttime` (see BRIDGE_ID in
+    server.ts). Returns the pid for the latter shape, None otherwise —
+    session-id stamps are matched by exact string equality instead.
+    """
+    parts = identity.split(":")
+    if len(parts) != 3:
+        return None
+    try:
+        return int(parts[1])
+    except ValueError:
+        return None
+
+
+def parse_iso_ts(ts: str) -> float | None:
+    """Parse an inbound.db ISO-8601 `ts` into epoch seconds, or None.
+
+    Rows are written by telegram_bot.py with tz-aware UTC timestamps; a naive
+    timestamp is assumed UTC (matches the writer's convention).
+    """
+    if not ts:
+        return None
+    import datetime as _dt
+
+    try:
+        parsed = _dt.datetime.fromisoformat(ts.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=_dt.timezone.utc)
+    return parsed.timestamp()
+
+
+def classify_delivered_rows(
+    rows: list[dict],
+    our_identities: set[str],
+    our_bridge_pids: set[int],
+    now: float,
+    recent_window_s: float = 3600.0,
+) -> dict[str, list[dict]]:
+    """Classify delivered inbound rows for the doctor's DELIVERY check.
+
+    Each row dict needs `id`, `ts`, `delivered_to`. A row is OURS when its
+    delivered_to stamp is in `our_identities` (session-id form) or its
+    embedded pid is in `our_bridge_pids` (hostname:pid:starttime form).
+    Foreign rows split on age: within `recent_window_s` of `now` they are
+    `foreign_recent` (red — messages are actively being lost to another
+    session); older ones are `foreign_stale` (informational — e.g. a prior
+    session legitimately handled them). Unparseable timestamps count as
+    stale so a clock/format glitch can't page the operator. NULL/empty
+    delivered_to is `unattributed` — normal for pre-migration rows.
+
+    Pure — all process/DB I/O happens in the caller so tests can drive it
+    directly.
+    """
+    out: dict[str, list[dict]] = {
+        "ours": [],
+        "unattributed": [],
+        "foreign_recent": [],
+        "foreign_stale": [],
+    }
+    for row in rows:
+        identity = row.get("delivered_to")
+        if not identity:
+            out["unattributed"].append(row)
+            continue
+        pid = parse_bridge_pid(identity)
+        if identity in our_identities or (pid is not None and pid in our_bridge_pids):
+            out["ours"].append(row)
+            continue
+        ts_epoch = parse_iso_ts(row.get("ts") or "")
+        if ts_epoch is not None and (now - ts_epoch) <= recent_window_s:
+            out["foreign_recent"].append(row)
+        else:
+            out["foreign_stale"].append(row)
+    return out
+
+
 def check_claude_sessions() -> list[dict]:
     """Find all Claude Code sessions."""
     output = run(["bash", "-c", r"\ps -ef | grep -v grep | grep claude.*dangerously"])
@@ -830,8 +911,15 @@ def _doctor_check_inbound_db(report: DoctorReport, base: Path) -> None:
         report.ok(summary)
 
 
-def _doctor_check_server_ts(report: DoctorReport) -> None:
-    report.section("SERVER.TS")
+def _find_telegram_bridge_pids() -> list[int] | str:
+    """pgrep for bun server.ts processes and filter to the Telegram plugin's.
+
+    Filters by /proc/<pid>/cwd containing TELEGRAM_PLUGIN_MARKER — other bun
+    server.ts processes (unrelated projects) don't count. Returns the pid
+    list on success, or an error string when pgrep itself failed. Shared by
+    the SERVER.TS and DELIVERY doctor checks so both agree on what counts
+    as a bridge.
+    """
     try:
         r = subprocess.run(
             ["pgrep", "-f", "bun.*server.ts"],
@@ -840,17 +928,22 @@ def _doctor_check_server_ts(report: DoctorReport) -> None:
             timeout=5,
         )
     except (FileNotFoundError, subprocess.TimeoutExpired) as e:
-        report.fail(f"pgrep failed: {e}")
-        return
-
-    # Filter to the Telegram plugin's bridges by /proc/<pid>/cwd.
-    # Other bun server.ts processes (unrelated projects) don't count here.
+        return f"pgrep failed: {e}"
     candidate_pids = [int(p) for p in r.stdout.strip().split() if p.isdigit()]
-    tg_pids = [
+    return [
         pid
         for pid in candidate_pids
         if TELEGRAM_PLUGIN_MARKER in (_proc_cwd(str(pid)) or "")
     ]
+
+
+def _doctor_check_server_ts(report: DoctorReport) -> None:
+    report.section("SERVER.TS")
+    pids_or_err = _find_telegram_bridge_pids()
+    if isinstance(pids_or_err, str):
+        report.fail(pids_or_err)
+        return
+    tg_pids = pids_or_err
 
     our_claude = _find_owning_claude(os.getpid())
     bridges = classify_bridges(tg_pids, our_claude)
@@ -907,8 +1000,161 @@ def _doctor_check_server_ts(report: DoctorReport) -> None:
         )
 
 
-def _doctor_check_session_subscription(report: DoctorReport) -> None:
-    """Warn if this Claude session wasn't launched with --channels telegram.
+# DELIVERY check knobs: how many recently-delivered rows to attribute, and how
+# fresh a foreign-delivered row must be to count as red (older ones are noted
+# as stale — a prior session may have legitimately handled them).
+DELIVERY_SAMPLE_ROWS = 10
+DELIVERY_RECENT_WINDOW_S = 3600.0
+
+
+def _bridge_session_ids(pids: set[int]) -> set[str]:
+    """Read CLAUDE_CODE_SESSION_ID from /proc/<pid>/environ for each bridge pid.
+
+    A bridge that stamped delivered_to with its session id can only be
+    matched back to OUR session by reading the same env var out of the live
+    process. Unreadable /proc entries (process gone, permissions) are
+    silently skipped — the pid-based fallback still covers those bridges.
+    """
+    ids: set[str] = set()
+    for pid in pids:
+        try:
+            data = Path(f"/proc/{pid}/environ").read_bytes()
+        except (OSError, ValueError):
+            continue
+        for chunk in data.split(b"\x00"):
+            if chunk.startswith(b"CLAUDE_CODE_SESSION_ID="):
+                ids.add(chunk.split(b"=", 1)[1].decode("utf-8", "replace"))
+                break
+    return ids
+
+
+def _doctor_check_delivery(
+    report: DoctorReport,
+    base: Path,
+    *,
+    find_bridge_pids=_find_telegram_bridge_pids,
+    find_owning_claude=_find_owning_claude,
+    bridge_session_ids=_bridge_session_ids,
+    stat_reader=_read_proc_stat,
+    is_alive=_pid_alive,
+    now: float | None = None,
+) -> None:
+    """DELIVERY — detect the multi-bridge race that silently loses messages.
+
+    The checks above validate ONE chain's plumbing; they stay green while N
+    bun bridges (one per Claude session — igor-city deployments, stale
+    sessions) race to claim rows from the same inbound.db and a message
+    lands in a session the operator isn't watching. 2026-07-22: rows
+    5884/5888 were marked delivered=1 by a foreign bridge, never reached
+    the primary Larry session, and the doctor stayed green. This section
+    makes that failure visible:
+
+      * >1 telegram bridge polling the same inbound.db → FAIL (the race
+        itself silently loses messages — red, not a warning)
+      * recent rows whose delivered_to is another session's bridge → FAIL
+      * pre-migration DBs without delivered_to → note + skip, never crash
+
+    Discovery/env/clock inputs are injected for tests.
+    """
+    report.section("DELIVERY")
+    if now is None:
+        now = time.time()
+
+    pids_or_err = find_bridge_pids()
+    if isinstance(pids_or_err, str):
+        report.warn(f"{pids_or_err} — DELIVERY check skipped")
+        return
+    tg_pids = pids_or_err
+
+    if len(tg_pids) > 1:
+        pids_str = ", ".join(str(p) for p in sorted(tg_pids))
+        # fail, not warn: every extra bridge can claim rows meant for this
+        # session with zero signal — that IS the silent-loss incident, not a
+        # precursor to it.
+        report.fail(
+            f"delivery race: {len(tg_pids)} competing bridges polling "
+            f"inbound.db (pids {pids_str}) — any of them can claim new rows"
+        )
+    elif len(tg_pids) == 1:
+        report.ok(f"single bridge polling inbound.db (pid {tg_pids[0]})")
+    else:
+        report.note("no telegram bridges running — nothing polling inbound.db")
+
+    db_path = base / "inbound.db"
+    if not db_path.exists():
+        # INBOUND.DB section already fails on a missing DB — don't double-fail.
+        report.note("inbound.db missing — delivery attribution skipped")
+        return
+    try:
+        conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True, timeout=2)
+        try:
+            cols = {row[1] for row in conn.execute("PRAGMA table_info(inbound)")}
+            if "delivered_to" not in cols:
+                report.note(
+                    "delivered_to column not present (pre-migration DB) — "
+                    "attribution skipped; restart telegram_bot.py to migrate"
+                )
+                return
+            rows = [
+                {"id": r[0], "ts": r[1], "delivered_to": r[2]}
+                for r in conn.execute(
+                    "SELECT id, ts, delivered_to FROM inbound"
+                    " WHERE delivered = 1 AND gate_action = 'allow'"
+                    " ORDER BY id DESC LIMIT ?",
+                    (DELIVERY_SAMPLE_ROWS,),
+                )
+            ]
+        finally:
+            conn.close()
+    except sqlite3.Error as e:
+        report.warn(f"delivered_to query failed: {e} — attribution skipped")
+        return
+
+    if not rows:
+        report.note("no delivered rows yet — nothing to attribute")
+        return
+
+    our_claude = find_owning_claude(os.getpid())
+    if our_claude is None:
+        report.note(
+            "doctor not inside a Claude session — foreign-delivery check skipped"
+        )
+        return
+
+    bridges = classify_bridges(
+        tg_pids, our_claude, stat_reader=stat_reader, is_alive=is_alive
+    )
+    our_pids = {b["pid"] for b in bridges if b["classification"] == "ours"}
+    our_identities = set(bridge_session_ids(our_pids))
+    env_session = os.environ.get("CLAUDE_CODE_SESSION_ID")
+    if env_session:
+        our_identities.add(env_session)
+
+    result = classify_delivered_rows(
+        rows, our_identities, our_pids, now, DELIVERY_RECENT_WINDOW_S
+    )
+    foreign_recent = result["foreign_recent"]
+    if foreign_recent:
+        detail = ", ".join(f"row {r['id']}→{r['delivered_to']}" for r in foreign_recent)
+        report.fail(
+            f"recent inbound delivered to foreign session(s): {detail} — "
+            "messages are landing in a session you aren't watching"
+        )
+    else:
+        report.ok(
+            f"last {len(rows)} delivered rows: {len(result['ours'])} this "
+            f"session, {len(result['unattributed'])} unattributed, "
+            f"{len(result['foreign_stale'])} foreign >1h old"
+        )
+
+
+def _doctor_check_session_subscription(
+    report: DoctorReport,
+    *,
+    find_owning_claude=_find_owning_claude,
+    read_cmdline=_read_proc_cmdline,
+) -> None:
+    """Fail if this Claude session wasn't launched with --channels telegram.
 
     Without `--channels plugin:telegram@claude-plugins-official`, the MCP
     bridge can still send messages (plain tool call) but inbound Telegram
@@ -916,15 +1162,25 @@ def _doctor_check_session_subscription(report: DoctorReport) -> None:
     harness drops the notifications. This check catches the silent-
     receive-path failure that is otherwise only detectable by sending a
     test message and watching it vanish.
+
+    fail, not warn (escalated after 2026-07-22): the primary session had
+    been resumed without --channels, so inbound could never surface there —
+    and the doctor printed exactly this condition as a ⚠️ while still
+    exiting 0/green. A session that cannot receive inbound is a broken
+    chain, not a degraded one. Send-only sessions that intentionally skip
+    --channels can ignore this specific red, but the doctor's job is to
+    make the operator decide, not to stay silent.
+
+    Discovery inputs are injected for tests.
     """
     report.section("SESSION")
-    our_claude = _find_owning_claude(os.getpid())
+    our_claude = find_owning_claude(os.getpid())
     if our_claude is None:
         report.note(
             "doctor not running inside a Claude session — subscription check skipped"
         )
         return
-    argv = _read_proc_cmdline(our_claude)
+    argv = read_cmdline(our_claude)
     if argv is None:
         report.warn(
             f"could not read /proc/{our_claude}/cmdline — subscription check skipped"
@@ -936,10 +1192,7 @@ def _doctor_check_session_subscription(report: DoctorReport) -> None:
             "inbound messages will surface as channel blocks"
         )
     else:
-        # warn, not fail: send-only sessions (outbound MCP tool calls without
-        # needing inbound notifications) are a legitimate use case, so don't
-        # poison the doctor's exit code.
-        report.warn(
+        report.fail(
             f"claude pid={our_claude} launched WITHOUT --channels telegram — "
             "bridge can send but incoming messages won't surface. "
             "Relaunch with: claude ... "
@@ -1185,6 +1438,7 @@ def run_doctor() -> int:
     _doctor_check_socket(report, base)
     _doctor_check_inbound_db(report, base)
     _doctor_check_server_ts(report)
+    _doctor_check_delivery(report, base)
     _doctor_check_session_subscription(report)
     _doctor_check_deploy(report)
     report.section("CONFIG")

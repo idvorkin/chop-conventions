@@ -15,7 +15,10 @@ sys.path.insert(0, str(Path(__file__).parent))
 
 from telegram_debug import (  # noqa: E402
     REACTION_WHITELIST,
+    DoctorReport,
     _default_chat_id,
+    _doctor_check_delivery,
+    _doctor_check_session_subscription,
     _find_owning_claude,
     _read_bot_token,
     _redact,
@@ -23,7 +26,10 @@ from telegram_debug import (  # noqa: E402
     build_react_request,
     build_reply_request,
     classify_bridges,
+    classify_delivered_rows,
+    parse_bridge_pid,
     parse_env_token,
+    parse_iso_ts,
     parse_proc_stat,
     parse_sent_message_id,
     session_subscribed_to_telegram,
@@ -820,6 +826,346 @@ class TestShowUndelivered(unittest.TestCase):
             rc, out = self._run(d)
         self.assertEqual(rc, 1)
         self.assertEqual(out, "")
+
+
+class TestParseBridgePid(unittest.TestCase):
+    def test_host_pid_starttime(self):
+        self.assertEqual(parse_bridge_pid("c-5001:4242:1753100000000"), 4242)
+
+    def test_session_uuid_returns_none(self):
+        # Session-id stamps have no colon structure — matched by equality,
+        # not pid extraction.
+        self.assertIsNone(parse_bridge_pid("c21f2a53-b3c9-40cf-a31a-f0fb59e781dd"))
+
+    def test_non_numeric_pid_returns_none(self):
+        self.assertIsNone(parse_bridge_pid("host:notapid:123"))
+
+    def test_wrong_arity_returns_none(self):
+        self.assertIsNone(parse_bridge_pid("host:123"))
+        self.assertIsNone(parse_bridge_pid("a:1:2:3"))
+
+    def test_empty_returns_none(self):
+        self.assertIsNone(parse_bridge_pid(""))
+
+
+class TestParseIsoTs(unittest.TestCase):
+    def test_utc_offset_form(self):
+        # telegram_bot.py writes tz-aware UTC isoformat (+00:00).
+        self.assertEqual(parse_iso_ts("2026-07-22T10:00:00+00:00"), 1784714400.0)
+
+    def test_z_suffix_form(self):
+        self.assertEqual(parse_iso_ts("2026-07-22T10:00:00Z"), 1784714400.0)
+
+    def test_naive_assumed_utc(self):
+        # A naive ts must NOT be interpreted in local time — the writer's
+        # convention is UTC.
+        self.assertEqual(parse_iso_ts("2026-07-22T10:00:00"), 1784714400.0)
+
+    def test_fractional_seconds(self):
+        self.assertAlmostEqual(
+            parse_iso_ts("2026-07-22T10:00:00.500+00:00") or 0.0, 1784714400.5
+        )
+
+    def test_garbage_returns_none(self):
+        self.assertIsNone(parse_iso_ts("not-a-timestamp"))
+
+    def test_empty_returns_none(self):
+        self.assertIsNone(parse_iso_ts(""))
+
+
+class TestClassifyDeliveredRows(unittest.TestCase):
+    NOW = 1784714400.0  # 2026-07-22T10:00:00Z
+    RECENT = "2026-07-22T09:30:00+00:00"  # 30 min before NOW
+    STALE = "2026-07-21T09:00:00+00:00"  # 25 h before NOW
+
+    def classify(self, rows, our_identities=None, our_pids=None):
+        return classify_delivered_rows(
+            rows,
+            our_identities or set(),
+            our_pids or set(),
+            self.NOW,
+            recent_window_s=3600.0,
+        )
+
+    def test_null_delivered_to_is_unattributed(self):
+        # Pre-migration rows — never an error.
+        rows = [{"id": 1, "ts": self.RECENT, "delivered_to": None}]
+        result = self.classify(rows)
+        self.assertEqual([r["id"] for r in result["unattributed"]], [1])
+        self.assertEqual(result["foreign_recent"], [])
+
+    def test_ours_by_session_id(self):
+        rows = [{"id": 2, "ts": self.RECENT, "delivered_to": "sess-abc"}]
+        result = self.classify(rows, our_identities={"sess-abc"})
+        self.assertEqual([r["id"] for r in result["ours"]], [2])
+
+    def test_ours_by_pid_fallback(self):
+        rows = [{"id": 3, "ts": self.RECENT, "delivered_to": "c-5001:4242:170000"}]
+        result = self.classify(rows, our_pids={4242})
+        self.assertEqual([r["id"] for r in result["ours"]], [3])
+
+    def test_foreign_recent_within_window(self):
+        # The 2026-07-22 failure story: a fresh row claimed by another
+        # session's bridge.
+        rows = [{"id": 5884, "ts": self.RECENT, "delivered_to": "other-session-id"}]
+        result = self.classify(rows, our_identities={"sess-abc"}, our_pids={4242})
+        self.assertEqual([r["id"] for r in result["foreign_recent"]], [5884])
+
+    def test_foreign_old_is_stale(self):
+        rows = [{"id": 4, "ts": self.STALE, "delivered_to": "other-session-id"}]
+        result = self.classify(rows, our_identities={"sess-abc"})
+        self.assertEqual([r["id"] for r in result["foreign_stale"]], [4])
+        self.assertEqual(result["foreign_recent"], [])
+
+    def test_foreign_unparseable_ts_is_stale_not_red(self):
+        # Documented conservative choice: a clock/format glitch must not
+        # page the operator.
+        rows = [{"id": 5, "ts": "garbage", "delivered_to": "other"}]
+        result = self.classify(rows)
+        self.assertEqual([r["id"] for r in result["foreign_stale"]], [5])
+
+    def test_mixed_rows_partition_completely(self):
+        rows = [
+            {"id": 1, "ts": self.RECENT, "delivered_to": None},
+            {"id": 2, "ts": self.RECENT, "delivered_to": "sess-abc"},
+            {"id": 3, "ts": self.RECENT, "delivered_to": "h:4242:1"},
+            {"id": 4, "ts": self.RECENT, "delivered_to": "foreign"},
+            {"id": 5, "ts": self.STALE, "delivered_to": "foreign"},
+        ]
+        result = self.classify(rows, our_identities={"sess-abc"}, our_pids={4242})
+        self.assertEqual(
+            sum(len(v) for v in result.values()), len(rows), "every row lands somewhere"
+        )
+        self.assertEqual([r["id"] for r in result["foreign_recent"]], [4])
+
+
+class TestDoctorCheckDelivery(unittest.TestCase):
+    """Drive _doctor_check_delivery end-to-end against a temp DB with all
+    process discovery injected — no live processes are ever touched."""
+
+    NOW = 1784714400.0  # 2026-07-22T10:00:00Z
+    RECENT = "2026-07-22T09:30:00+00:00"
+
+    def _make_db(self, tmp_dir, rows, *, with_column=True):
+        """rows: list of (ts, gate_action, delivered, delivered_to)."""
+        db = Path(tmp_dir) / "inbound.db"
+        con = sqlite3.connect(db)
+        cols = "id INTEGER PRIMARY KEY, ts TEXT, gate_action TEXT, delivered INTEGER DEFAULT 0"
+        if with_column:
+            cols += ", delivered_to TEXT"
+        con.execute(f"CREATE TABLE inbound ({cols})")
+        if with_column:
+            con.executemany(
+                "INSERT INTO inbound (ts, gate_action, delivered, delivered_to)"
+                " VALUES (?, ?, ?, ?)",
+                rows,
+            )
+        else:
+            con.executemany(
+                "INSERT INTO inbound (ts, gate_action, delivered) VALUES (?, ?, ?)",
+                [r[:3] for r in rows],
+            )
+        con.commit()
+        con.close()
+
+    def _run(
+        self,
+        tmp_dir,
+        *,
+        bridge_pids,
+        owning_claude=300,
+        session_ids=None,
+        stat_table=None,
+    ):
+        report = DoctorReport()
+        # Default /proc topology: every bridge pid is a child of OUR claude
+        # (pid 300) unless the test supplies its own table.
+        if stat_table is not None:
+            table = stat_table
+        elif isinstance(bridge_pids, list):
+            table = {pid: ("bun", 300) for pid in bridge_pids}
+        else:
+            table = {}
+        table.setdefault(300, ("claude", 1))
+
+        _doctor_check_delivery(
+            report,
+            Path(tmp_dir),
+            find_bridge_pids=lambda: bridge_pids,
+            find_owning_claude=lambda pid, **kw: owning_claude,
+            bridge_session_ids=lambda pids: session_ids or set(),
+            stat_reader=lambda pid: table.get(pid),
+            is_alive=lambda pid: True,
+            now=self.NOW,
+        )
+        return report
+
+    def test_pre_migration_db_skips_with_note_no_crash(self):
+        with tempfile.TemporaryDirectory() as d:
+            self._make_db(d, [(self.RECENT, "allow", 1, None)], with_column=False)
+            report = self._run(d, bridge_pids=[500])
+        self.assertEqual(report.failures, 0)
+        self.assertTrue(
+            any("pre-migration" in line for line in report.lines),
+            report.lines,
+        )
+
+    def test_multi_bridge_race_is_red(self):
+        # Red, not warn: with N bridges racing on one inbound.db, any of
+        # them can claim rows meant for this session with zero signal —
+        # the race itself is the silent-loss incident (2026-07-22).
+        with tempfile.TemporaryDirectory() as d:
+            self._make_db(d, [])
+            report = self._run(d, bridge_pids=[500, 600, 700])
+        self.assertEqual(report.failures, 1)
+        self.assertTrue(
+            any("delivery race: 3 competing bridges" in line for line in report.lines),
+            report.lines,
+        )
+
+    def test_single_bridge_no_race_red(self):
+        with tempfile.TemporaryDirectory() as d:
+            self._make_db(d, [])
+            report = self._run(d, bridge_pids=[500])
+        self.assertEqual(report.failures, 0)
+        self.assertTrue(
+            any("single bridge polling inbound.db" in line for line in report.lines),
+            report.lines,
+        )
+
+    def test_recent_foreign_delivery_is_red(self):
+        # The failure story this check exists for: fresh rows claimed by a
+        # bridge outside this session.
+        with tempfile.TemporaryDirectory() as d:
+            self._make_db(
+                d,
+                [
+                    (self.RECENT, "allow", 1, "foreign-session-uuid"),
+                    (self.RECENT, "allow", 1, "our-session-uuid"),
+                ],
+            )
+            report = self._run(d, bridge_pids=[500], session_ids={"our-session-uuid"})
+        self.assertEqual(report.failures, 1)
+        self.assertTrue(
+            any(
+                "recent inbound delivered to foreign session" in line
+                for line in report.lines
+            ),
+            report.lines,
+        )
+
+    def test_all_ours_is_green(self):
+        with tempfile.TemporaryDirectory() as d:
+            self._make_db(
+                d,
+                [
+                    (self.RECENT, "allow", 1, "our-session-uuid"),
+                    (self.RECENT, "allow", 1, None),  # pre-migration row
+                ],
+            )
+            report = self._run(d, bridge_pids=[500], session_ids={"our-session-uuid"})
+        self.assertEqual(report.failures, 0)
+        self.assertTrue(
+            any("1 this session, 1 unattributed" in line for line in report.lines),
+            report.lines,
+        )
+
+    def test_ours_via_pid_stamp(self):
+        # Bridge stamped hostname:pid:starttime (no session id in its env) —
+        # attribution matches via the pid of a bridge owned by our claude.
+        with tempfile.TemporaryDirectory() as d:
+            self._make_db(d, [(self.RECENT, "allow", 1, "c-5001:500:1753000000000")])
+            report = self._run(d, bridge_pids=[500])
+        self.assertEqual(report.failures, 0)
+
+    def test_outside_claude_session_skips_attribution(self):
+        # Cron/CI invocation — no session scope, so no foreign judgment.
+        with tempfile.TemporaryDirectory() as d:
+            self._make_db(d, [(self.RECENT, "allow", 1, "whatever")])
+            report = self._run(d, bridge_pids=[500], owning_claude=None)
+        self.assertEqual(report.failures, 0)
+        self.assertTrue(
+            any("foreign-delivery check skipped" in line for line in report.lines),
+            report.lines,
+        )
+
+    def test_missing_db_notes_and_returns(self):
+        with tempfile.TemporaryDirectory() as d:
+            report = self._run(d, bridge_pids=[500])
+        self.assertEqual(report.failures, 0)
+        self.assertTrue(
+            any("inbound.db missing" in line for line in report.lines),
+            report.lines,
+        )
+
+    def test_discovery_failure_skips_gracefully(self):
+        with tempfile.TemporaryDirectory() as d:
+            self._make_db(d, [])
+            report = self._run(d, bridge_pids="pgrep failed: boom")
+        self.assertEqual(report.failures, 0)
+        self.assertTrue(
+            any("DELIVERY check skipped" in line for line in report.lines),
+            report.lines,
+        )
+
+
+class TestDoctorCheckSessionSubscription(unittest.TestCase):
+    """Severity of the --channels check. The pure argv parser is covered by
+    TestSessionSubscribedToTelegram; these pin the red/green/skip outcomes
+    with process discovery injected."""
+
+    def _run(self, *, owning_claude=300, argv):
+        report = DoctorReport()
+        _doctor_check_session_subscription(
+            report,
+            find_owning_claude=lambda pid, **kw: owning_claude,
+            read_cmdline=lambda pid: argv,
+        )
+        return report
+
+    def test_without_channels_is_red(self):
+        # Escalated after 2026-07-22: a session resumed without --channels
+        # can never surface inbound, and the old ⚠️ still exited 0/green.
+        report = self._run(argv=["claude", "--dangerously-skip-permissions"])
+        self.assertEqual(report.failures, 1)
+        self.assertTrue(
+            any("WITHOUT --channels telegram" in line for line in report.lines),
+            report.lines,
+        )
+        # The relaunch hint must survive the escalation.
+        self.assertTrue(
+            any(
+                "--channels plugin:telegram@claude-plugins-official" in line
+                for line in report.lines
+            ),
+            report.lines,
+        )
+
+    def test_with_channels_is_green(self):
+        report = self._run(
+            argv=[
+                "claude",
+                "--channels",
+                "plugin:telegram@claude-plugins-official",
+            ]
+        )
+        self.assertEqual(report.failures, 0)
+        self.assertTrue(
+            any("launched with --channels telegram" in line for line in report.lines),
+            report.lines,
+        )
+
+    def test_outside_claude_session_skips(self):
+        report = self._run(owning_claude=None, argv=None)
+        self.assertEqual(report.failures, 0)
+
+    def test_unreadable_cmdline_warns_not_red(self):
+        report = self._run(argv=None)
+        self.assertEqual(report.failures, 0)
+        self.assertTrue(
+            any("subscription check skipped" in line for line in report.lines),
+            report.lines,
+        )
 
 
 if __name__ == "__main__":
