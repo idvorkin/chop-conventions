@@ -73,12 +73,34 @@ CREATE TABLE IF NOT EXISTS inbound (
     callback_data TEXT,
     gate_action TEXT NOT NULL,
     delivered INTEGER DEFAULT 0,
-    error TEXT
+    error TEXT,
+    delivered_to TEXT
 );
 
 CREATE INDEX IF NOT EXISTS idx_inbound_undelivered ON inbound(delivered, id) WHERE delivered = 0;
 CREATE INDEX IF NOT EXISTS idx_inbound_ts ON inbound(ts);
 """
+
+# Columns added after the original CREATE TABLE shipped. "CREATE TABLE IF NOT
+# EXISTS" is a no-op on existing DBs, so every later column also needs an
+# idempotent guarded ALTER applied at startup. Keep SCHEMA above in sync so
+# fresh DBs and migrated DBs converge on the same shape.
+INBOUND_MIGRATIONS: tuple[tuple[str, str], ...] = (
+    # delivered_to (bead igor2-bgt.25): identity of the server.ts bridge that
+    # marked the row delivered. delivered=1 alone is anonymous — with several
+    # bun bridges racing on one inbound.db, a row can be claimed by a session
+    # the operator isn't watching. server.ts stamps this on claim (see its
+    # BRIDGE_ID); the doctor's DELIVERY check reads it. Old rows stay NULL.
+    ("delivered_to", "ALTER TABLE inbound ADD COLUMN delivered_to TEXT"),
+)
+
+
+def migrate_inbound_schema(conn: sqlite3.Connection) -> None:
+    """Apply idempotent column migrations to an existing inbound table."""
+    existing = {row[1] for row in conn.execute("PRAGMA table_info(inbound)")}
+    for column, ddl in INBOUND_MIGRATIONS:
+        if column not in existing:
+            conn.execute(ddl)
 
 
 def init_db_sync(db_path: Path) -> None:
@@ -88,6 +110,7 @@ def init_db_sync(db_path: Path) -> None:
     conn = sqlite3.connect(db_path)
     try:
         conn.executescript(SCHEMA)
+        migrate_inbound_schema(conn)
         conn.commit()
     finally:
         conn.close()

@@ -76,6 +76,21 @@ Runs every check, prints ✅/⚠️/❌ per section, tails `server.log`, shows s
 
 Read the output top-to-bottom. If everything is green, say so and stop. If anything is red, proceed to Tier 2 for redeploys or Tier 3 for known failure modes.
 
+### DELIVERY check (multi-session race)
+
+`delivered = 1` alone is anonymous. Every Claude session spawns its own bun `server.ts`, and **all of them poll the same `inbound.db`** — whichever bridge wakes first claims the row and delivers it to _its_ session. With N sessions on one machine (igor-city deployments, stale sessions), a message can land in a session nobody is watching while every per-chain check stays green. That's the 2026-07-22 failure: rows 5884/5888 marked delivered, never reached the primary Larry session, doctor green.
+
+The doctor's `DELIVERY` section detects this:
+
+- ❌ `delivery race: N competing bridges polling inbound.db` — more than one telegram bridge is live. Red, not a warning: the race itself silently loses messages — whichever bridge wakes first claims the row, and every other session (including the one you're watching) never sees it.
+- ❌ `recent inbound delivered to foreign session(s): row <id>→<identity>` — one of the last 10 delivered rows is <1h old and its `delivered_to` stamp belongs to a bridge outside this Claude session. Messages are actively being lost from this session's perspective.
+- ✅ `single bridge polling inbound.db` / `last N delivered rows: X this session, Y unattributed, Z foreign >1h old` — healthy.
+- · Pre-migration DBs (no `delivered_to` column) skip attribution with a note — never a crash. Old rows stay NULL; restarting `telegram_bot.py` applies the idempotent `ALTER TABLE`.
+
+Attribution mechanics: `server.ts` stamps `inbound.delivered_to` with its bridge identity (`BRIDGE_ID`) whenever it marks a row delivered — `CLAUDE_CODE_SESSION_ID` when the plugin env provides it (verified present on plugin-spawned bridges), else `hostname:pid:starttime`. `telegram_bot.py` owns the schema and adds the column on startup. The doctor matches stamps against this session's bridges by session id (read from `/proc/<pid>/environ`) with a pid fallback.
+
+The related `SESSION` check — claude launched without `--channels plugin:telegram@claude-plugins-official` — is also ❌ as of the same incident. The other half of the 2026-07-22 failure was a primary session resumed without `--channels`: inbound could never surface there, and the doctor printed that as a ⚠️ while still exiting green. A session that cannot receive inbound is a broken chain; the check keeps its relaunch hint. Intentionally send-only sessions can ignore that specific red.
+
 ### Architecture (one-paragraph recap)
 
 Two processes share the Telegram MCP responsibility. `telegram_bot.py` is the persistent Python poller — owns `getUpdates`, writes every event to `~/larry-telegram/inbound.db` (SQLite WAL), survives Claude restarts, singleton via `flock`. `server.ts` is the ephemeral bun MCP bridge — reads undelivered rows, emits MCP notifications, dies with the Claude session. Flow: `Telegram → telegram_bot.py → inbound.db → bot.sock wakeup → server.ts catchup → MCP → Claude`. Dual-reaction liveness: 👀 (inner, bot.py) + 🫡 (outer, server.ts). Both glyphs on a message means both halves of the pipeline ran.
