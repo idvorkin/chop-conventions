@@ -1028,6 +1028,59 @@ def _bridge_session_ids(pids: set[int]) -> set[str]:
     return ids
 
 
+def _bridge_base_dirs(pids: set[int]) -> dict[int, str | None]:
+    """Resolve each bridge's runtime dir by reading its environ.
+
+    Mirrors server.ts exactly:
+    `BASE_DIR = process.env.LARRY_TELEGRAM_DIR ?? ~/larry-telegram`.
+    A bridge bound to a different base dir opens a different inbound.db and
+    therefore cannot claim this queue's rows — that distinction is what keeps
+    a multi-tenant box (Barry + Larry + ad-hoc sessions) from reading as a
+    permanent delivery race. Maps to None when environ can't be read (process
+    gone, different UID); callers must treat None as "might be on our queue"
+    rather than assuming it is not.
+    """
+    default = str(Path.home() / "larry-telegram")
+    bases: dict[int, str | None] = {}
+    for pid in pids:
+        try:
+            data = Path(f"/proc/{pid}/environ").read_bytes()
+        except (OSError, ValueError):
+            bases[pid] = None
+            continue
+        base = default
+        for chunk in data.split(b"\x00"):
+            if chunk.startswith(b"LARRY_TELEGRAM_DIR="):
+                base = chunk.split(b"=", 1)[1].decode("utf-8", "replace")
+                break
+        bases[pid] = base
+    return bases
+
+
+def partition_bridges_by_base_dir(
+    base_dirs: dict[int, str | None], our_base: str | Path
+) -> dict[str, list[int]]:
+    """Split bridge pids by whether they poll OUR inbound.db.
+
+    Returns `{"shared": [...], "elsewhere": [...], "unresolved": [...]}`, each
+    sorted. Only `elsewhere` is provably harmless; `unresolved` bridges could
+    be on our queue, so a caller gating on a race must count them as racing —
+    hiding a real race is worse than an over-eager warning. Comparison goes
+    through realpath so symlinks and trailing slashes agree.
+    """
+    ours = os.path.realpath(str(our_base))
+    parts: dict[str, list[int]] = {"shared": [], "elsewhere": [], "unresolved": []}
+    for pid in sorted(base_dirs):
+        base = base_dirs[pid]
+        if base is None:
+            parts["unresolved"].append(pid)
+        elif os.path.realpath(base) == ours:
+            parts["shared"].append(pid)
+        else:
+            parts["elsewhere"].append(pid)
+    return parts
+
+
 def _doctor_check_delivery(
     report: DoctorReport,
     base: Path,
@@ -1035,6 +1088,7 @@ def _doctor_check_delivery(
     find_bridge_pids=_find_telegram_bridge_pids,
     find_owning_claude=_find_owning_claude,
     bridge_session_ids=_bridge_session_ids,
+    bridge_base_dirs=_bridge_base_dirs,
     stat_reader=_read_proc_stat,
     is_alive=_pid_alive,
     now: float | None = None,
@@ -1049,10 +1103,15 @@ def _doctor_check_delivery(
     the primary Larry session, and the doctor stayed green. This section
     makes that failure visible:
 
-      * >1 telegram bridge polling the same inbound.db → FAIL (the race
+      * >1 telegram bridge polling THIS inbound.db → FAIL (the race
         itself silently loses messages — red, not a warning)
       * recent rows whose delivered_to is another session's bridge → FAIL
       * pre-migration DBs without delivered_to → note + skip, never crash
+
+    "THIS inbound.db" is load-bearing: bridges are scoped by the base dir they
+    resolve (see _bridge_base_dirs), so bridges serving a different runtime dir
+    are noted and skipped. Counting every bun bridge on the box instead made
+    the check fail permanently on any machine running more than one channel.
 
     Discovery/env/clock inputs are injected for tests.
     """
@@ -1066,17 +1125,39 @@ def _doctor_check_delivery(
         return
     tg_pids = pids_or_err
 
-    if len(tg_pids) > 1:
-        pids_str = ", ".join(str(p) for p in sorted(tg_pids))
+    parts = partition_bridges_by_base_dir(bridge_base_dirs(set(tg_pids)), base)
+    # Unresolved base dirs count as racing — see partition_bridges_by_base_dir.
+    racing = parts["shared"] + parts["unresolved"]
+
+    if parts["elsewhere"]:
+        pids_str = ", ".join(str(p) for p in parts["elsewhere"])
+        report.note(
+            f"{len(parts['elsewhere'])} bridge(s) on another runtime dir "
+            f"({pids_str}) — different inbound.db, cannot claim these rows"
+        )
+    if parts["unresolved"]:
+        pids_str = ", ".join(str(p) for p in parts["unresolved"])
+        report.note(
+            f"{len(parts['unresolved'])} bridge(s) with unreadable environ "
+            f"({pids_str}) — counted as sharing this inbound.db"
+        )
+
+    if len(racing) > 1:
+        pids_str = ", ".join(str(p) for p in racing)
         # fail, not warn: every extra bridge can claim rows meant for this
         # session with zero signal — that IS the silent-loss incident, not a
         # precursor to it.
         report.fail(
-            f"delivery race: {len(tg_pids)} competing bridges polling "
+            f"delivery race: {len(racing)} competing bridges polling "
             f"inbound.db (pids {pids_str}) — any of them can claim new rows"
         )
-    elif len(tg_pids) == 1:
-        report.ok(f"single bridge polling inbound.db (pid {tg_pids[0]})")
+    elif len(racing) == 1:
+        report.ok(f"single bridge polling inbound.db (pid {racing[0]})")
+    elif parts["elsewhere"]:
+        report.warn(
+            "no bridge polling this inbound.db — inbound will not reach this "
+            "session; /reload-plugins to respawn one against this runtime dir"
+        )
     else:
         report.note("no telegram bridges running — nothing polling inbound.db")
 
@@ -1122,7 +1203,7 @@ def _doctor_check_delivery(
         return
 
     bridges = classify_bridges(
-        tg_pids, our_claude, stat_reader=stat_reader, is_alive=is_alive
+        racing, our_claude, stat_reader=stat_reader, is_alive=is_alive
     )
     our_pids = {b["pid"] for b in bridges if b["classification"] == "ours"}
     our_identities = set(bridge_session_ids(our_pids))
