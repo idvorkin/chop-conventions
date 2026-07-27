@@ -1,17 +1,18 @@
 ---
 name: machine-doctor
-description: Diagnose and fix system health issues — rogue processes, Gas Town runaway agents, resource exhaustion, stale dev servers, and orphaned git state. Use when the machine is slow, unresponsive, or something feels wrong.
+description: Diagnose and fix system health issues — rogue processes, Gas Town and Gas City runaway agents, resource exhaustion, stale dev servers, and orphaned git state. Use when the machine is slow, unresponsive, or something feels wrong.
 allowed-tools: Bash, Read, Glob, Grep
 ---
 
 # Machine Doctor
 
-Diagnose and repair system health. Four tiers:
+Diagnose and repair system health. Five tiers:
 
 | Invocation                | Scope                                                                  |
 | ------------------------- | ---------------------------------------------------------------------- |
 | `/machine-doctor`         | Quick vitals — CPU hogs, memory, disk                                  |
-| `/machine-doctor gastown` | Gas Town agent shutdown and cleanup                                    |
+| `/machine-doctor gastown` | Gas Town (`gt`) agent shutdown and cleanup                             |
+| `/machine-doctor gascity` | Gas City (`gc`) leak hunt — orphaned dolt watchdogs, city tmux servers |
 | `/machine-doctor guards`  | Set up / verify two-layer CPU guard (OrbStack VM cap + in-VM watchdog) |
 | `/machine-doctor deep`    | Full probe — git locks, orphaned worktrees, stale servers, MCP         |
 
@@ -233,6 +234,32 @@ Report results. If anything survived, escalate to user — something unexpected 
 1. **Supervisor respawning** — the deacon/mayor restart killed agents. You must kill the supervisor first or use `gt estop` to freeze everything.
 2. **Separate tmux sockets** — `gt` uses its own tmux socket (`gt-<hash>`), so standard `tmux list-sessions` won't see them.
 3. **Orphan reparenting** — killed processes get reparented to the tmux server (PPID becomes the tmux server PID), making parent tracking difficult.
+
+---
+
+## Tier: Gas City (`/machine-doctor gascity`)
+
+Gas City (`gc`) is a different product from Gas Town (`gt`) — different binary, different
+socket naming, different teardown. Tier 2 does not cover it.
+
+`gc` leaves side-processes that reparent to PID 1 and **outlive its own teardown commands**,
+and `gc cities` cannot see them — it reports "No cities registered" while a managed-dolt
+watchdog and a per-city tmux server are still up. A read-only `gc doctor` is enough to
+create one.
+
+Diagnose with the vendored tool rather than by eye — it separates city-scoped leaks from
+`.beads/` repo servers that `bd` legitimately starts on demand:
+
+```bash
+skills/machine-doctor/tools/gascity_doctor.py snapshot          # exits nonzero on a leak
+skills/machine-doctor/tools/gascity_doctor.py watch --interval 60   # prints only on change
+```
+
+**This tier's runbook lives in a separate file to keep SKILL.md lean.** When the user
+invokes `/machine-doctor gascity` — or Tier 1a shows `gc`/`dolt` processes on a box where
+no city should be running — Read [`doctor-gascity.md`](./doctor-gascity.md) for the
+shutdown order, orphaned-tmux cleanup, the credentials-in-argv exposure, what *not* to
+kill, and the gotchas (`ps` alias, self-matching `pkill`, load-average vs CPU-idle).
 
 ---
 
