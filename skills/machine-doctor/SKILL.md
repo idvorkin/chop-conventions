@@ -1,20 +1,22 @@
 ---
 name: machine-doctor
-description: Diagnose and fix system health issues — rogue processes, Gas Town and Gas City runaway agents, resource exhaustion, stale dev servers, and orphaned git state. Use when the machine is slow, unresponsive, or something feels wrong.
+description: Diagnose and fix system health issues — rogue processes, Gas Town and Gas City runaway agents, resource exhaustion, stale dev servers, and orphaned git state — plus historical forensics ("who was hot at 7:16?") via the vendored machine_doctor.py recorder. Use when the machine is slow, unresponsive, or something feels wrong — now or earlier.
 allowed-tools: Bash, Read, Glob, Grep
 ---
 
 # Machine Doctor
 
-Diagnose and repair system health. Five tiers:
+Diagnose and repair system health. Tiers:
 
-| Invocation                | Scope                                                                  |
-| ------------------------- | ---------------------------------------------------------------------- |
-| `/machine-doctor`         | Quick vitals — CPU hogs, memory, disk                                  |
-| `/machine-doctor gastown` | Gas Town (`gt`) agent shutdown and cleanup                             |
-| `/machine-doctor gascity` | Gas City (`gc`) leak hunt — orphaned dolt watchdogs, city tmux servers |
-| `/machine-doctor guards`  | Set up / verify two-layer CPU guard (OrbStack VM cap + in-VM watchdog) |
-| `/machine-doctor deep`    | Full probe — git locks, orphaned worktrees, stale servers, MCP         |
+| Invocation                 | Scope                                                                  |
+| -------------------------- | ---------------------------------------------------------------------- |
+| `/machine-doctor`          | Quick vitals — CPU hogs, memory, disk                                  |
+| `/machine-doctor watch`    | Record resource history — adaptive sampling, spike dumps               |
+| `/machine-doctor report`   | Who has been hot over the last N hours (needs a prior `watch`)         |
+| `/machine-doctor gastown`  | Gas Town (`gt`) agent shutdown and cleanup                             |
+| `/machine-doctor gascity`  | Gas City (`gc`) leak hunt — now `snapshot --profile gascity`           |
+| `/machine-doctor guards`   | Set up / verify two-layer CPU guard (OrbStack VM cap + in-VM watchdog) |
+| `/machine-doctor deep`     | Full probe — git locks, orphaned worktrees, stale servers, MCP         |
 
 Always start with **Step 0: Platform Detection**, then run the requested tier.
 
@@ -237,10 +239,36 @@ Report results. If anything survived, escalate to user — something unexpected 
 
 ---
 
-## Tier: Gas City (`/machine-doctor gascity`)
+## Tier: Forensics (`/machine-doctor watch` / `report` / `at`)
+
+Point-in-time tools cannot answer "why was the box slow twenty minutes ago" — the
+evidence expires before anyone looks. The vendored `machine_doctor.py` records history
+while it runs (SQLite samples + full-tree spike dumps under
+`~/.local/state/machine-doctor/`) and answers retroactively:
+
+```bash
+skills/machine-doctor/tools/machine_doctor.py watch                 # 30s samples; spike -> full process tree dump
+skills/machine-doctor/tools/machine_doctor.py report --since 6h     # who has been hot, grouped by comm
+skills/machine-doctor/tools/machine_doctor.py at 07:16              # what was running then
+skills/machine-doctor/tools/machine_doctor.py snapshot              # right now + generic leak checks
+```
+
+Key behaviors:
+
+- **On-demand only** — no daemon, zero idle cost. Start `watch` at session start (or hand
+  it to a Monitor); it prints only on state transitions, so silence means no change.
+- **An empty window is not a quiet box.** If `report`/`at` find no samples, they say so
+  and exit 1 — never treat that as "nothing happened".
+- **Interval CPU%, not lifetime averages** — a long-lived process that starts spinning
+  shows up immediately.
+- Spike triggers (any proc >300% CPU; idle <25% or swap-out sustained 2 samples;
+  MemAvailable <10%) write a full redacted process tree to `spikes/`; samples keep 7 days,
+  dumps keep the newest 50.
+
+### Gas City profile (`/machine-doctor gascity`)
 
 Gas City (`gc`) is a different product from Gas Town (`gt`) — different binary, different
-socket naming, different teardown. Tier 2 does not cover it.
+socket naming, different teardown. The Gas Town tier does not cover it.
 
 `gc` leaves side-processes that reparent to PID 1 and **outlive its own teardown commands**,
 and `gc cities` cannot see them — it reports "No cities registered" while a managed-dolt
@@ -251,12 +279,11 @@ Diagnose with the vendored tool rather than by eye — it separates city-scoped 
 `.beads/` repo servers that `bd` legitimately starts on demand:
 
 ```bash
-skills/machine-doctor/tools/gascity_doctor.py snapshot          # exits nonzero on a leak
-skills/machine-doctor/tools/gascity_doctor.py watch --interval 60   # prints only on change
+skills/machine-doctor/tools/machine_doctor.py snapshot --profile gascity   # exits nonzero on a leak
 ```
 
-**This tier's runbook lives in a separate file to keep SKILL.md lean.** When the user
-invokes `/machine-doctor gascity` — or Tier 1a shows `gc`/`dolt` processes on a box where
+**The runbook lives in a separate file to keep SKILL.md lean.** When the user invokes
+`/machine-doctor gascity` — or Tier 1a shows `gc`/`dolt` processes on a box where
 no city should be running — Read [`doctor-gascity.md`](./doctor-gascity.md) for the
 shutdown order, orphaned-tmux cleanup, the credentials-in-argv exposure, what *not* to
 kill, and the gotchas (`ps` alias, self-matching `pkill`, load-average vs CPU-idle).

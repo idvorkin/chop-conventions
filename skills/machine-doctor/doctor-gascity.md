@@ -37,8 +37,8 @@ the persistence mechanism is [#4679](https://github.com/gastownhall/gascity/issu
 ## Step 1: Diagnose with the tool, not by eye
 
 ```bash
-skills/machine-doctor/tools/gascity_doctor.py snapshot     # what's running now
-skills/machine-doctor/tools/gascity_doctor.py snapshot --json
+skills/machine-doctor/tools/machine_doctor.py snapshot --profile gascity     # what's running now
+skills/machine-doctor/tools/machine_doctor.py snapshot --profile gascity --json
 ```
 
 Exits nonzero if it finds a city-scoped leak. It distinguishes **city-scoped** dolt
@@ -48,11 +48,14 @@ an ordinary repo (not gc's problem — do not kill these blind; see Step 4).
 To keep watching, poll for transitions only:
 
 ```bash
-skills/machine-doctor/tools/gascity_doctor.py watch --interval 60
+skills/machine-doctor/tools/machine_doctor.py watch --interval 60
 ```
 
 `watch` prints a baseline line and then **stays silent until something changes** —
 safe to hand to a long-running monitor. Silence means no change, not no output.
+Note `watch` is generic resource recording (spikes, history for `report`/`at`);
+the gascity leak checks themselves live in `snapshot --profile gascity` — poll
+that for leak transitions if that is specifically what you are hunting.
 
 ## Step 2: Shut down, in this order
 
