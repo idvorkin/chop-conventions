@@ -90,6 +90,19 @@ All configurable; defaults chosen from the incidents above:
 Two consecutive samples is the general rule: a single sample is an artifact, not
 an event.
 
+### CPU% semantics
+
+`cpu_pct` is measured **over the sampling interval** — the delta of
+utime+stime from `/proc/<pid>/stat` between consecutive reads — not the
+process-lifetime average `ps` reports. A long-lived process that starts
+spinning shows the spike immediately; its lifetime average would dilute it
+toward zero, masking exactly the incidents this tool exists for. Consequences:
+
+- The first sample of a `watch` run has no previous read: it records NULL
+  `cpu_pct` and ranks its top-N by RSS only. No spike trigger can fire on it.
+- `snapshot` is one-shot, so it takes two reads ~1s apart to compute a usable
+  interval.
+
 ## Data model
 
 ### SQLite — `~/.local/state/machine-doctor/samples.db`
@@ -138,7 +151,9 @@ credentials in argv (`-e ANTHROPIC_API_KEY=…`), world-readable via `/proc`; a
 ### Retention
 
 Samples 7 days; spike dumps the 50 most recent. Both configurable, both pruned
-at the end of each `watch` run so an unattended session cannot grow unbounded.
+at the **start and end** of each `watch` run. End-only pruning was rejected: a
+`watch` killed by a monitor teardown never reaches its end, and a box whose
+watches always die that way would never prune at all.
 
 ## Commands
 
@@ -159,9 +174,20 @@ Specified here because "6h" and "07:16" each admit more than one reading:
 - `at` takes either a **wall-clock time today** (`07:16`, `07:16:38`) or a full
   **ISO-8601 timestamp** (`2026-07-29T07:16:38`). A bare time that is in the
   future for today resolves to yesterday, so `at 23:50` works at 00:10.
-- `at` resolves to the **nearest sample within half the sample interval**. No
-  sample in range is reported as "no sample near that time", never as an empty
-  or quiet result.
+- `at` resolves to the **nearest sample within a tolerance** — default 60
+  seconds, `--tolerance` to widen. A fixed tolerance rather than "half the
+  sample interval" because the interval in effect at record time is not stored;
+  there is nothing to derive it from at query time. No sample in range is
+  reported as "no sample near that time", never as an empty or quiet result.
+
+### Report ranking
+
+`report` groups by `comm` and ranks by **summed interval CPU** across the
+window's samples (proportional to CPU-seconds at a fixed interval), with peak
+RSS as the secondary ranking. Grouping by pid was rejected: build-style
+workloads — the Go-build incident — split their load across hundreds of
+short-lived pids, and no per-pid ranking would surface any of them. The
+`idx_proc_comm` index exists for this query.
 
 `watch` prints one line per transition and nothing otherwise, so it is safe to
 hand to a long-running monitor; silence means no change. This is the existing
