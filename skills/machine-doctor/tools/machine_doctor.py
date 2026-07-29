@@ -320,8 +320,11 @@ def _build_app():
                             flush=True,
                         )
                 elif in_spike and not spiking:
+                    # idle can be None (unmeasurable tick); never claim a
+                    # recovery measurement that was not made.
+                    idle_s = "?" if idle is None else f"{idle}%"
                     print(
-                        f"[{time.strftime('%H:%M:%S')}] recovered: idle={idle}% load1={load1}",
+                        f"[{time.strftime('%H:%M:%S')}] recovered: idle={idle_s} load1={load1}",
                         flush=True,
                     )
                 in_spike = spiking
