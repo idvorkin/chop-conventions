@@ -76,5 +76,68 @@ class TestSpikeDumps(unittest.TestCase):
             self.assertIn("dump 5", left[-1].read_text())
 
 
+from md_store import (
+    nearest_sample,
+    procs_at,
+    report,
+    sample_count,
+    spike_count,
+)
+
+
+class TestReport(unittest.TestCase):
+    def _seed(self):
+        conn = connect(":memory:")
+        # Build-style: many short-lived cc1 pids, each modest — must aggregate.
+        _insert(conn, 1000, procs=[_proc(11, cpu=80.0, comm="cc1"), _proc(30, cpu=90.0, comm="agent")])
+        _insert(conn, 1030, procs=[_proc(12, cpu=80.0, comm="cc1"), _proc(30, cpu=10.0, comm="agent")])
+        _insert(conn, 1060, procs=[_proc(13, cpu=80.0, comm="cc1", rss=500000)])
+        return conn
+
+    def test_groups_by_comm_and_ranks_by_cpu_sum(self):
+        got = report(self._seed(), since_ts=0)
+        self.assertEqual(got[0].comm, "cc1")
+        self.assertEqual(got[0].cpu_sum, 240.0)
+        self.assertEqual(got[0].samples, 3)
+        self.assertEqual(got[0].peak_rss_kb, 500000)
+        self.assertEqual(got[1].comm, "agent")
+
+    def test_since_filters(self):
+        got = report(self._seed(), since_ts=1050)
+        self.assertEqual([r.comm for r in got], ["cc1"])
+
+    def test_exclude_drops_sampler(self):
+        got = report(self._seed(), since_ts=0, exclude=frozenset({"cc1"}))
+        self.assertEqual([r.comm for r in got], ["agent"])
+
+    def test_counts(self):
+        conn = self._seed()
+        self.assertEqual(sample_count(conn, 0), 3)
+        self.assertEqual(spike_count(conn, 0), 0)
+
+
+class TestNearestSample(unittest.TestCase):
+    def test_within_tolerance(self):
+        conn = connect(":memory:")
+        _insert(conn, 1000, is_spike=True)
+        row = nearest_sample(conn, 1030, tolerance_s=60)
+        self.assertEqual(row.ts, 1000)
+        self.assertTrue(row.is_spike)
+
+    def test_outside_tolerance_is_none(self):
+        conn = connect(":memory:")
+        _insert(conn, 1000)
+        self.assertIsNone(nearest_sample(conn, 2000, tolerance_s=60))
+
+    def test_empty_db_is_none(self):
+        self.assertIsNone(nearest_sample(connect(":memory:"), 1000))
+
+    def test_procs_at_returns_that_instant(self):
+        conn = connect(":memory:")
+        _insert(conn, 1000, procs=[_proc(5, cpu=42.0, comm="dolt")])
+        got = procs_at(conn, 1000)
+        self.assertEqual([(p.pid, p.comm) for p in got], [(5, "dolt")])
+
+
 if __name__ == "__main__":
     unittest.main()
