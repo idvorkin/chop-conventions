@@ -84,6 +84,8 @@ procs --sortd cpu | head -20
 # or: /usr/bin/ps aux --sort=-%cpu | head -20
 ```
 
+**`ps` %CPU is a lifetime average over the whole life of the process, not current load — never identify a live hog with it.** Something that spiked an hour ago still reads high; something spinning right now reads low. `top` is aliased to `btm` on this machine, so `top -b -n 2` prints nothing to stdout — call `btm` or `\top` explicitly. For a true instantaneous read, diff `utime`+`stime` from `/proc/<PID>/stat` across ~3 seconds, or use this skill's own `machine_doctor.py` (Forensics tier below), which already samples on an interval. If the user reports a spike that has since ended, `tail -10 /tmp/cpu-watchdog.log` — throttle events name the culprit after it has exited.
+
 Flag Claude processes, node processes, and dolt/jekyll servers specifically.
 
 ### 1b. Memory
