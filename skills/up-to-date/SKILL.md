@@ -99,7 +99,7 @@ If `remotes.issues` is non-empty, show them in the output table and offer the `f
 
 - `non_standard_name` — remote named something other than `origin`/`upstream`
 - `swapped_remotes` — `origin` points at canonical while a fork remote exists
-- `fork_without_canonical` — fork remote exists but no canonical upstream
+- `fork_without_canonical` — fork remote exists but no canonical upstream (not raised for lone remotes in canonical orgs — `idvorkin-ai-tools` hosts canonical repos too, and a URL alone can't distinguish them from forks)
 
 ## Step 3: Act
 
@@ -248,7 +248,11 @@ empty, the user has never opted in on this machine. Offer opt-in:
    by hand — the skill never edits that file automatically because it
    may contain machine-local overrides. Template:
 
-   ```markdown
+   <!-- `text`, not `markdown`: prettier's embedded-markdown formatter pairs
+        the leading `~` of consecutive lines as strikethrough and rewrites
+        `@~/` to the broken `@~~/`. -->
+
+   ```text
    @~/.claude/claude-md/global.md
    @~/.claude/claude-md/machine.md
    @~/.claude/claude-md/dev-machine.md
