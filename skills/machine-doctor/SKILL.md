@@ -8,15 +8,15 @@ allowed-tools: Bash, Read, Glob, Grep
 
 Diagnose and repair system health. Tiers:
 
-| Invocation                 | Scope                                                                  |
-| -------------------------- | ---------------------------------------------------------------------- |
-| `/machine-doctor`          | Quick vitals — CPU hogs, memory, disk                                  |
-| `/machine-doctor watch`    | Record resource history — adaptive sampling, spike dumps               |
-| `/machine-doctor report`   | Who has been hot over the last N hours (needs a prior `watch`)         |
-| `/machine-doctor gastown`  | Gas Town (`gt`) agent shutdown and cleanup                             |
-| `/machine-doctor gascity`  | Gas City (`gc`) leak hunt — now `snapshot --profile gascity`           |
-| `/machine-doctor guards`   | Set up / verify two-layer CPU guard (OrbStack VM cap + in-VM watchdog) |
-| `/machine-doctor deep`     | Full probe — git locks, orphaned worktrees, stale servers, MCP         |
+| Invocation                | Scope                                                                  |
+| ------------------------- | ---------------------------------------------------------------------- |
+| `/machine-doctor`         | Quick vitals — CPU hogs, memory, disk                                  |
+| `/machine-doctor watch`   | Record resource history — adaptive sampling, spike dumps               |
+| `/machine-doctor report`  | Who has been hot over the last N hours (needs a prior `watch`)         |
+| `/machine-doctor gastown` | Gas Town (`gt`) agent shutdown and cleanup                             |
+| `/machine-doctor gascity` | Gas City (`gc`) leak hunt — now `snapshot --profile gascity`           |
+| `/machine-doctor guards`  | Set up / verify two-layer CPU guard (OrbStack VM cap + in-VM watchdog) |
+| `/machine-doctor deep`    | Full probe — git locks, orphaned worktrees, stale servers, MCP         |
 
 Always start with **Step 0: Platform Detection**, then run the requested tier.
 
@@ -285,7 +285,7 @@ skills/machine-doctor/tools/machine_doctor.py snapshot --profile gascity   # exi
 **The runbook lives in a separate file to keep SKILL.md lean.** When the user invokes
 `/machine-doctor gascity` — or Tier 1a shows `gc`/`dolt` processes on a box where
 no city should be running — Read [`doctor-gascity.md`](./doctor-gascity.md) for the
-shutdown order, orphaned-tmux cleanup, the credentials-in-argv exposure, what *not* to
+shutdown order, orphaned-tmux cleanup, the credentials-in-argv exposure, what _not_ to
 kill, and the gotchas (`ps` alias, self-matching `pkill`, load-average vs CPU-idle).
 
 ---
