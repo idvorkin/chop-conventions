@@ -24,6 +24,9 @@ from pathlib import Path
 # model ids (date suffix stripped).
 PRICING = {
     "claude-fable-5": dict(inp=10.00, out=50.00, c1h=20.00, c5m=12.50, cread=1.00),
+    # Opus 5 standard rate. Fast mode bills 2x ($10/$50) under the same model
+    # id; per-turn speed isn't recorded here, so fast-mode turns undercount.
+    "claude-opus-5": dict(inp=5.00, out=25.00, c1h=10.00, c5m=6.25, cread=0.50),
     "claude-opus-4-8": dict(inp=5.00, out=25.00, c1h=10.00, c5m=6.25, cread=0.50),
     "claude-opus-4-7": dict(inp=5.00, out=25.00, c1h=10.00, c5m=6.25, cread=0.50),
     "claude-opus-4-6": dict(inp=5.00, out=25.00, c1h=10.00, c5m=6.25, cread=0.50),
