@@ -70,6 +70,7 @@ class TestNormalizeModel(unittest.TestCase):
         # Current-gen API ids are bare aliases (no date suffix) — they must
         # match PRICING directly or the dominant spend lands in unknown_models.
         self.assertEqual(normalize_model("claude-fable-5"), "claude-fable-5")
+        self.assertEqual(normalize_model("claude-opus-5"), "claude-opus-5")
         self.assertEqual(normalize_model("claude-opus-4-8"), "claude-opus-4-8")
         self.assertEqual(normalize_model("claude-opus-4-7"), "claude-opus-4-7")
         self.assertEqual(normalize_model("claude-sonnet-5"), "claude-sonnet-5")
@@ -154,6 +155,15 @@ class TestCurrentGenPricing(unittest.TestCase):
         self.assertAlmostEqual(comps["out"], 50.00)
         self.assertAlmostEqual(by_model["claude-fable-5"], 60.00)
         self.assertAlmostEqual(total, 60.00)
+
+    def test_opus_5_rates(self):
+        # $5/$25 per MTok, same as Opus 4.8. Fast mode's 2x rate shares the
+        # model id and isn't modeled — see the PRICING row comment.
+        s = empty_stats()
+        s["models"]["claude-opus-5"]["inp"] = 1_000_000
+        s["models"]["claude-opus-5"]["out"] = 1_000_000
+        total, _comps, _by_model, _naive = cost_breakdown(s)
+        self.assertAlmostEqual(total, 30.00)
 
     def test_opus_4_8_and_4_7_rates(self):
         # Both $5/$25 per MTok, same as Opus 4.6
