@@ -59,7 +59,7 @@ When in doubt, ask the user: "I'm putting the architect review changelog at `<pa
 
 ### 2. Run passes as background agents
 
-Launch each pass using the **Agent tool** with `model: "opus"` and `run_in_background: true`. Wait for each pass to complete before launching the next. Each agent gets this prompt structure:
+Launch each pass using the **Agent tool** with `run_in_background: true` and no `model` override — passes inherit the session's model, so review quality tracks whatever tier you're running. Wait for each pass to complete before launching the next. Each agent gets this prompt structure:
 
 ```
 You are a senior software architect doing pass <N> on a design spec.
@@ -149,7 +149,7 @@ Requires the `gh` CLI installed and authenticated. If either is missing, this wh
 
 - **Always run agents in background** — don't block the conversation
 - **Sequential, not parallel** — each pass must read the previous pass's edits
-- **Opus model** for all passes — architecture review needs the strongest reasoning
+- **Session model** for all passes — no `model` override on the Agent tool; inheriting the session's model keeps review quality at the tier you chose and never goes stale when new models ship
 - **Changelog is mandatory** — without it, you can't measure convergence
 - **Beside the plan as `<spec>-changelog.md` when reviewing one in-repo plan file; `~/tmp/architect-review/<slug>-<datestamp>.md` otherwise** — see step 1
 - **Multiple reviews on the same beside-the-spec changelog append as new dated sections — don't make a second file**
