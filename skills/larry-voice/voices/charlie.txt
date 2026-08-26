@@ -1,0 +1,9 @@
+# ElevenLabs voice-ID alias for Larry's voice.
+# First non-comment line is the literal ElevenLabs voiceId passed in the
+# text-to-speech URL. Resolve it with `--voice charlie`.
+#
+# "Charlie" is a PREMADE ElevenLabs voice — a calm, warm British (English)
+# man. Premade voices work on the free tier; library/cloned voice IDs are
+# blocked there (HTTP 400/402). Igor approved Charlie for Larry 2026-08-16,
+# paired with the eleven_flash_v2_5 model.
+IKne3meq5aSn9XLyUdCD
