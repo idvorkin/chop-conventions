@@ -32,6 +32,7 @@ from telegram_debug import (  # noqa: E402
     parse_iso_ts,
     parse_proc_stat,
     parse_sent_message_id,
+    partition_bridges_by_base_dir,
     session_subscribed_to_telegram,
     show_undelivered,
 )
@@ -939,6 +940,44 @@ class TestClassifyDeliveredRows(unittest.TestCase):
         self.assertEqual([r["id"] for r in result["foreign_recent"]], [4])
 
 
+class TestPartitionBridgesByBaseDir(unittest.TestCase):
+    """Pure split of bridge pids into shared / elsewhere / unresolved."""
+
+    def test_splits_on_base_dir(self):
+        parts = partition_bridges_by_base_dir(
+            {1: "/home/x/barry-telegram", 2: "/home/x/larry-telegram", 3: None},
+            "/home/x/barry-telegram",
+        )
+        self.assertEqual(parts, {"shared": [1], "elsewhere": [2], "unresolved": [3]})
+
+    def test_trailing_slash_and_dot_segments_still_match(self):
+        parts = partition_bridges_by_base_dir(
+            {1: "/home/x/barry-telegram/", 2: "/home/x/./barry-telegram"},
+            "/home/x/barry-telegram",
+        )
+        self.assertEqual(parts["shared"], [1, 2])
+        self.assertEqual(parts["elsewhere"], [])
+
+    def test_symlinked_base_dir_matches_through_realpath(self):
+        with tempfile.TemporaryDirectory() as d:
+            real = Path(d) / "barry-telegram"
+            real.mkdir()
+            link = Path(d) / "linked"
+            link.symlink_to(real)
+            parts = partition_bridges_by_base_dir({1: str(link)}, str(real))
+        self.assertEqual(parts["shared"], [1])
+
+    def test_pids_are_sorted_for_stable_output(self):
+        parts = partition_bridges_by_base_dir({9: "/a", 2: "/a", 5: "/a"}, "/a")
+        self.assertEqual(parts["shared"], [2, 5, 9])
+
+    def test_empty_input(self):
+        self.assertEqual(
+            partition_bridges_by_base_dir({}, "/a"),
+            {"shared": [], "elsewhere": [], "unresolved": []},
+        )
+
+
 class TestDoctorCheckDelivery(unittest.TestCase):
     """Drive _doctor_check_delivery end-to-end against a temp DB with all
     process discovery injected — no live processes are ever touched."""
@@ -976,6 +1015,7 @@ class TestDoctorCheckDelivery(unittest.TestCase):
         owning_claude=300,
         session_ids=None,
         stat_table=None,
+        base_dirs=None,
     ):
         report = DoctorReport()
         # Default /proc topology: every bridge pid is a child of OUR claude
@@ -988,12 +1028,18 @@ class TestDoctorCheckDelivery(unittest.TestCase):
             table = {}
         table.setdefault(300, ("claude", 1))
 
+        # Default base-dir topology: every bridge polls OUR queue, so the
+        # race tests below stay about pid count and nothing else.
+        if base_dirs is None and isinstance(bridge_pids, list):
+            base_dirs = {pid: str(tmp_dir) for pid in bridge_pids}
+
         _doctor_check_delivery(
             report,
             Path(tmp_dir),
             find_bridge_pids=lambda: bridge_pids,
             find_owning_claude=lambda pid, **kw: owning_claude,
             bridge_session_ids=lambda pids: session_ids or set(),
+            bridge_base_dirs=lambda pids: base_dirs or {},
             stat_reader=lambda pid: table.get(pid),
             is_alive=lambda pid: True,
             now=self.NOW,
@@ -1030,6 +1076,65 @@ class TestDoctorCheckDelivery(unittest.TestCase):
         self.assertEqual(report.failures, 0)
         self.assertTrue(
             any("single bridge polling inbound.db" in line for line in report.lines),
+            report.lines,
+        )
+
+    def test_bridges_on_another_base_dir_are_not_a_race(self):
+        # Regression (Barry VM, 2026-07-26): three bridges served
+        # ~/larry-telegram while ours served ~/barry-telegram. They open a
+        # different inbound.db and cannot claim these rows, so counting them
+        # made DELIVERY fail permanently on a healthy multi-channel box.
+        with tempfile.TemporaryDirectory() as d:
+            self._make_db(d, [])
+            report = self._run(
+                d,
+                bridge_pids=[500, 600, 700],
+                base_dirs={
+                    500: str(d),
+                    600: "/home/other/larry-telegram",
+                    700: "/home/other/larry-telegram",
+                },
+            )
+        self.assertEqual(report.failures, 0, report.lines)
+        self.assertTrue(
+            any(
+                "single bridge polling inbound.db (pid 500)" in x for x in report.lines
+            ),
+            report.lines,
+        )
+        self.assertTrue(
+            any("2 bridge(s) on another runtime dir" in x for x in report.lines),
+            report.lines,
+        )
+
+    def test_unresolvable_base_dir_still_counts_as_racing(self):
+        # Fail-safe direction: an unreadable environ must not be assumed
+        # harmless, or a genuine race could hide behind a /proc permission error.
+        with tempfile.TemporaryDirectory() as d:
+            self._make_db(d, [])
+            report = self._run(
+                d, bridge_pids=[500, 600], base_dirs={500: str(d), 600: None}
+            )
+        self.assertEqual(report.failures, 1, report.lines)
+        self.assertTrue(
+            any("delivery race: 2 competing bridges" in x for x in report.lines),
+            report.lines,
+        )
+        self.assertTrue(
+            any("unreadable environ" in x for x in report.lines), report.lines
+        )
+
+    def test_no_bridge_on_our_queue_warns(self):
+        # Bridges exist, but all serve someone else's runtime dir — nothing is
+        # draining THIS queue, which is a real (non-fatal) inbound outage.
+        with tempfile.TemporaryDirectory() as d:
+            self._make_db(d, [])
+            report = self._run(
+                d, bridge_pids=[600], base_dirs={600: "/home/other/larry-telegram"}
+            )
+        self.assertEqual(report.failures, 0, report.lines)
+        self.assertTrue(
+            any("no bridge polling this inbound.db" in x for x in report.lines),
             report.lines,
         )
 
