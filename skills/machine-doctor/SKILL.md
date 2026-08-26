@@ -8,15 +8,15 @@ allowed-tools: Bash, Read, Glob, Grep
 
 Diagnose and repair system health. Tiers:
 
-| Invocation                 | Scope                                                                  |
-| -------------------------- | ---------------------------------------------------------------------- |
-| `/machine-doctor`          | Quick vitals — CPU hogs, memory, disk                                  |
-| `/machine-doctor watch`    | Record resource history — adaptive sampling, spike dumps               |
-| `/machine-doctor report`   | Who has been hot over the last N hours (needs a prior `watch`)         |
-| `/machine-doctor gastown`  | Gas Town (`gt`) agent shutdown and cleanup                             |
-| `/machine-doctor gascity`  | Gas City (`gc`) leak hunt — now `snapshot --profile gascity`           |
-| `/machine-doctor guards`   | Set up / verify two-layer CPU guard (OrbStack VM cap + in-VM watchdog) |
-| `/machine-doctor deep`     | Full probe — git locks, orphaned worktrees, stale servers, MCP         |
+| Invocation                | Scope                                                                  |
+| ------------------------- | ---------------------------------------------------------------------- |
+| `/machine-doctor`         | Quick vitals — CPU hogs, memory, disk                                  |
+| `/machine-doctor watch`   | Record resource history — adaptive sampling, spike dumps               |
+| `/machine-doctor report`  | Who has been hot over the last N hours (needs a prior `watch`)         |
+| `/machine-doctor gastown` | Gas Town (`gt`) agent shutdown and cleanup                             |
+| `/machine-doctor gascity` | Gas City (`gc`) leak hunt — now `snapshot --profile gascity`           |
+| `/machine-doctor guards`  | Set up / verify two-layer CPU guard (OrbStack VM cap + in-VM watchdog) |
+| `/machine-doctor deep`    | Full probe — git locks, orphaned worktrees, stale servers, MCP         |
 
 Always start with **Step 0: Platform Detection**, then run the requested tier.
 
@@ -83,6 +83,8 @@ ps aux -r | awk 'NR<=1 || $3 > 20'
 procs --sortd cpu | head -20
 # or: /usr/bin/ps aux --sort=-%cpu | head -20
 ```
+
+**`ps` %CPU is a lifetime average over the whole life of the process, not current load — never identify a live hog with it.** Something that spiked an hour ago still reads high; something spinning right now reads low. `top` is aliased to `btm` on this machine, so `top -b -n 2` prints nothing to stdout — call `btm` or `\top` explicitly. For a true instantaneous read, diff `utime`+`stime` from `/proc/<PID>/stat` across ~3 seconds, or use this skill's own `machine_doctor.py` (Forensics tier below), which already samples on an interval. If the user reports a spike that has since ended, `tail -10 /tmp/cpu-watchdog.log` — throttle events name the culprit after it has exited.
 
 Flag Claude processes, node processes, and dolt/jekyll servers specifically.
 
@@ -285,7 +287,7 @@ skills/machine-doctor/tools/machine_doctor.py snapshot --profile gascity   # exi
 **The runbook lives in a separate file to keep SKILL.md lean.** When the user invokes
 `/machine-doctor gascity` — or Tier 1a shows `gc`/`dolt` processes on a box where
 no city should be running — Read [`doctor-gascity.md`](./doctor-gascity.md) for the
-shutdown order, orphaned-tmux cleanup, the credentials-in-argv exposure, what *not* to
+shutdown order, orphaned-tmux cleanup, the credentials-in-argv exposure, what _not_ to
 kill, and the gotchas (`ps` alias, self-matching `pkill`, load-average vs CPU-idle).
 
 ---
