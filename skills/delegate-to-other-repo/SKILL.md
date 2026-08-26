@@ -651,6 +651,11 @@ the brief uses plain-text formatting for all embedded structure
   itself before returning
 - `up-to-date` — its `diagnose.py` helper is what the subagent uses
   as a fork-detection shortcut (Cases A and simple B only)
+- `bg-agent-brief` — the general dispatch-prompt skeleton (role /
+  read-first / constraints / work / VERIFY / push rules / report). This
+  skill's `brief-template.md` is the cross-repo specialization of it;
+  `bg-agent-brief` owns the same-repo and generic-dispatch cases and
+  ships a generator for the brief body.
 
 ## Manual fallback
 

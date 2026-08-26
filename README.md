@@ -84,6 +84,7 @@ Machine-level skills go in `~/.claude/skills/` and are available everywhere. Pro
 | `ammon`                  | machine | Look up the current time in Denmark for Ammon                                      |
 | `architect-review`       | machine | Iterative architect review passes on design specs, tracking convergence            |
 | `background-usage`       | machine | Check Claude Code plan usage without blocking the session                          |
+| `bg-agent-brief`         | machine | Assemble a background-agent dispatch brief from a form (role/read-first/verify/push/report) |
 | `build-bd-static`        | machine | Build a static `bd` fallback when Homebrew is unavailable or not portable enough   |
 | `bulk`                   | machine | Bulk-parallel CLIs — fan out N `gh`/`bd`/`up-to-date`/file calls in one command    |
 | `clock`                  | machine | Schedule recurring session tasks (time checks, reminders)                          |
