@@ -34,7 +34,17 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any
 
+# Orgs where forks live. `idvorkin-ai-tools` is ALSO a canonical org (see
+# CANONICAL_ORGS) — a remote there only signals a fork *workflow* when
+# paired with a canonical remote elsewhere.
 FORK_ORGS = ["idvorkin-ai-tools"]
+
+# Orgs that host canonical (non-fork) repos. A lone remote in one of these
+# orgs is assumed canonical and never flagged `fork_without_canonical`:
+# a URL-only heuristic cannot tell `idvorkin-ai-tools/stack-picker-2`
+# (canonical) from a fork clone missing its upstream, and the safe default
+# is canonical — `gh repo view --json parent` resolves the truth.
+CANONICAL_ORGS = ["idvorkin", "idvorkin-ai-tools"]
 
 # Hostname pattern for the dev-VM class (`c-5004`, `C-5004`, etc.).
 _DEV_HOSTNAME_RE = re.compile(r"^c-\d+$", re.IGNORECASE)
@@ -122,14 +132,14 @@ def parse_remotes(raw: str) -> list[Remote]:
     return list(seen.values())
 
 
-def is_fork_url(url: str, fork_orgs: list[str]) -> bool:
-    """True if a git URL's owner segment matches a known fork org.
+def url_in_orgs(url: str, orgs: list[str]) -> bool:
+    """True if a git URL's owner segment matches any org in `orgs`.
 
     Matches both SSH (`git@github.com:org/repo`) and HTTPS
     (`https://github.com/org/repo`) URL forms, anchored on the org segment
     so `idvorkin` does not false-match against `idvorkin-ai-tools`.
     """
-    for org in fork_orgs:
+    for org in orgs:
         # SSH: git@host:org/...   HTTPS: https://host/org/...
         pattern = rf"(?::|/){re.escape(org)}(?:/|$)"
         if re.search(pattern, url):
@@ -137,8 +147,22 @@ def is_fork_url(url: str, fork_orgs: list[str]) -> bool:
     return False
 
 
-def classify_remotes(remotes: list[Remote], fork_orgs: list[str]) -> RemoteAnalysis:
-    """Determine source of truth, fork-workflow status, and hygiene issues."""
+def is_fork_url(url: str, fork_orgs: list[str]) -> bool:
+    """True if a git URL's owner segment matches a known fork org."""
+    return url_in_orgs(url, fork_orgs)
+
+
+def classify_remotes(
+    remotes: list[Remote], fork_orgs: list[str], canonical_orgs: list[str]
+) -> RemoteAnalysis:
+    """Determine source of truth, fork-workflow status, and hygiene issues.
+
+    `fork_orgs` are orgs where forks live; `canonical_orgs` are orgs that
+    host canonical repos. An org may appear in both (`idvorkin-ai-tools`):
+    fork-workflow detection is pairing-based (fork-org remote + canonical
+    remote), while the lone-fork hygiene check exempts remotes whose org
+    is also canonical.
+    """
     issues: list[RemoteIssue] = []
     by_name = {r.name: r for r in remotes}
 
@@ -188,16 +212,21 @@ def classify_remotes(remotes: list[Remote], fork_orgs: list[str]) -> RemoteAnaly
                 )
             )
 
-    # Check 3: lone fork — fork remote exists but no canonical to PR against
+    # Check 3: lone fork — fork remote exists but no canonical to PR against.
+    # Skipped when the remote's org is also a canonical org: a lone
+    # `idvorkin-ai-tools/X` origin is indistinguishable (by URL alone) from
+    # a canonical repo hosted in that org, and flagging it produced a
+    # spurious `fork_without_canonical` on every canonical-org repo.
     if fork_remotes and not canonical_remotes:
         fork = fork_remotes[0]
-        issues.append(
-            RemoteIssue(
-                kind="fork_without_canonical",
-                detail=f"'{fork.name}' is a fork but no canonical 'upstream' remote exists",
-                fix="git remote add upstream <canonical-repo-url>",
+        if not url_in_orgs(fork.url, canonical_orgs):
+            issues.append(
+                RemoteIssue(
+                    kind="fork_without_canonical",
+                    detail=f"'{fork.name}' is a fork but no canonical 'upstream' remote exists",
+                    fix="git remote add upstream <canonical-repo-url>",
+                )
             )
-        )
 
     return RemoteAnalysis(
         entries=remotes,
@@ -765,7 +794,7 @@ def run_diagnose() -> dict[str, Any]:
     # Remote hygiene — needs to happen before fetch so we know the source name.
     remotes_raw = git("remote", "-v", check=False)
     remotes = parse_remotes(remotes_raw)
-    analysis = classify_remotes(remotes, FORK_ORGS)
+    analysis = classify_remotes(remotes, FORK_ORGS, CANONICAL_ORGS)
     src = analysis.source
 
     # Run fetch, current-branch PR lookup, and merged-PR-heads lookup in
