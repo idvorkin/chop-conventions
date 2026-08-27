@@ -88,6 +88,7 @@ Machine-level skills go in `~/.claude/skills/` and are available everywhere. Pro
 | `bulk`                   | machine | Bulk-parallel CLIs — fan out N `gh`/`bd`/`up-to-date`/file calls in one command    |
 | `clock`                  | machine | Schedule recurring session tasks (time checks, reminders)                          |
 | `delegate-to-other-repo` | machine | Delegate cross-repo work to a subagent with an isolated context; ends with a PR    |
+| `design-review`          | machine | Audit a UI against its own mined principles — Playwright measurements, not opinions |
 | `docs`                   | machine | Fetch fresh library/framework docs via Context7 (`ctx7`)                           |
 | `gen-image`              | machine | Generate illustrations via Gemini image API                                        |
 | `gist-image`             | machine | Host images on GitHub gists for PRs/issues                                         |
