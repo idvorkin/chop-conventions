@@ -1,6 +1,6 @@
 ---
 name: background-usage
-description: Check Claude Code plan usage via a hidden tmux session. Reports weekly usage percentage, time until reset, and pacing status.
+description: Check Claude Code plan usage in a throwaway background session — a herdr workspace under herdr, otherwise a hidden detached tmux session. Reports weekly usage percentage, time until reset, and pacing status.
 allowed-tools: Agent
 ---
 
