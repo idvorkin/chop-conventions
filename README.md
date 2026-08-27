@@ -81,6 +81,7 @@ Machine-level skills go in `~/.claude/skills/` and are available everywhere. Pro
 
 | Skill                    | Scope   | Description                                                                        |
 | ------------------------ | ------- | ---------------------------------------------------------------------------------- |
+| `adversarial-review`     | machine | Hostile review-until-clean before shipping a doc/artifact, plus rubric-driven de-slop rewrites |
 | `ammon`                  | machine | Look up the current time in Denmark for Ammon                                      |
 | `architect-review`       | machine | Iterative architect review passes on design specs, tracking convergence            |
 | `background-usage`       | machine | Check Claude Code plan usage without blocking the session                          |
