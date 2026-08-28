@@ -150,16 +150,38 @@ tmux kill-session -t cc-usage-check 2>/dev/null || true
 
 ## Step 1 — Parse the captured dialog
 
-Read `/tmp/cc-usage-output.txt` and extract ONLY the "Current week (all models)"
-section. Ignore "Current session" and "Current week (Sonnet only)" lines.
+Read `/tmp/cc-usage-output.txt`. The dialog renders up to three blocks:
+`Current session`, `Current week (all models)`, and a model-specific
+`Current week (<Model> only)`. Ignore `Current session` — **both** weekly blocks
+matter.
 
-From that section, extract:
+From `Current week (all models)` extract:
 
-- **Usage percentage**: the number before "% used"
+- **`usage_pct`**: the number before "% used"
 - **Reset date/time**: from the "Resets" line, e.g. `Resets Aug 31, 10pm (America/Los_Angeles)`
 
-If the file is empty or neither field is present, report the error template in
-step 3.
+From `Current week (<Model> only)`, when the dialog renders it, extract:
+
+- **`model_name`**: the word inside the parentheses before "only", copied
+  **exactly as the dialog labels it**. Which model gets metered separately
+  varies — it has rendered as `Sonnet`, `Opus`, and `Fable` at different times —
+  and it is NOT necessarily the model the calling session is running. If the
+  dialog says `Sonnet`, report `Sonnet`, even from a Fable session. Guessing
+  here is how a Sonnet number ends up mislabelled as Fable on a dashboard.
+- **`model_pct`**: the number before "% used" inside that same block.
+
+The model-specific block is optional; some accounts render only the all-models
+line. When it is absent, report `model_name` / `model_pct` as unknown — never
+reuse the all-models number for it.
+
+Grepping both blocks in one pass keeps the two percentages from being transposed:
+
+```bash
+grep -nE 'Current (session|week)|% used|Resets' /tmp/cc-usage-output.txt
+```
+
+If the file is empty, or the all-models percentage and reset time are both
+absent, report the error template in step 3.
 
 ## Step 2 — Time remaining and pacing
 
@@ -182,7 +204,8 @@ Time remaining = reset − now:
 Pacing — the weekly window is 7 days, so it began at `reset − 7 days`:
 
 - `time_elapsed_pct` = `(now − (reset − 7d)) / 7d × 100`
-- `usage_pct` = the percentage from step 1
+- `usage_pct` = the **all-models** percentage from step 1 (pacing is judged on
+  the number that actually governs the plan, never on `model_pct`)
 
 Then:
 
@@ -192,15 +215,29 @@ Then:
 
 ## Step 3 — Report
 
-Return a single-line summary:
+Return a single-line summary. The all-models percentage, reset countdown and
+pacing keep their existing positions and wording; the model-specific reading is
+**appended** to the percentage as a parenthetical `<Model> M%`:
+
+> **Usage: N% used (<Model> M%) | X days until reset | On track**
+
+When the dialog carried no model-specific block, drop the parenthetical
+entirely rather than printing a placeholder or a guessed model name:
 
 > **Usage: N% used | X days until reset | On track**
 
 Examples:
 
-> **Usage: 9% used | 4 days until reset | On track**
+> **Usage: 9% used (Sonnet 4%) | 4 days until reset | On track**
+> **Usage: 46% used (Fable 24%) | 4 days until reset | Burning fast**
 > **Usage: 65% used | 18 hours until reset | Burning fast**
-> **Usage: 40% used | 6 days until reset | Slow down**
+> **Usage: 40% used (Opus 31%) | 6 days until reset | Slow down**
+
+Callers that persist the reading — e.g. the Cockpit usage tile at
+`~/tmp/agent/skill/usage/last.json`, served by `decision_queue/serve.py` as
+`GET /usage` — want the two numbers kept apart: the all-models percentage in
+`weekly_pct`, and `model_pct` + `model_name` as their own fields. Write the
+model-specific percentage only under the name the dialog actually printed.
 
 If no multiplexer was available:
 
@@ -219,4 +256,8 @@ If capture failed or the output was empty:
 - Under tmux, kill a pre-existing `cc-usage-check` session before creating a new one.
 - If capture fails or output is empty, report the error template above instead
   of guessing a number.
+- Never rename the model-specific line. The label comes from the dialog, not
+  from the model this session is running — a `Sonnet only` block reported as
+  "Fable" is a wrong number wearing the right name, which is worse than no
+  number at all.
 - Assumes `claude` is on PATH and the user is already authenticated.
