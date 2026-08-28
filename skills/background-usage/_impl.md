@@ -7,6 +7,38 @@ subcommand — so the only way to read it is to drive a throwaway Claude session
 in a second terminal and scrape the rendered dialog. Which multiplexer does the
 driving depends on where this session is running.
 
+**This skill parses nothing.** Igor on PR #212: "No — drop the python
+processing and just return raw and then the calling agent can process the
+raw." Its whole job is to drive `/usage` in a throwaway session, capture the
+pane verbatim, and hand the text back. No percentages are extracted, no pacing
+is judged, no `last.json` is written. The caller does all of that.
+
+That division is the point. Reading a dialog and interpreting a dialog are
+different jobs with different failure modes: `50% used` and `50% left` are the
+same digits and opposite facts, and when the interpretation lives in here, an
+inverted reading arrives downstream as a bare number with nothing to check it
+against. Returning the screen instead means whoever needs an answer can always
+see what the answer was derived from — and re-derive it when the screen changes
+shape.
+
+## Files this run writes
+
+Both live in `~/tmp/agent/skill/usage/`:
+
+| File           | What it is                                                    |
+| -------------- | ------------------------------------------------------------- |
+| `raw.txt`      | the pane, verbatim — the capture, and what the report returns |
+| `raw.ansi.txt` | the same pane with colour codes; tmux only, and only because  |
+|                | it is one extra command on a pane already open                |
+
+```bash
+mkdir -p ~/tmp/agent/skill/usage
+```
+
+Both are rewritten on every run. Leaving a stale `raw.txt` behind is worse than
+failing loudly: a caller that reads the file rather than the returned text
+would interpret last run's screen and stamp it with this run's clock.
+
 ## Step 0 — Pick the multiplexer
 
 ```bash
@@ -22,9 +54,9 @@ fi
 - `herdr` → run **Path A**.
 - `tmux` → run **Path B**. A detached tmux session works even when the caller is
   not inside tmux, so this is also the fallback for a plain terminal.
-- `none` → skip to step 3 and report the error template.
+- `none` → skip to step 1 and use the failure template.
 
-Both paths end with the rendered dialog in `/tmp/cc-usage-output.txt`.
+Both paths end with the rendered dialog in `~/tmp/agent/skill/usage/raw.txt`.
 
 ---
 
@@ -69,11 +101,39 @@ out.
 
 ```bash
 herdr pane wait-output <pane_id> --match "Current week" --source visible --timeout 45000
-herdr pane read <pane_id> --source visible --lines 60 > /tmp/cc-usage-output.txt
+herdr pane read <pane_id> --source visible --lines 60 > ~/tmp/agent/skill/usage/raw.txt
 ```
 
 Match on `Current week`, not `% used` — the `Current session` line also ends in
 `% used` and can render first.
+
+**Scroll until both weekly blocks are on screen.** The dialog is taller than
+the pane, and the model-specific block — with its own `Resets` line — is the
+part that falls below the fold. Send `down` until the SECOND `Current week`
+block and the `Resets` line under it are both visible:
+
+```bash
+herdr pane read <pane_id> --source visible | grep -c 'Resets'   # want >= 3
+herdr pane send-keys <pane_id> down
+```
+
+**The stop condition is those lines, not the `↓` marker.** Measured on a real
+run 2026-08-28: the marker is still there once both weekly blocks are up,
+because a "What's contributing to your limits usage?" section sits below them
+and never has to be captured. Looping until the arrow disappears scrolls
+straight past the numbers. Cap it at ~6 downs and capture what you have.
+
+This is a completeness problem, not a parsing one: whatever is below the fold
+never reaches the caller at all, and nothing downstream can tell the difference
+between a block that was absent and a block that was merely unscrolled.
+
+`herdr pane read` returns plain text, so there is no `raw.ansi.txt` on this
+path. Delete any stale one rather than leaving last run's colours next to this
+run's capture:
+
+```bash
+rm -f ~/tmp/agent/skill/usage/raw.ansi.txt
+```
 
 ### A5. Always clean up
 
@@ -137,121 +197,98 @@ for i in $(seq 1 30); do
 done
 ```
 
-### B5. Capture and always clean up
+**Scroll until both weekly blocks are on screen**, for the reason given in A4 —
+and with the same stop condition, which is the `Resets` lines and not the `↓`:
 
 ```bash
-tmux capture-pane -t cc-usage-check -p > /tmp/cc-usage-output.txt
+for i in $(seq 1 6); do
+  [ "$(tmux capture-pane -t cc-usage-check -p | grep -c 'Resets')" -ge 3 ] && break
+  tmux send-keys -t cc-usage-check Down
+  sleep 1
+done
+```
+
+Three `Resets` lines means session + both weekly blocks are up. Two means the
+model-specific block is still below the fold; on an account that renders no
+such block it will stay at two, which is why this is capped rather than a
+`while`.
+
+### B5. Capture, twice, then always clean up
+
+Both captures come off the SAME pane before it is killed — capture first, kill
+after, or the second one reads a session that no longer exists:
+
+```bash
+tmux capture-pane -t cc-usage-check -p  > ~/tmp/agent/skill/usage/raw.txt
+tmux capture-pane -t cc-usage-check -e -p > ~/tmp/agent/skill/usage/raw.ansi.txt
 tmux kill-session -t cc-usage-check 2>/dev/null || true
 ```
+
+`-p` is the plain text everything downstream reads; `-e` keeps the colour
+codes, which is the only copy that still shows which bar was drawn in which
+colour if that ever turns out to matter.
 
 **Always kill the session**, even if earlier steps failed.
 
 ---
 
-## Step 1 — Parse the captured dialog
+## Step 1 — Return the capture
 
-Read `/tmp/cc-usage-output.txt`. The dialog renders up to three blocks:
-`Current session`, `Current week (all models)`, and a model-specific
-`Current week (<Model>)` — which has also rendered as
-`Current week (<Model> only)`, so match on the parenthetical not being
-`all models` rather than on the word "only". Ignore `Current session` —
-**both** weekly blocks matter.
+**The capture IS the result.** Return the contents of `raw.txt` verbatim, in a
+fenced block, under one line naming where it came from and when:
 
-The model-specific block may be one line below the fold. The pane capture ends
-with a `↓` scroll marker when there is more; send `Down` a few times and
-re-capture, or its `Resets` line goes missing.
+    /usage capture — ~/tmp/agent/skill/usage/raw.txt — 2026-08-28 07:44:02 -0700
 
-From `Current week (all models)` extract:
+    ```
+       Current session
+       ██████████████▍                                    29% used
+       Resets 3:20pm (UTC)
 
-- **`usage_pct`**: the number before "% used"
-- **Reset date/time**: from the "Resets" line, e.g. `Resets Aug 31, 10pm (America/Los_Angeles)`
+       Current week (all models)
+       ████████████████████████████                       56% used
+       Resets Sep 1, 5am (UTC)
 
-From the model-specific block, when the dialog renders it, extract:
+       Current week (Fable)
+       █████████████████████                              42% used
+    ```
 
-- **`model_name`**: the model named inside the parentheses, copied
-  **exactly as the dialog labels it**. Which model gets metered separately
-  varies — it has rendered as `Sonnet`, `Opus`, and `Fable` at different times —
-  and it is NOT necessarily the model the calling session is running. If the
-  dialog says `Sonnet`, report `Sonnet`, even from a Fable session. Guessing
-  here is how a Sonnet number ends up mislabelled as Fable on a dashboard.
-- **`model_pct`**: the number before "% used" inside that same block.
-
-The model-specific block is optional; some accounts render only the all-models
-line. When it is absent, report `model_name` / `model_pct` as unknown — never
-reuse the all-models number for it.
-
-Grepping both blocks in one pass keeps the two percentages from being transposed:
+The timestamp comes from the file, not from a guess:
 
 ```bash
-grep -nE 'Current (session|week)|% used|Resets' /tmp/cc-usage-output.txt
+stat -c '%y' ~/tmp/agent/skill/usage/raw.txt
 ```
 
-If the file is empty, or the all-models percentage and reset time are both
-absent, report the error template in step 3.
+Three rules about that block:
 
-## Step 2 — Time remaining and pacing
+- **Verbatim means verbatim.** Do not tidy the bars, re-align the columns, drop
+  the blank rows, or trim the `Current session` block because it looks
+  irrelevant. Whichever line the caller cares about is a line you cannot know
+  in advance, and a "cleaned" capture is no longer evidence of anything.
+- **Do not summarise it, and do not lead with a number.** No "Usage: 56% used",
+  no pacing verdict, no "you are ahead of schedule". Extracting one figure and
+  putting it at the top is exactly the interpretation this skill no longer does
+  — and the figure you chose would quietly become the answer.
+- **Say nothing the screen did not.** If the dialog rendered no model-specific
+  block, that absence is part of the capture; do not remark on it, explain it,
+  or fill it in.
 
-The `Resets` line carries its own timezone in parentheses. **It is not UTC** —
-it renders in the machine's local zone. Read the zone out of the line and do all
-arithmetic in that zone:
+The pane is short — around twenty-five lines — so returning all of it costs
+almost nothing and leaves the caller with everything it needs.
 
-```bash
-TZ="<zone from the Resets line>" date '+%Y-%m-%d %H:%M'
-```
+### If it did not work
 
-The reset line has no year. Assume the current year in that zone; if that places
-the reset in the past, roll forward one year.
+The failures are the one place this skill still speaks in its own voice,
+because a caller cannot parse a capture that does not exist:
 
-Time remaining = reset − now:
+> **Usage capture FAILED — neither herdr nor tmux is available, so /usage could not be driven.**
 
-- `>= 48` hours remaining → report as "N days"
-- `< 48` hours remaining → report as "N hours"
+> **Usage capture FAILED — the dialog never rendered (no "Current week" in the pane after Ns). The throwaway session has been cleaned up.**
 
-Pacing — the weekly window is 7 days, so it began at `reset − 7 days`:
+> **Usage capture FAILED — the capture came back empty. The throwaway session has been cleaned up.**
 
-- `time_elapsed_pct` = `(now − (reset − 7d)) / 7d × 100`
-- `usage_pct` = the **all-models** percentage from step 1 (pacing is judged on
-  the number that actually governs the plan, never on `model_pct`)
-
-Then:
-
-- `usage_pct <= time_elapsed_pct` → "On track"
-- `usage_pct > time_elapsed_pct` but `< 2 × time_elapsed_pct` → "Burning fast"
-- `usage_pct >= 2 × time_elapsed_pct` → "Slow down"
-
-## Step 3 — Report
-
-Return a single-line summary. The all-models percentage, reset countdown and
-pacing keep their existing positions and wording; the model-specific reading is
-**appended** to the percentage as a parenthetical `<Model> M%`:
-
-> **Usage: N% used (<Model> M%) | X days until reset | On track**
-
-When the dialog carried no model-specific block, drop the parenthetical
-entirely rather than printing a placeholder or a guessed model name:
-
-> **Usage: N% used | X days until reset | On track**
-
-Examples:
-
-> **Usage: 9% used (Sonnet 4%) | 4 days until reset | On track**
-> **Usage: 46% used (Fable 24%) | 4 days until reset | Burning fast**
-> **Usage: 65% used | 18 hours until reset | Burning fast**
-> **Usage: 40% used (Opus 31%) | 6 days until reset | Slow down**
-
-Callers that persist the reading — e.g. the Cockpit usage tile at
-`~/tmp/agent/skill/usage/last.json`, served by `decision_queue/serve.py` as
-`GET /usage` — want the two numbers kept apart: the all-models percentage in
-`weekly_pct`, and `model_pct` + `model_name` as their own fields. Write the
-model-specific percentage only under the name the dialog actually printed.
-
-If no multiplexer was available:
-
-> **Usage: ERROR — neither herdr nor tmux is available, so /usage could not be driven.**
-
-If capture failed or the output was empty:
-
-> **Usage: ERROR — could not capture /usage output. The throwaway session has been cleaned up.**
+Never substitute a remembered number, and never fall back to reading an older
+`raw.txt`: a stale capture returned as a fresh one is the failure mode the
+whole design exists to make impossible.
 
 ## Safety
 
@@ -260,10 +297,10 @@ If capture failed or the output was empty:
 - Under herdr, only ever close the workspace this run created. Read its id from
   the `workspace create` response; never close one you did not create.
 - Under tmux, kill a pre-existing `cc-usage-check` session before creating a new one.
-- If capture fails or output is empty, report the error template above instead
-  of guessing a number.
-- Never rename the model-specific line. The label comes from the dialog, not
-  from the model this session is running — a `Sonnet` block reported as "Fable"
-  is a wrong number wearing the right name, which is worse than no number at
-  all.
+- If the capture fails or comes back empty, return the failure template above.
+  Never a remembered number, and never an older `raw.txt`.
+- Never leave last run's `raw.txt` in place after a failed capture. The screen
+  it shows is not the screen this run saw.
+- Never interpret. No percentages, no pacing, no `last.json` — that is the
+  caller's job, and doing it here is how a wrong reading loses its receipt.
 - Assumes `claude` is on PATH and the user is already authenticated.
