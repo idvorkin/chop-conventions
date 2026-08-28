@@ -152,17 +152,23 @@ tmux kill-session -t cc-usage-check 2>/dev/null || true
 
 Read `/tmp/cc-usage-output.txt`. The dialog renders up to three blocks:
 `Current session`, `Current week (all models)`, and a model-specific
-`Current week (<Model> only)`. Ignore `Current session` — **both** weekly blocks
-matter.
+`Current week (<Model>)` — which has also rendered as
+`Current week (<Model> only)`, so match on the parenthetical not being
+`all models` rather than on the word "only". Ignore `Current session` —
+**both** weekly blocks matter.
+
+The model-specific block may be one line below the fold. The pane capture ends
+with a `↓` scroll marker when there is more; send `Down` a few times and
+re-capture, or its `Resets` line goes missing.
 
 From `Current week (all models)` extract:
 
 - **`usage_pct`**: the number before "% used"
 - **Reset date/time**: from the "Resets" line, e.g. `Resets Aug 31, 10pm (America/Los_Angeles)`
 
-From `Current week (<Model> only)`, when the dialog renders it, extract:
+From the model-specific block, when the dialog renders it, extract:
 
-- **`model_name`**: the word inside the parentheses before "only", copied
+- **`model_name`**: the model named inside the parentheses, copied
   **exactly as the dialog labels it**. Which model gets metered separately
   varies — it has rendered as `Sonnet`, `Opus`, and `Fable` at different times —
   and it is NOT necessarily the model the calling session is running. If the
@@ -257,7 +263,7 @@ If capture failed or the output was empty:
 - If capture fails or output is empty, report the error template above instead
   of guessing a number.
 - Never rename the model-specific line. The label comes from the dialog, not
-  from the model this session is running — a `Sonnet only` block reported as
-  "Fable" is a wrong number wearing the right name, which is worse than no
-  number at all.
+  from the model this session is running — a `Sonnet` block reported as "Fable"
+  is a wrong number wearing the right name, which is worse than no number at
+  all.
 - Assumes `claude` is on PATH and the user is already authenticated.
