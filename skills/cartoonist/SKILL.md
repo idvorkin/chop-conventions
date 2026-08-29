@@ -1,6 +1,7 @@
 ---
 name: cartoonist
 description: Summon Gutter, the cartoonist seat, for any raccoon art on Igor's blog — Den strips, cutouts, post illustrations, the weekly Den pitch. The seat lives in larry-blog/gutter/; this skill only wakes him and carries the invocation shape.
+allowed-tools: Agent, SendMessage, Bash
 ---
 
 # Cartoonist — summon Gutter
