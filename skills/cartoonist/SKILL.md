@@ -75,7 +75,7 @@ into a prompt by hand; `wake.sh` prints it.**
 Larry's side of the loop, every Sunday ~07:30 PDT: read the week (journals,
 week report, Telegram) and write the pitch brief — three to five moments as
 lines Igor would put on the blog himself, no journal text. Wake Gutter with
-it; he drafts three premises; critique; he sends the pitch text; Larry
-files it as `~/gits/igor2/gutter/pitches/<year>-Www.md` and says "Sheet
-ready"; file the ask with no images and no recommendation. A pick becomes a
+it; he drafts three premises; critique; he sends the pitch text and says
+"Sheet ready"; Larry files it as `~/gits/igor2/gutter/pitches/<year>-Www.md`
+and files the ask with no images and no recommendation. A pick becomes a
 job.
