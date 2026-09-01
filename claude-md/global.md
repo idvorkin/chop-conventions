@@ -47,6 +47,12 @@ Just do it - including obvious follow-up actions. Only pause when:
 
 - YAGNI. The best code is no code. Don't add features we don't need.
 - When it doesn't conflict with YAGNI, architect for extensibility.
+- Before writing code, climb the laziness ladder: does it need to exist at all? Already in the codebase? Stdlib? Native platform feature? An already-installed dependency? One line? Only then write the minimum that works.
+- Boring over clever — clever is what someone decodes at 3am.
+- A deliberately cut corner gets a `ponytail:` comment naming the ceiling and the upgrade path.
+- If the explanation is longer than the code, delete the explanation (unless the explanation was requested).
+
+<!-- The four bullets above are cherry-picked from DietrichGebert/ponytail (MIT), 2026-09-01, in lieu of installing the plugin — see igor2-88g.307. -->
 
 ## Important Rules
 
