@@ -402,11 +402,21 @@ class TestDefaultChatId(unittest.TestCase):
     """Drive _default_chat_id via the LARRY_TELEGRAM_DIR env var it honors."""
 
     def _with_db(self, rows):
+        """rows: list of (chat_id,) or (chat_id, gate_action) tuples.
+
+        gate_action defaults to 'allow' so existing cases read unchanged.
+        """
         tmp = tempfile.TemporaryDirectory()
         db = Path(tmp.name) / "inbound.db"
         con = sqlite3.connect(db)
-        con.execute("CREATE TABLE inbound (id INTEGER PRIMARY KEY, chat_id INTEGER)")
-        con.executemany("INSERT INTO inbound (chat_id) VALUES (?)", rows)
+        con.execute(
+            "CREATE TABLE inbound"
+            " (id INTEGER PRIMARY KEY, chat_id INTEGER, gate_action TEXT)"
+        )
+        con.executemany(
+            "INSERT INTO inbound (chat_id, gate_action) VALUES (?, ?)",
+            [(r[0], r[1] if len(r) > 1 else "allow") for r in rows],
+        )
         con.commit()
         con.close()
         return tmp  # caller keeps reference alive
@@ -440,6 +450,38 @@ class TestDefaultChatId(unittest.TestCase):
 
     def test_empty_table_returns_none(self):
         tmp = self._with_db([])
+        old = os.environ.get("LARRY_TELEGRAM_DIR")
+        os.environ["LARRY_TELEGRAM_DIR"] = tmp.name
+        try:
+            self.assertIsNone(_default_chat_id())
+        finally:
+            tmp.cleanup()
+            if old is None:
+                del os.environ["LARRY_TELEGRAM_DIR"]
+            else:
+                os.environ["LARRY_TELEGRAM_DIR"] = old
+
+    def test_skips_newer_non_allowed_rows(self):
+        """A stranger DM must never become the outbound default. The bot
+        records drop/pair rows too, so the newest row is not necessarily a
+        row Larry is allowed to talk to — every daemon direct-send (nudge
+        fallback, watchdog alert, restart status) relies on this default."""
+        tmp = self._with_db([(111, "allow"), (999, "drop"), (888, "pair")])
+        old = os.environ.get("LARRY_TELEGRAM_DIR")
+        os.environ["LARRY_TELEGRAM_DIR"] = tmp.name
+        try:
+            self.assertEqual(_default_chat_id(), "111")
+        finally:
+            tmp.cleanup()
+            if old is None:
+                del os.environ["LARRY_TELEGRAM_DIR"]
+            else:
+                os.environ["LARRY_TELEGRAM_DIR"] = old
+
+    def test_only_non_allowed_rows_returns_none(self):
+        """Fail closed: with nothing but stranger traffic on record there is
+        no safe default, and the caller's "no chat_id" error is correct."""
+        tmp = self._with_db([(999, "drop"), (888, "pair")])
         old = os.environ.get("LARRY_TELEGRAM_DIR")
         os.environ["LARRY_TELEGRAM_DIR"] = tmp.name
         try:
