@@ -1605,7 +1605,17 @@ def _read_bot_token(token_file: Path | None = None) -> str:
 
 
 def _default_chat_id() -> str | None:
-    """Pull the most recent inbound chat_id from inbound.db as a sensible default."""
+    """Pull the most recent gate-allowed inbound chat_id from inbound.db.
+
+    The gate filter is load-bearing, not cosmetic. telegram_bot.py INSERTs a
+    row for *every* inbound event, including `drop` and `pair` rows from
+    strangers (dmPolicy is pairing, so strangers reach the bot by design).
+    Every daemon `direct-send` — nudge fallbacks, watchdog red/recovery
+    alerts, /restart-larry status lines — omits --chat-id and lands here, so
+    an unfiltered "newest row" default would address Igor's personal coaching
+    text to whichever stranger DM'd the bot most recently. Same reasoning as
+    show_undelivered(), which filters gate_action = 'allow' on the read side.
+    """
     db = (
         Path(os.environ.get("LARRY_TELEGRAM_DIR", Path.home() / "larry-telegram"))
         / "inbound.db"
@@ -1615,7 +1625,8 @@ def _default_chat_id() -> str | None:
     try:
         con = sqlite3.connect(f"file:{db}?mode=ro", uri=True, timeout=1)
         row = con.execute(
-            "SELECT chat_id FROM inbound ORDER BY id DESC LIMIT 1"
+            "SELECT chat_id FROM inbound WHERE gate_action = 'allow'"
+            " ORDER BY id DESC LIMIT 1"
         ).fetchone()
         con.close()
         return str(row[0]) if row else None
