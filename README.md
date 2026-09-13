@@ -79,27 +79,28 @@ Machine-level skills go in `~/.claude/skills/` and are available everywhere. Pro
 
 ### Available Skills
 
-| Skill                    | Scope   | Description                                                                        |
-| ------------------------ | ------- | ---------------------------------------------------------------------------------- |
-| `ammon`                  | machine | Look up the current time in Denmark for Ammon                                      |
-| `architect-review`       | machine | Iterative architect review passes on design specs, tracking convergence            |
-| `background-usage`       | machine | Check Claude Code plan usage without blocking the session                          |
-| `build-bd-static`        | machine | Build a static `bd` fallback when Homebrew is unavailable or not portable enough   |
-| `bulk`                   | machine | Bulk-parallel CLIs — fan out N `gh`/`bd`/`up-to-date`/file calls in one command    |
-| `clock`                  | machine | Schedule recurring session tasks (time checks, reminders)                          |
-| `delegate-to-other-repo` | machine | Delegate cross-repo work to a subagent with an isolated context; ends with a PR    |
-| `docs`                   | machine | Fetch fresh library/framework docs via Context7 (`ctx7`)                           |
-| `gen-image`              | machine | Generate illustrations via Gemini image API                                        |
-| `gist-image`             | machine | Host images on GitHub gists for PRs/issues                                         |
-| `herdr`                  | machine | Drive herdr workspaces/agents headlessly; keep claude/codex integrations healthy   |
-| `image-explore`          | machine | Brainstorm and compare visual directions                                           |
-| `image-read`             | machine | Describe inbound images via a Haiku subagent, keeping pixel payload out of context |
-| `larry-voice`            | machine | Speak text in Larry's voice via ElevenLabs → a Telegram voice note (opus/ogg)      |
-| `learn-from-session`     | machine | Extract durable lessons from a session into the right CLAUDE.md files              |
-| `machine-doctor`         | machine | Diagnose system health, kill rogue processes                                       |
-| `pr-hygiene`             | machine | Surface open PRs with unaddressed review feedback (filters CodeRabbit/CI noise)    |
-| `showboat`               | machine | Create executable demo documents with screenshots                                  |
-| `up-to-date`             | machine | Sync git repo with upstream                                                        |
+| Skill                    | Scope   | Description                                                                                                          |
+| ------------------------ | ------- | -------------------------------------------------------------------------------------------------------------------- |
+| `ammon`                  | machine | Look up the current time in Denmark for Ammon                                                                        |
+| `architect-review`       | machine | Iterative architect review passes on design specs, tracking convergence                                              |
+| `background-usage`       | machine | Check Claude Code plan usage without blocking the session                                                            |
+| `build-bd-static`        | machine | Build a static `bd` fallback when Homebrew is unavailable or not portable enough                                     |
+| `bulk`                   | machine | Bulk-parallel CLIs — fan out N `gh`/`bd`/`up-to-date`/file calls in one command                                      |
+| `clock`                  | machine | Schedule recurring session tasks (time checks, reminders)                                                            |
+| `delegate-to-other-repo` | machine | Delegate cross-repo work to a subagent with an isolated context; ends with a PR                                      |
+| `docs`                   | machine | Fetch fresh library/framework docs via Context7 (`ctx7`)                                                             |
+| `gen-image`              | machine | Generate illustrations via Gemini image API                                                                          |
+| `gist-image`             | machine | Host images on GitHub gists for PRs/issues                                                                           |
+| `herdr`                  | machine | Drive herdr workspaces/agents headlessly; keep claude/codex integrations healthy                                     |
+| `image-explore`          | machine | Brainstorm and compare visual directions                                                                             |
+| `image-read`             | machine | Describe inbound images via a Haiku subagent, keeping pixel payload out of context                                   |
+| `larry-voice`            | machine | Speak text in Larry's voice via ElevenLabs → a Telegram voice note (opus/ogg)                                        |
+| `learn-from-session`     | machine | Extract durable lessons from a session into the right CLAUDE.md files                                                |
+| `machine-doctor`         | machine | Diagnose system health, kill rogue processes                                                                         |
+| `muse-herdr`             | machine | Drive Muse in a Herdr pane as a sub-agent (brief file, worktree, approval watcher); headless `muse exec` for grading |
+| `pr-hygiene`             | machine | Surface open PRs with unaddressed review feedback (filters CodeRabbit/CI noise)                                      |
+| `showboat`               | machine | Create executable demo documents with screenshots                                                                    |
+| `up-to-date`             | machine | Sync git repo with upstream                                                                                          |
 
 ## Usage
 
