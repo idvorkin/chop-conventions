@@ -69,9 +69,15 @@ You're the manager. Drive it." So: split new panes for new jobs (`herdr pane spl
 right --cwd <repo> --no-focus`), close panes whose agent is done and whose output is saved, reuse an idle
 Muse for the next brief instead of starting another, and keep one status file per job. The only pane not to
 restart is the user's own interactive one (its profile is theirs). They share the machine: one heavy process
-at a time, and the headless graders count against the same memory. A Muse whose every turn ends with
-"keychain item for meta is unreadable (os status -67701)" and no work is dead for the session (its keychain
-access expired); hand its brief to another Muse and tell the user that pane needs a restart.
+at a time, and the headless graders count against the same memory.
+
+**"◆ keychain item for meta is unreadable (os status -67701)"** after a prompt, with no work following: the
+session is dead (its keychain access expired). Igor: "When you see this, the session is dead. You need to
+kill Muse with a bunch of Control-Cs and then resume that same conversation. You can see what to resume by
+reading the prompt text." So: `herdr agent send-keys <name> ctrl+c` three or four times until the shell
+prompt is back, start `muse` again in that pane with its resume option, pick the conversation whose first
+prompt text matches the brief you sent, and re-send the last prompt. Do not hand the brief to another Muse
+first unless the resume fails: the dead session holds the context of everything it read.
 
 When several Muses commit on branches, the manager merges: host tests on the branch, merge into main, the
 simulator or phone rung for what the host cannot see, then close the issue with what was verified where.
@@ -83,7 +89,7 @@ simulator or phone rung for what the host cannot see, then close the issue with 
 | Muse's next prompt starts with a stray `y`                                       | an auto-approver typed into its input     | stop the approver, backspace the input, use the watcher + `send-keys`                                                  |
 | `agent_prompt_stalled`                                                           | the pane was not at an interactive prompt | `herdr agent get <name>`, read the screen, clear a dialog first                                                        |
 | a long answer is not in `agent read`                                             | alternate screen                          | ask for the answer as a file under `/tmp`                                                                              |
-| "keychain item for meta is unreadable (os status -67701)" on start               | Muse's own warning                        | harmless; the agent still works                                                                                        |
+| "keychain item for meta is unreadable (os status -67701)" and nothing follows    | the session's keychain access expired     | ctrl+c until the shell is back, `muse resume --last` in that pane, re-send the last prompt (§3)                        |
 | the sandbox cannot run `xcodebuild` / the simulator                              | sandbox                                   | the status file names the command; the caller runs it                                                                  |
 | "Reviewing approval request (N min · esc to interrupt)" for minutes              | Muse's own approval reviewer, stalled     | send `enter` (it approves); `y` lands in the input line; `esc` cancels the command and the turn, so re-prompt after it |
 | `herdr agent prompt` fails with `agent_blocked` on an idle pane                  | a leftover task-selection state           | `herdr pane run <pane> "<prompt>"` types it in raw                                                                     |
