@@ -58,11 +58,20 @@ Sonnet. I want you to use Muse. It's way cheaper."
 Ten graded frames are noise (a rule judged on ten flipped when regraded); decide on 30 or more, and expect the
 grader's own count to move by one or two between runs of identical frames.
 
-## 3. Several Muses
+## 3. Several Muses, and the panes are yours
 
-One pane per job with its own name and brief (`bell-lab` doing a refactor while `watch-lab` answers a design
-question). They share the machine: one heavy process at a time, and the headless graders count against the
-same memory.
+One pane per job with its own name, brief and worktree (`bell-lab` doing a refactor while `watch-lab` answers a
+design question). Igor (2026-09-13): "Feel free to use multiple Muses. Remember you can manage all Herdr panes.
+You're the manager. Drive it." So: split new panes for new jobs (`herdr pane split --pane <id> --direction
+right --cwd <repo> --no-focus`), close panes whose agent is done and whose output is saved, reuse an idle
+Muse for the next brief instead of starting another, and keep one status file per job. The only pane not to
+restart is the user's own interactive one (its profile is theirs). They share the machine: one heavy process
+at a time, and the headless graders count against the same memory. A Muse whose every turn ends with
+"keychain item for meta is unreadable (os status -67701)" and no work is dead for the session (its keychain
+access expired); hand its brief to another Muse and tell the user that pane needs a restart.
+
+When several Muses commit on branches, the manager merges: host tests on the branch, merge into main, the
+simulator or phone rung for what the host cannot see, then close the issue with what was verified where.
 
 ## What goes wrong
 
