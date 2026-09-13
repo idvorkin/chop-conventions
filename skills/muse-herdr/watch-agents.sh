@@ -25,9 +25,13 @@ while true; do
     if [ "$screen" != "${screen_prev[$a]:-}" ]; then screen_prev[$a]=$screen; same_since[$a]=$now; fi
     case "$state" in
       blocked)
-        [ "${last[$a]:-}" != "blocked:$screen" ] && { last[$a]="blocked:$screen"; echo "BLOCKED $a: ${screen:0:400}"; } ;;
+        # Herdr says blocked while Muse is still thinking or running a command; only a real dialog counts.
+        if printf '%s' "$screen" | grep -qE "Thinking \(|esc to interrupt|ctrl\+b to send"; then :; \
+        elif [ "${last[$a]:-}" != "blocked:$screen" ]; then last[$a]="blocked:$screen"; echo "BLOCKED $a: ${screen:0:400}"; fi ;;
       working)
-        if printf '%s' "$screen" | grep -qE "model failed|transport error|rate limit|Interrupted ·"; then
+        # A failure counts only when it is the newest thing on screen (after a re-prompt the turn is live again).
+        tail3=$(herdr agent read "$a" --source visible --lines 40 2>/dev/null | grep -vE '^\s*$|Voice input|^──|^\s*❯\s*$|muse-spark' | tail -3 | tr '\n' ' ')
+        if printf '%s' "$tail3" | grep -qE "model failed|transport error|rate limit|Interrupted ·"; then
           [ "${last[$a]:-}" != "failed:$screen" ] && { last[$a]="failed:$screen"; echo "FAILED $a (re-prompt it): ${screen:0:300}"; }
         elif [ $((now - ${same_since[$a]:-$now})) -ge "$STALL_SECS" ]; then
           [ "${last[$a]:-}" != "stalled:$screen" ] && { last[$a]="stalled:$screen"; echo "STALLED $a (no screen change ${STALL_SECS}s): ${screen:0:300}"; }
