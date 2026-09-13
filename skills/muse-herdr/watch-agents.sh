@@ -26,7 +26,8 @@ while true; do
     case "$state" in
       blocked)
         # Herdr says blocked while Muse is still thinking or running a command; only a real dialog counts.
-        if printf '%s' "$screen" | grep -qE "Thinking \(|esc to interrupt|ctrl\+b to send"; then :; \
+        wide=$(herdr agent read "$a" --source visible --lines 40 2>/dev/null | grep -vE '^\s*$|Voice input|^──' | tail -14 | tr '\n' ' ')
+        if printf '%s' "$wide" | grep -qE "Thinking \(|esc to interrupt|ctrl\+b to send|last event [0-9]"; then :; \
         elif [ "${last[$a]:-}" != "blocked:$screen" ]; then last[$a]="blocked:$screen"; echo "BLOCKED $a: ${screen:0:400}"; fi ;;
       working)
         # A failure counts only when it is the newest thing on screen (after a re-prompt the turn is live again).
