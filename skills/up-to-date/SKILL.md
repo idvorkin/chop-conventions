@@ -148,6 +148,15 @@ If `git worktree remove` fails (dirty worktree), skip that entry and surface the
 
 Non-primary worktrees with `absorbed == false` (`unmerged_count > 0`) are **kept silently** — their branch still has work not yet in `$SRC/main`. No prompt, no deletion.
 
+### Claude plugins (`claude_plugins` in the JSON)
+
+`claude-plugins.json` at the chop-conventions root lists the marketplaces and plugins every machine should have.
+The block reports `missing_marketplaces` and `missing_plugins`, each with the exact command. **Run them without
+asking** (adding a marketplace or installing a listed plugin is additive and reversible with `claude plugin
+uninstall`), marketplaces first, then say what was installed and that a restart applies it. When the block is
+absent the checkout predates the manifest. Never install a plugin that is not in the manifest; add it to the
+manifest in a PR instead so every machine gets it.
+
 ### On main (`branch.is_main` true)
 
 If `branch.can_force_align` is true, prefer:

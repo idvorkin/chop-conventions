@@ -18,6 +18,9 @@ The conventions are cloned fresh each session so you always get the latest versi
 
 ## Plugin Marketplaces
 
+The machine-readable list of marketplaces and plugins is [`claude-plugins.json`](claude-plugins.json); the
+`up-to-date` skill installs whatever a machine is missing. The commands below are the manual equivalent.
+
 Claude Code has three plugin marketplaces. Add them all:
 
 ```bash

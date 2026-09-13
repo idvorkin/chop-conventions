@@ -608,6 +608,95 @@ def check_shared_claude_md(
 # ---------- post-up-to-date hook detection ----------
 
 
+def plan_claude_plugins(
+    manifest: dict[str, Any],
+    known_marketplaces: dict[str, Any],
+    installed_plugins: dict[str, Any],
+) -> dict[str, Any]:
+    """Compute the `claude_plugins` block from already-loaded JSON.
+
+    `manifest` is `claude-plugins.json` from chop-conventions (`marketplaces`:
+    name -> GitHub repo, `plugins`: `name@marketplace`). `known_marketplaces`
+    is `~/.claude/plugins/known_marketplaces.json` (keyed by name);
+    `installed_plugins` is `~/.claude/plugins/installed_plugins.json`
+    (`plugins` keyed by `name@marketplace`). Pure.
+    """
+    wanted_markets: dict[str, str] = dict(manifest.get("marketplaces") or {})
+    wanted_plugins: list[str] = list(manifest.get("plugins") or [])
+    have_markets = set(known_marketplaces.keys())
+    have_plugins = set((installed_plugins.get("plugins") or {}).keys())
+    missing_markets = [
+        {
+            "name": name,
+            "source": source,
+            "command": f"claude plugin marketplace add {source}",
+        }
+        for name, source in wanted_markets.items()
+        if name not in have_markets
+    ]
+    missing_plugins = [
+        {"plugin": plugin, "command": f"claude plugin install -y {plugin}"}
+        for plugin in wanted_plugins
+        if plugin not in have_plugins
+    ]
+    unknown_market = [
+        plugin
+        for plugin in wanted_plugins
+        if "@" in plugin and plugin.rsplit("@", 1)[1] not in wanted_markets
+    ]
+    return {
+        "expected_marketplaces": wanted_markets,
+        "expected_plugins": wanted_plugins,
+        "missing_marketplaces": missing_markets,
+        "missing_plugins": missing_plugins,
+        "plugins_without_manifest_marketplace": unknown_market,
+        "up_to_date": not missing_markets and not missing_plugins,
+    }
+
+
+def check_claude_plugins(
+    chop_root: Path, home: Path
+) -> tuple[dict[str, Any] | None, list[dict[str, Any]]]:
+    """Load the manifest and the machine's plugin registries, then plan.
+
+    Returns `(block, errors)`; `block` is None when the manifest is absent
+    (older chop-conventions checkouts) so callers can omit the key.
+    """
+    errors: list[dict[str, Any]] = []
+    manifest_path = chop_root / "claude-plugins.json"
+    if not manifest_path.is_file():
+        return None, errors
+
+    def load(path: Path, code: str) -> dict[str, Any]:
+        try:
+            with open(path, encoding="utf-8") as fh:
+                data = json.load(fh)
+            return data if isinstance(data, dict) else {}
+        except FileNotFoundError:
+            return {}
+        except (OSError, ValueError) as exc:
+            errors.append(
+                {
+                    "subsystem": "claude_plugins",
+                    "code": code,
+                    "message": f"{path}: {exc}",
+                }
+            )
+            return {}
+
+    manifest = load(manifest_path, "manifest_unreadable")
+    plugins_dir = home / ".claude" / "plugins"
+    known = load(
+        plugins_dir / "known_marketplaces.json", "known_marketplaces_unreadable"
+    )
+    installed = load(
+        plugins_dir / "installed_plugins.json", "installed_plugins_unreadable"
+    )
+    block = plan_claude_plugins(manifest, known, installed)
+    block["manifest_path"] = str(manifest_path)
+    return block, errors
+
+
 def check_post_up_to_date(
     repo_toplevel: Path | None,
 ) -> tuple[str | None, list[dict[str, Any]]]:
@@ -1099,6 +1188,7 @@ def run_diagnose() -> dict[str, Any]:
     env = dict(os.environ)
     chop_root = resolve_chop_root(env, home)
     shared_block: dict[str, Any] | None = None
+    plugins_block: dict[str, Any] | None = None
     if chop_root is None:
         probed: list[str] = []
         if env.get("CHOP_CONVENTIONS_ROOT"):
@@ -1125,6 +1215,10 @@ def run_diagnose() -> dict[str, Any]:
             machine_info=machine_info,
         )
         errors.extend(shared_errors)
+        plugins_block, plugin_errors = check_claude_plugins(
+            chop_root=chop_root, home=home
+        )
+        errors.extend(plugin_errors)
 
     # Locate the repo toplevel for the post-up-to-date hook. `git
     # rev-parse --show-toplevel` is the canonical way — NOT cwd.
@@ -1172,6 +1266,9 @@ def run_diagnose() -> dict[str, Any]:
     # block. The error in `errors[]` is the signal.
     if shared_block is not None:
         result["shared_claude_md"] = shared_block
+    # Same rule for the plugin manifest: absent manifest, absent key.
+    if plugins_block is not None:
+        result["claude_plugins"] = plugins_block
     return result
 
 

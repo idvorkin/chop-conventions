@@ -965,3 +965,60 @@ class TestGhPrListMergedHeads(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestPlanClaudePlugins(unittest.TestCase):
+    MANIFEST = {
+        "marketplaces": {
+            "pm-skills": "deanpeters/Product-Manager-Skills",
+            "official": "anthropics/claude-plugins-official",
+        },
+        "plugins": ["user-story@pm-skills", "pyright-lsp@official"],
+    }
+
+    def test_everything_installed_is_up_to_date(self):
+        block = diagnose.plan_claude_plugins(
+            self.MANIFEST,
+            {"pm-skills": {}, "official": {}},
+            {"plugins": {"user-story@pm-skills": [], "pyright-lsp@official": []}},
+        )
+        self.assertTrue(block["up_to_date"])
+        self.assertEqual(block["missing_marketplaces"], [])
+        self.assertEqual(block["missing_plugins"], [])
+
+    def test_missing_marketplace_and_plugin_get_commands(self):
+        block = diagnose.plan_claude_plugins(
+            self.MANIFEST, {"official": {}}, {"plugins": {"pyright-lsp@official": []}}
+        )
+        self.assertFalse(block["up_to_date"])
+        self.assertEqual(
+            block["missing_marketplaces"],
+            [
+                {
+                    "name": "pm-skills",
+                    "source": "deanpeters/Product-Manager-Skills",
+                    "command": "claude plugin marketplace add deanpeters/Product-Manager-Skills",
+                }
+            ],
+        )
+        self.assertEqual(
+            block["missing_plugins"],
+            [
+                {
+                    "plugin": "user-story@pm-skills",
+                    "command": "claude plugin install -y user-story@pm-skills",
+                }
+            ],
+        )
+
+    def test_plugin_whose_marketplace_is_not_in_manifest_is_flagged(self):
+        manifest = {"marketplaces": {}, "plugins": ["thing@nowhere"]}
+        block = diagnose.plan_claude_plugins(manifest, {}, {})
+        self.assertEqual(
+            block["plugins_without_manifest_marketplace"], ["thing@nowhere"]
+        )
+
+    def test_empty_registries_mean_everything_missing(self):
+        block = diagnose.plan_claude_plugins(self.MANIFEST, {}, {})
+        self.assertEqual(len(block["missing_marketplaces"]), 2)
+        self.assertEqual(len(block["missing_plugins"]), 2)
