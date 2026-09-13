@@ -24,7 +24,10 @@ Before any Herdr command, confirm you are inside a Herdr pane (`test "${HERDR_EN
    decisions, not questions.
 2. **Its own worktree.** `git worktree add .claude/worktrees/<name> -b <branch>`; the brief tells it to `cd`
    there and to pass `-C <path>` to every git command. Your uncommitted experiments in the main checkout stay
-   yours.
+   yours. **Provision the worktree's gitignored assets before anything builds** (downloaded models, fixtures,
+   `.env`): a fresh worktree has none of them, the build succeeds anyway, and the app then fails in a way that
+   looks like the Muse's change (an afternoon's five 240 s timeouts in exercise-analyzer were a missing
+   `.mlpackage`, not the refactor). Copy them from the main checkout or run the repo's fetch recipe.
 3. **Start or reuse the pane.** An existing Muse pane: `herdr agent list` shows its name. A new one needs a
    free shell pane in the repo: `herdr agent start <name> --kind muse --pane <pane-id>`. Auto-approve flags on
    the agent's command line are refused by the auto-mode classifier; use the default profile.
@@ -75,10 +78,14 @@ simulator or phone rung for what the host cannot see, then close the issue with 
 
 ## What goes wrong
 
-| Symptom                                                            | Cause                                     | Fix                                                                   |
-| ------------------------------------------------------------------ | ----------------------------------------- | --------------------------------------------------------------------- |
-| Muse's next prompt starts with a stray `y`                         | an auto-approver typed into its input     | stop the approver, backspace the input, use the watcher + `send-keys` |
-| `agent_prompt_stalled`                                             | the pane was not at an interactive prompt | `herdr agent get <name>`, read the screen, clear a dialog first       |
-| a long answer is not in `agent read`                               | alternate screen                          | ask for the answer as a file under `/tmp`                             |
-| "keychain item for meta is unreadable (os status -67701)" on start | Muse's own warning                        | harmless; the agent still works                                       |
-| the sandbox cannot run `xcodebuild` / the simulator                | sandbox                                   | the status file names the command; the caller runs it                 |
+| Symptom                                                                          | Cause                                     | Fix                                                                                                                    |
+| -------------------------------------------------------------------------------- | ----------------------------------------- | ---------------------------------------------------------------------------------------------------------------------- |
+| Muse's next prompt starts with a stray `y`                                       | an auto-approver typed into its input     | stop the approver, backspace the input, use the watcher + `send-keys`                                                  |
+| `agent_prompt_stalled`                                                           | the pane was not at an interactive prompt | `herdr agent get <name>`, read the screen, clear a dialog first                                                        |
+| a long answer is not in `agent read`                                             | alternate screen                          | ask for the answer as a file under `/tmp`                                                                              |
+| "keychain item for meta is unreadable (os status -67701)" on start               | Muse's own warning                        | harmless; the agent still works                                                                                        |
+| the sandbox cannot run `xcodebuild` / the simulator                              | sandbox                                   | the status file names the command; the caller runs it                                                                  |
+| "Reviewing approval request (N min · esc to interrupt)" for minutes              | Muse's own approval reviewer, stalled     | send `enter` (it approves); `y` lands in the input line; `esc` cancels the command and the turn, so re-prompt after it |
+| `herdr agent prompt` fails with `agent_blocked` on an idle pane                  | a leftover task-selection state           | `herdr pane run <pane> "<prompt>"` types it in raw                                                                     |
+| prompts truncated in the watcher's output                                        | three panes side by side                  | one tab per Muse: `herdr pane move <pane> --new-tab --workspace <ws> --no-focus`                                       |
+| `herdr agent get` says blocked, the screen says "(ctrl+b to send to background)" | a long command running                    | nothing to answer                                                                                                      |
