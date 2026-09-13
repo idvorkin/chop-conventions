@@ -1,0 +1,21 @@
+{
+	"_comment": "Claude Code marketplaces and plugins every machine should have. `up-to-date` diagnoses what is missing (claude_plugins in its JSON) and installs it with the printed commands. Add a plugin here instead of installing it by hand on one machine.",
+	"marketplaces": {
+		"claude-code-plugins": "anthropics/claude-code",
+		"claude-plugins-official": "anthropics/claude-plugins-official",
+		"beads-marketplace": "steveyegge/beads",
+		"pm-skills": "deanpeters/Product-Manager-Skills"
+	},
+	"plugins": [
+		"code-review@claude-code-plugins",
+		"commit-commands@claude-code-plugins",
+		"feature-dev@claude-code-plugins",
+		"frontend-design@claude-code-plugins",
+		"pr-review-toolkit@claude-code-plugins",
+		"pyright-lsp@claude-plugins-official",
+		"typescript-lsp@claude-plugins-official",
+		"user-story@pm-skills",
+		"user-story-splitting@pm-skills",
+		"prd-development@pm-skills"
+	]
+}
