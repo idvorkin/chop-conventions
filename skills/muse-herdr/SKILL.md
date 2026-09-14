@@ -82,6 +82,25 @@ first unless the resume fails: the dead session holds the context of everything 
 When several Muses commit on branches, the manager merges: host tests on the branch, merge into main, the
 simulator or phone rung for what the host cannot see, then close the issue with what was verified where.
 
+**Review every Muse change before it merges; the ladder is not a review.** Igor (2026-09-14, after three
+Muse branches merged on green rungs each needed a compile fix, one carried three behaviour bugs a later review
+found, and one starved a feature on its first real use): "From now on, you need to code review Muses'
+changes. Especially any changes to stories, documents, or architecture. They get a lot shittier." So the
+prose is the manager's: write stories, docs, READMEs and architecture notes yourself, and when a Muse must
+touch them (a Status line, a scenario for the code it built) rewrite its diff rather than accept it (the
+README of 2026-09-14 went back to Fable: "Who wrote that? Use Fable to rewrite it humanized"). When the
+status file says committed: (1) `git diff main..<branch> -- docs/ '*.md'` and read every story, doc and
+architecture change yourself: a Muse's story edit becomes the spec and its doc edit becomes what the next
+agent believes, so fix wording that overstates, drops a scenario, or records a status the rungs have not
+earned; (2) run a read-only
+reviewer agent over the code (findings with file:line, scenario, fix, and a verdict line, to
+`~/tmp/agent/notes/<date>-<topic>-review.md`), fix the real findings yourself or send them back to the Muse;
+(3) only then merge and climb the rungs, and say in the issue comment that the review happened. Muses cannot
+build the app or a second module, so anything crossing a module boundary (access levels, an `init(from:)`
+that clashes with `Decodable`, an implicit `self` in a closure) only shows on your rung: expect one compile
+fix per branch and budget for it. Read `git log main..<branch>` before merging: a branch can carry an older
+job's commits under the one you asked for.
+
 ## What goes wrong
 
 | Symptom                                                                          | Cause                                     | Fix                                                                                                                    |
