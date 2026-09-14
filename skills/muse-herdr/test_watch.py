@@ -69,7 +69,15 @@ def advance(
     )
 
 
-class ParseAgentGetTests(unittest.TestCase):
+class ErrorAssertions(unittest.TestCase):
+    """`Probe.error` / `AgentList.error` are `str | None`; narrow before matching."""
+
+    def assert_error_mentions(self, error: str | None, needle: str) -> None:
+        self.assertIsNotNone(error)
+        self.assertIn(needle, error or "")
+
+
+class ParseAgentGetTests(ErrorAssertions):
     def test_status_from_envelope(self):
         probe = parse_agent_get(0, get_ok("blocked"))
         self.assertEqual(probe.status, "blocked")
@@ -85,23 +93,23 @@ class ParseAgentGetTests(unittest.TestCase):
         probe = parse_agent_get(1, get_error("agent_not_ready"))
         self.assertFalse(probe.gone)
         self.assertFalse(probe.known)
-        self.assertIn("agent_not_ready", probe.error)
+        self.assert_error_mentions(probe.error, "agent_not_ready")
 
     def test_empty_stdout_is_blindness_not_gone(self):
         """The shell version's `// "gone"` turned this into a false 'gone'."""
         probe = parse_agent_get(1, "")
         self.assertFalse(probe.gone)
         self.assertFalse(probe.known)
-        self.assertIn("no output", probe.error)
+        self.assert_error_mentions(probe.error, "no output")
 
     def test_empty_stdout_reports_the_subprocess_detail(self):
         probe = parse_agent_get(127, "", "FileNotFoundError: herdr")
-        self.assertIn("FileNotFoundError", probe.error)
+        self.assert_error_mentions(probe.error, "FileNotFoundError")
 
     def test_unparsable_output_is_blindness(self):
         probe = parse_agent_get(0, "herdr: command not found")
         self.assertFalse(probe.known)
-        self.assertIn("unparsable", probe.error)
+        self.assert_error_mentions(probe.error, "unparsable")
 
     def test_missing_status_field_is_blindness_not_gone(self):
         """A schema change must not be reported as a vanished agent."""
@@ -110,14 +118,14 @@ class ParseAgentGetTests(unittest.TestCase):
         )
         self.assertFalse(probe.gone)
         self.assertFalse(probe.known)
-        self.assertIn("agent_status", probe.error)
+        self.assert_error_mentions(probe.error, "agent_status")
 
     def test_non_object_payload_is_blindness(self):
         probe = parse_agent_get(0, "[1, 2, 3]")
         self.assertFalse(probe.known)
 
 
-class ParseAgentListTests(unittest.TestCase):
+class ParseAgentListTests(ErrorAssertions):
     def _listing(self, agents):
         return json.dumps({"result": {"type": "agent_list", "agents": agents}})
 
@@ -151,13 +159,11 @@ class ParseAgentListTests(unittest.TestCase):
         self.assertEqual(listing.total, 1)
 
     def test_empty_output_is_an_error(self):
-        self.assertIn("no output", parse_agent_list(1, "", "muse").error)
+        self.assert_error_mentions(parse_agent_list(1, "", "muse").error, "no output")
 
     def test_schema_change_is_an_error_not_an_empty_list(self):
-        self.assertIn(
-            "result.agents",
-            parse_agent_list(0, json.dumps({"result": {}}), "muse").error,
-        )
+        listing = parse_agent_list(0, json.dumps({"result": {}}), "muse")
+        self.assert_error_mentions(listing.error, "result.agents")
 
 
 class ScreenTests(unittest.TestCase):
@@ -342,33 +348,37 @@ class FakeHerdr:
 
 
 class WatcherTests(unittest.TestCase):
-    def _watcher(self, names, herdr, **kwargs):
-        return Watcher(
+    def _watcher(self, names, herdr, **kwargs) -> tuple[Watcher, io.StringIO]:
+        """The watcher plus the buffer it prints into — `Watcher.out` is a
+        plain TextIO, so the test keeps its own typed handle on the sink."""
+        buf = io.StringIO()
+        watcher = Watcher(
             names,
             run=herdr,
             clock=lambda: 0.0,
             sleep=lambda _s: None,
-            out=io.StringIO(),
+            out=buf,
             **kwargs,
         )
+        return watcher, buf
 
     def test_poll_reads_the_screen_once_per_agent(self):
         herdr = FakeHerdr({"m1": get_ok("working")}, screen="compiling")
-        watcher = self._watcher(["m1"], herdr)
+        watcher, buf = self._watcher(["m1"], herdr)
         watcher.poll_once()
         reads = [c for c in herdr.calls if c[1:3] == ["agent", "read"]]
         self.assertEqual(len(reads), 1)
 
     def test_gone_agent_is_not_read(self):
         herdr = FakeHerdr({"m1": get_error("agent_not_found")})
-        watcher = self._watcher(["m1"], herdr)
+        watcher, buf = self._watcher(["m1"], herdr)
         events = watcher.poll_once()
         self.assertEqual([e.line() for e in events], ["m1 gone"])
         self.assertEqual([c for c in herdr.calls if c[1:3] == ["agent", "read"]], [])
 
     def test_run_forever_exits_when_every_named_agent_is_gone(self):
         herdr = FakeHerdr({"m1": get_error("agent_not_found")})
-        watcher = self._watcher(["m1"], herdr)
+        watcher, buf = self._watcher(["m1"], herdr)
         self.assertEqual(watcher.run_forever(), 0)
 
     def test_discovery_mode_warns_once_when_no_agent_matches(self):
@@ -376,17 +386,17 @@ class WatcherTests(unittest.TestCase):
             {"result": {"agents": [{"name": "c1", "agent": "claude"}]}}
         )
         herdr = FakeHerdr({}, listing=listing)
-        watcher = self._watcher([], herdr)
+        watcher, buf = self._watcher([], herdr)
         watcher.poll_once()
         watcher.poll_once()
-        printed = watcher.out.getvalue().splitlines()
+        printed = buf.getvalue().splitlines()
         self.assertEqual(len(printed), 1)
         self.assertIn("no muse agents", printed[0])
         self.assertIn("1 agents of other kinds", printed[0])
 
     def test_discovery_mode_never_self_exits(self):
         herdr = FakeHerdr({}, listing=json.dumps({"result": {"agents": []}}))
-        watcher = self._watcher([], herdr)
+        watcher, buf = self._watcher([], herdr)
         watcher.poll_once()
         self.assertFalse(watcher.all_named_gone())
 
@@ -394,7 +404,7 @@ class WatcherTests(unittest.TestCase):
         def explode(argv, **kwargs):
             raise FileNotFoundError("herdr")
 
-        watcher = self._watcher(["m1"], explode, blind_after=1)
+        watcher, buf = self._watcher(["m1"], explode, blind_after=1)
         events = watcher.poll_once()
         self.assertEqual([e.kind for e in events], ["WATCHER"])
         self.assertIn("FileNotFoundError", events[0].text)
@@ -403,9 +413,9 @@ class WatcherTests(unittest.TestCase):
         herdr = FakeHerdr(
             {"m1": get_ok("blocked")}, screen="Allow `rm -rf build`? (y/n)"
         )
-        watcher = self._watcher(["m1"], herdr)
+        watcher, buf = self._watcher(["m1"], herdr)
         watcher.poll_once()
-        self.assertIn("BLOCKED m1: Allow `rm -rf build`? (y/n)", watcher.out.getvalue())
+        self.assertIn("BLOCKED m1: Allow `rm -rf build`? (y/n)", buf.getvalue())
 
 
 if __name__ == "__main__":
