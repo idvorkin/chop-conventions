@@ -22,8 +22,13 @@ Before any Herdr command, confirm you are inside a Herdr pane (`test "${HERDR_EN
    work, what to read first, the steps with file:line references, what it must not touch, how each step lands
    (commit format, tests, the rung it cannot run), where to write status. Decisions already taken are stated as
    decisions, not questions.
-2. **Its own worktree.** `git worktree add .claude/worktrees/<name> -b <branch>`; the brief tells it to `cd`
-   there and to pass `-C <path>` to every git command. Your uncommitted experiments in the main checkout stay
+2. **Its own worktree**, at the convention path and off an explicit base ref:
+   `git -C <repo> worktree add .worktrees/<name> -b <branch> upstream/main` (`origin/main` in a repo with no
+   fork remote — name whichever the target repo uses). Without the base ref the branch forks from whatever
+   `HEAD` the caller happens to be on; `<repo>/.worktrees/<name>` is where every other skill here puts one.
+   Add `.worktrees/` to the target's `.git/info/exclude` — not `.gitignore`, that entry is branch-dependent —
+   so the linked checkout is not untracked noise in `git status`. The brief tells Muse to `cd` there and to
+   pass `-C <path>` to every git command. Your uncommitted experiments in the main checkout stay
    yours. **Provision the worktree's gitignored assets before anything builds** (downloaded models, fixtures,
    `.env`): a fresh worktree has none of them, the build succeeds anyway, and the app then fails in a way that
    looks like the Muse's change (an afternoon's five 240 s timeouts in exercise-analyzer were a missing
@@ -33,8 +38,11 @@ Before any Herdr command, confirm you are inside a Herdr pane (`test "${HERDR_EN
    the agent's command line are refused by the auto-mode classifier; use the default profile.
 4. **Prompt with the file.** `herdr agent prompt <name> "Read /tmp/<scope>/<task>-brief.md and do what it says,
 starting with step 1."` Do not `--wait` on a long job.
-5. **Watch for approvals.** Arm a Monitor on `bash <this skill dir>/watch-blocked.sh <name>` (persistent). It
-   prints one line when the agent blocks (with the last screen lines) and one when it settles. Read the prompt,
+5. **Watch for approvals.** Arm a Monitor on `<this skill dir>/watch.py <name>` (persistent). It prints one
+   line when the agent blocks (`BLOCKED <name>: <last screen lines>`), one when its model call fails
+   (`FAILED`), one when a working agent's screen has not moved for five minutes (`STALLED`), one when it
+   settles, and a `WATCHER …` line when it cannot see (a failed `herdr` call, an unknown status) — silence
+   means "nothing to report", never "the watcher died". It exits when the named agent is gone. Read the prompt,
    then answer it: `herdr agent send-keys <name> y` (or the key the prompt names). Igor: "You can always
    approve Muse." Still stop for anything destructive (`rm -rf`, `reset --hard`, a push).
    Do **not** run a parser that types keys on its own: the first auto-approver matched a sub-agent's output
@@ -71,6 +79,11 @@ Muse for the next brief instead of starting another, and keep one status file pe
 restart is the user's own interactive one (its profile is theirs). They share the machine: one heavy process
 at a time, and the headless graders count against the same memory.
 
+One watcher covers them all: `watch.py` with no names polls every live Muse from `herdr agent list` (`--kind`
+for another agent kind), so a new pane joins the watch without re-arming the Monitor. In that mode it keeps
+polling after an agent goes — a new Muse can still appear — while the named form exits once its agents are
+gone. Igor (2026-09-13): "they're all stuck; your monitor needs to check for all the stuck agents."
+
 **"◆ keychain item for meta is unreadable (os status -67701)"** after a prompt, with no work following: the
 session is dead (its keychain access expired). Igor: "When you see this, the session is dead. You need to
 kill Muse with a bunch of Control-Cs and then resume that same conversation. You can see what to resume by
@@ -94,4 +107,6 @@ simulator or phone rung for what the host cannot see, then close the issue with 
 | "Reviewing approval request (N min · esc to interrupt)" for minutes              | Muse's own approval reviewer, stalled     | send `enter` (it approves); `y` lands in the input line; `esc` cancels the command and the turn, so re-prompt after it |
 | `herdr agent prompt` fails with `agent_blocked` on an idle pane                  | a leftover task-selection state           | `herdr pane run <pane> "<prompt>"` types it in raw                                                                     |
 | prompts truncated in the watcher's output                                        | three panes side by side                  | one tab per Muse: `herdr pane move <pane> --new-tab --workspace <ws> --no-focus`                                       |
-| `herdr agent get` says blocked, the screen says "(ctrl+b to send to background)" | a long command running                    | nothing to answer                                                                                                      |
+| `herdr agent get` says blocked, the screen says "(ctrl+b to send to background)" | a long command running                    | nothing to answer — `watch.py` already filters this out of `BLOCKED`                                                   |
+| `WATCHER <name>: cannot read this agent …`                                       | the `herdr` call itself failed            | `herdr status`; the watcher keeps polling and says "readable again" when it recovers                                   |
+| `WATCHER: no muse agents in "herdr agent list"`                                  | nothing to watch (or `--kind` is wrong)   | start the agent, or pass names explicitly                                                                              |

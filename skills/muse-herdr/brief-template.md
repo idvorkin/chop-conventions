@@ -1,7 +1,8 @@
 # Brief: <task> (<issue>)
 
-You are Muse, working for <user> in `<repo path>`. **Work in the worktree `<repo>/.claude/worktrees/<name>`
-(branch `<branch>`, at <sha>): `cd` there first and run every git command with `-C` that path.** Read its
+You are Muse, working for <user> in `<repo path>`. **Work in the worktree `<repo>/.worktrees/<name>`
+(branch `<branch>`, cut from `<base ref>` at <sha>): `cd` there first and run every git command with `-C` that
+path.** Read its
 `AGENTS.md` (or `CLAUDE.md`) in full first. Edit only with your file-edit tools. Never push. Never `git add -A`.
 Do not touch <files another job is live in>.
 
