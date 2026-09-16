@@ -48,6 +48,7 @@ Read the directions in https://github.com/idvorkin/chop-conventions/tree/main/de
 - Pre-commit hooks and automated checks
 - Development workflow optimization
 - **[Beads](./dev-setup/beads.md)** - Git-backed issue tracking for AI agents
+- **[External Tools](./dev-setup/external-tools.md)** - Binaries, npm packages and third-party agent skills this setup depends on, plus a doctor that checks them
 
 ## Philosophy
 
