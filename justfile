@@ -1,11 +1,11 @@
 default:
     @just --list
 
-# Every skill's test_*.py under pytest, in one throwaway uv environment: the system python3 has neither
+# Every test_*.py under skills/ and dev-setup/ under pytest, in one throwaway uv environment: the system python3 has neither
 # pytest (imported by harden-telegram's kill-test) nor typer (the watchdog CLI). Every directory runs, even
 # after a failure.
 fast-test:
-    @python3 -c "from pathlib import Path; import subprocess, sys; test_dirs = sorted({str(path.parent) for path in Path('skills').rglob('test_*.py')}); codes = [subprocess.run(['uv', 'run', '--quiet', '--no-project', '--with', 'pytest', '--with', 'typer', 'python', '-m', 'pytest', '-q', '-m', 'not slow', test_dir]).returncode for test_dir in test_dirs]; sys.exit(0 if all(c == 0 for c in codes) else 1)"
+    @python3 -c "from pathlib import Path; import subprocess, sys; test_dirs = sorted({str(path.parent) for root in ('skills', 'dev-setup') for path in Path(root).rglob('test_*.py')}); codes = [subprocess.run(['uv', 'run', '--quiet', '--no-project', '--with', 'pytest', '--with', 'typer', 'python', '-m', 'pytest', '-q', '-m', 'not slow', test_dir]).returncode for test_dir in test_dirs]; sys.exit(0 if all(c == 0 for c in codes) else 1)"
 
 test: fast-test
 

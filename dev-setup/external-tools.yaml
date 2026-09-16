@@ -1,0 +1,84 @@
+# External tools this setup depends on but does not ship.
+#
+# Rules and rationale: external-tools.md
+# Marketplace plugins are NOT listed here — they live in ../marketplace.md.
+# Checked by: dev-setup/tools/tool_doctor.py
+#
+# Fields
+#   name         identifier, normally the command name
+#   kind         binary | npm | agent-skill | plugin
+#   source       upstream repo
+#   install      the exact command that installs it
+#   check        command that exits 0 when installed; run through a shell, and
+#                its output is scanned for a version number — prefer the
+#                `--version` form so the doctor can report one
+#   min_version  optional floor; below it the doctor warns
+#   why          one line
+#   status       adopted | trial | proposed
+
+tools:
+  - name: bd
+    kind: binary
+    source: https://github.com/gastownhall/beads
+    install: brew install beads
+    check: bd --version
+    min_version: "1.1.2"
+    why: Issue tracker every skill and CLAUDE.md in this repo assumes.
+    status: adopted
+
+  - name: rmux_helper
+    kind: binary
+    source: https://github.com/idvorkin/settings
+    install: cargo install --path ~/gits/settings/rust/tmux_helper --force
+    check: rmux_helper --version
+    why: Canonical tmux / /proc primitives — see CLAUDE.md "Environment Primitives".
+    status: adopted
+
+  - name: herdr
+    kind: binary
+    source: https://github.com/herdrdev/herdr
+    install: brew install herdr
+    check: herdr --version
+    why: Terminal multiplexer for coding agents; drives Codex sessions.
+    status: adopted
+
+  - name: herdr-skill
+    kind: agent-skill
+    source: https://github.com/herdrdev/herdr
+    install: npx skills add herdrdev/herdr
+    check: test -d "$HOME/.agents/skills/herdr"
+    why: Teaches the agent to drive the herdr CLI; symlinked into ~/.claude/skills/.
+    status: adopted
+
+  - name: treehouse
+    kind: binary
+    source: https://github.com/kunchenguid/treehouse
+    install: curl -fsSL https://kunchenguid.github.io/treehouse/install.sh | sh
+    check: treehouse --version
+    min_version: "2.3.0"
+    why: Pre-warmed worktree pool so parallel agents stop colliding on one checkout.
+    status: adopted
+
+  - name: quota-axi
+    kind: npm
+    source: https://github.com/kunchenguid/quota-axi
+    install: npm install -g quota-axi
+    check: quota-axi --version
+    why: Reads Claude usage/quota without opening the /usage dialog.
+    status: adopted
+
+  - name: lavish-axi
+    kind: agent-skill
+    source: https://github.com/kunchenguid/lavish-axi
+    install: npx skills add kunchenguid/lavish-axi --skill lavish
+    check: test -d "$HOME/.agents/skills/lavish"
+    why: Proposed; sibling of quota-axi, not yet evaluated on this setup.
+    status: proposed
+
+  - name: cass
+    kind: binary
+    source: https://github.com/Dicklesworthstone/coding_agent_session_search
+    install: curl -fsSL https://raw.githubusercontent.com/Dicklesworthstone/coding_agent_session_search/main/install.sh | bash -s -- --easy-mode --verify
+    check: cass --version
+    why: Trial — full-text search across Claude/Codex/Gemini session logs; current-session search is broken.
+    status: trial
