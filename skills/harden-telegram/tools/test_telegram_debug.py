@@ -17,6 +17,7 @@ from telegram_debug import (  # noqa: E402
     REACTION_WHITELIST,
     DoctorReport,
     _default_chat_id,
+    _doctor_check_channel_gate,
     _doctor_check_delivery,
     _doctor_check_session_subscription,
     _find_owning_claude,
@@ -25,6 +26,7 @@ from telegram_debug import (  # noqa: E402
     build_direct_request,
     build_react_request,
     build_reply_request,
+    classify_bridge_gating,
     classify_bridges,
     classify_delivered_rows,
     parse_bridge_pid,
@@ -1206,6 +1208,164 @@ class TestDoctorCheckSessionSubscription(unittest.TestCase):
         self.assertEqual(report.failures, 0)
         self.assertTrue(
             any("subscription check skipped" in line for line in report.lines),
+            report.lines,
+        )
+
+
+class TestClassifyBridgeGating(unittest.TestCase):
+    """Which live bridges belong to a session that actually asked for the
+    channel. False = the 2026-09-22 failure (a Gas City role session's bridge
+    racing Larry's for Igor's inbound rows)."""
+
+    def _classify(self, pids, owners, cmdlines):
+        return classify_bridge_gating(
+            pids,
+            find_owning_claude=lambda pid, **kw: owners.get(pid),
+            read_cmdline=lambda pid: cmdlines.get(pid),
+        )
+
+    def test_gated_bridge(self):
+        rows = self._classify(
+            [100],
+            {100: 300},
+            {300: ["claude", "--channels", "plugin:telegram@claude-plugins-official"]},
+        )
+        self.assertEqual(
+            rows, [{"pid": 100, "owning_claude": 300, "gated": True}]
+        )
+
+    def test_ungated_bridge(self):
+        rows = self._classify([100], {100: 300}, {300: ["claude", "-p", "say ok"]})
+        self.assertEqual(
+            rows, [{"pid": 100, "owning_claude": 300, "gated": False}]
+        )
+
+    def test_orphaned_bridge_is_unknown(self):
+        rows = self._classify([100], {100: None}, {})
+        self.assertEqual(
+            rows, [{"pid": 100, "owning_claude": None, "gated": None}]
+        )
+
+    def test_unreadable_cmdline_is_unknown(self):
+        rows = self._classify([100], {100: 300}, {})
+        self.assertEqual(
+            rows, [{"pid": 100, "owning_claude": 300, "gated": None}]
+        )
+
+    def test_mixed_fleet(self):
+        rows = self._classify(
+            [100, 101],
+            {100: 300, 101: 301},
+            {
+                300: ["claude", "--channels=plugin:telegram@m"],
+                301: ["claude", "/gas-city-role"],
+            },
+        )
+        self.assertEqual([r["gated"] for r in rows], [True, False])
+
+
+class TestDoctorCheckChannelGate(unittest.TestCase):
+    """Red/green wiring of the CHANNEL GATE section."""
+
+    GATED = ["claude", "--channels", "plugin:telegram@claude-plugins-official"]
+    UNGATED = ["claude", "-p", "say ok"]
+
+    def _run(self, *, deployed_src, bridges, cmdlines, force=None):
+        plugin = Path(self.tmp.name) / "server.ts"
+        if deployed_src is not None:
+            plugin.write_text(deployed_src)
+        report = DoctorReport()
+        old = os.environ.pop("TELEGRAM_BRIDGE_FORCE", None)
+        if force is not None:
+            os.environ["TELEGRAM_BRIDGE_FORCE"] = force
+        try:
+            _doctor_check_channel_gate(
+                report,
+                find_bridges=lambda: bridges,
+                find_plugin=(
+                    (lambda: (plugin, "deadbeef")) if deployed_src is not None else (lambda: None)
+                ),
+                classify=lambda pids: classify_bridge_gating(
+                    pids,
+                    find_owning_claude=lambda pid, **kw: pid + 200,
+                    read_cmdline=lambda pid: cmdlines.get(pid),
+                ),
+            )
+        finally:
+            os.environ.pop("TELEGRAM_BRIDGE_FORCE", None)
+            if old is not None:
+                os.environ["TELEGRAM_BRIDGE_FORCE"] = old
+        return report
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+
+    def test_gate_deployed_and_all_bridges_gated_is_green(self):
+        report = self._run(
+            deployed_src="function channelGateDecision() {}",
+            bridges=[100],
+            cmdlines={300: self.GATED},
+        )
+        self.assertEqual(report.failures, 0)
+        self.assertTrue(any("gate deployed" in line for line in report.lines), report.lines)
+        self.assertTrue(
+            any("all owned by --channels telegram sessions" in line for line in report.lines),
+            report.lines,
+        )
+
+    def test_missing_gate_in_plugin_cache_is_red(self):
+        # Plugin auto-update reverting to upstream vanilla is the known way
+        # this happens; it is silent otherwise.
+        report = self._run(
+            deployed_src="// upstream vanilla, polls telegram itself",
+            bridges=[],
+            cmdlines={},
+        )
+        self.assertEqual(report.failures, 1)
+        self.assertTrue(any("gate MISSING" in line for line in report.lines), report.lines)
+
+    def test_ungated_bridge_is_red(self):
+        report = self._run(
+            deployed_src="function channelGateDecision() {}",
+            bridges=[100, 101],
+            cmdlines={300: self.GATED, 301: self.UNGATED},
+        )
+        self.assertEqual(report.failures, 1)
+        self.assertTrue(
+            any("ungated bridge pid=101" in line for line in report.lines), report.lines
+        )
+        self.assertTrue(any("kill -TERM 101" in line for line in report.lines), report.lines)
+
+    def test_unknown_ancestry_warns_not_red(self):
+        report = self._run(
+            deployed_src="function channelGateDecision() {}",
+            bridges=[100],
+            cmdlines={},
+        )
+        self.assertEqual(report.failures, 0)
+        self.assertTrue(
+            any("gating unknown" in line for line in report.lines), report.lines
+        )
+
+    def test_force_override_is_noted(self):
+        report = self._run(
+            deployed_src="function channelGateDecision() {}",
+            bridges=[],
+            cmdlines={},
+            force="1",
+        )
+        self.assertEqual(report.failures, 0)
+        self.assertTrue(
+            any("TELEGRAM_BRIDGE_FORCE is set" in line for line in report.lines),
+            report.lines,
+        )
+
+    def test_no_plugin_cache_warns(self):
+        report = self._run(deployed_src=None, bridges=[], cmdlines={})
+        self.assertEqual(report.failures, 0)
+        self.assertTrue(
+            any("cannot confirm the gate is deployed" in line for line in report.lines),
             report.lines,
         )
 
