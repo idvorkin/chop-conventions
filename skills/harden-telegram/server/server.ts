@@ -29,6 +29,181 @@ import { createConnection, type Socket } from 'net'
 import { existsSync } from 'fs'
 
 // ---------------------------------------------------------------------------
+// Channel gate — this bridge runs ONLY inside a `--channels …telegram…` session
+// ---------------------------------------------------------------------------
+//
+// The telegram plugin is enabled user-wide (~/.claude/settings.json
+// enabledPlugins), so EVERY claude process on the box spawns this bridge, and
+// every bridge polls the same inbound.db. Whichever one wakes first claims the
+// row: on 2026-09-22 a Gas City role session claimed Igor's message and the
+// session he was talking to never saw it. Setting `enabledPlugins: false` in
+// that session's --settings file did not stop the spawn, so the refusal has to
+// live here, in the bridge itself.
+//
+// Rule: walk up from this process to the nearest `claude` ancestor and read its
+// argv. Keep running only if that argv asked for a telegram channel. Anything
+// else exits 0 immediately — before the token is loaded, before inbound.db is
+// opened, before a single MCP tool is registered. `TELEGRAM_BRIDGE_FORCE=1` is
+// the explicit override (manual runs, tests, non-Claude MCP hosts).
+//
+// Fail-open on an unreadable ancestry (no /proc — macOS, Windows, a container
+// without procfs): the gate is a Linux-only defense, and bricking every bridge
+// on a platform where the check cannot run is worse than the race it prevents.
+
+// --- BEGIN channel-gate pure logic (extracted verbatim by tests/test_channel_gate.ts) ---
+
+type ProcReaders = {
+  /** Raw contents of /proc/<pid>/stat, or null when unreadable. */
+  readStat: (pid: number) => string | null
+  /** Raw contents of /proc/<pid>/cmdline, or null when unreadable. */
+  readArgv: (pid: number) => string | null
+}
+
+type ClaudeAncestry =
+  | { kind: 'claude'; pid: number; argv: string[] }
+  | { kind: 'none' }
+  | { kind: 'unknown'; why: string }
+
+type GateDecision = { allow: boolean; reason: string }
+
+/** Parse `comm` + `ppid` out of /proc/<pid>/stat.
+ *
+ * comm is field 2, wrapped in parens, and may itself contain spaces and
+ * parens ("(bun run --cwd x)"), so split on the LAST ')' the way the kernel's
+ * own parsers do. After that: field 3 = state, field 4 = ppid.
+ */
+export function parseProcStat(raw: string): { comm: string; ppid: number } | null {
+  const open = raw.indexOf('(')
+  const close = raw.lastIndexOf(')')
+  if (open < 0 || close < open) return null
+  const rest = raw.slice(close + 1).trim().split(/\s+/)
+  const ppid = Number(rest[1])
+  if (!Number.isInteger(ppid)) return null
+  return { comm: raw.slice(open + 1, close), ppid }
+}
+
+/** Split a null-separated /proc/<pid>/cmdline into argv. */
+export function parseProcCmdline(raw: string): string[] {
+  return raw.replace(/\0+$/, '').split('\0').filter(a => a.length > 0)
+}
+
+/** Is this ancestor the Claude harness?
+ *
+ * Linux truncates comm to 15 chars, so `claude`, `claude-code` and any
+ * `claude*` shim all match on the prefix. argv[0] is checked too because a
+ * launcher may exec the real binary under a different comm.
+ */
+export function looksLikeClaude(comm: string, argv0: string): boolean {
+  if (comm.startsWith('claude')) return true
+  const base = (argv0.split('/').pop() ?? '').trim()
+  return base.startsWith('claude')
+}
+
+/** Every channel named on the command line.
+ *
+ * Handles `--channels X`, `--channels=X`, the variadic `--channels A B` form,
+ * and comma-separated lists. `--channel` (singular) is accepted as an alias so
+ * a typo does not silently disarm the gate in the permissive direction.
+ */
+export function channelsFromArgv(argv: string[]): string[] {
+  const raw: string[] = []
+  for (let i = 0; i < argv.length; i++) {
+    const arg = argv[i]
+    if (arg === '--channels' || arg === '--channel') {
+      while (i + 1 < argv.length && !argv[i + 1].startsWith('-')) raw.push(argv[++i])
+    } else if (arg.startsWith('--channels=') || arg.startsWith('--channel=')) {
+      raw.push(arg.slice(arg.indexOf('=') + 1))
+    }
+  }
+  return raw
+    .flatMap(v => v.split(','))
+    .map(v => v.trim())
+    .filter(v => v.length > 0)
+}
+
+/** True iff argv subscribes to a telegram channel.
+ *
+ * Substring match, case-insensitive, so plugin-name variants
+ * (`plugin:telegram@claude-plugins-official`) all count.
+ */
+export function subscribedToTelegram(argv: string[]): boolean {
+  return channelsFromArgv(argv).some(c => c.toLowerCase().includes('telegram'))
+}
+
+/** Walk the ppid chain from `startPid` to the nearest claude ancestor.
+ *
+ * `unknown` means we could not tell (no procfs, or a process vanished
+ * mid-walk) and the caller should fail open. `none` means we walked a
+ * readable chain all the way up and nothing on it was claude.
+ */
+export function findClaudeAncestry(
+  startPid: number,
+  readers: ProcReaders,
+  maxDepth = 16,
+): ClaudeAncestry {
+  const seen = new Set<number>()
+  let current = startPid
+  for (let depth = 0; depth < maxDepth; depth++) {
+    if (current <= 1 || seen.has(current)) return { kind: 'none' }
+    seen.add(current)
+    const rawStat = readers.readStat(current)
+    if (rawStat === null) return { kind: 'unknown', why: `/proc/${current}/stat unreadable` }
+    const stat = parseProcStat(rawStat)
+    if (stat === null) return { kind: 'unknown', why: `/proc/${current}/stat unparseable` }
+    const argv = parseProcCmdline(readers.readArgv(current) ?? '')
+    if (looksLikeClaude(stat.comm, argv[0] ?? '')) return { kind: 'claude', pid: current, argv }
+    current = stat.ppid
+  }
+  return { kind: 'unknown', why: `ppid chain deeper than ${maxDepth}` }
+}
+
+/** The whole gate, as one pure decision. */
+export function channelGateDecision(
+  ancestry: ClaudeAncestry,
+  force: string | undefined,
+): GateDecision {
+  if (force !== undefined && ['1', 'true', 'yes', 'on'].includes(force.trim().toLowerCase())) {
+    return { allow: true, reason: 'TELEGRAM_BRIDGE_FORCE is set' }
+  }
+  if (ancestry.kind === 'unknown') {
+    return { allow: true, reason: `process ancestry unreadable (${ancestry.why}) — gate not enforced` }
+  }
+  if (ancestry.kind === 'none') {
+    return { allow: false, reason: 'no claude ancestor process' }
+  }
+  if (subscribedToTelegram(ancestry.argv)) {
+    return { allow: true, reason: `claude pid=${ancestry.pid} was started with --channels telegram` }
+  }
+  const named = channelsFromArgv(ancestry.argv)
+  const got = named.length > 0 ? `--channels ${named.join(',')}` : 'no --channels flag'
+  return { allow: false, reason: `claude pid=${ancestry.pid} was started with ${got}` }
+}
+
+// --- END channel-gate pure logic ---
+
+{
+  const ancestry = findClaudeAncestry(process.pid, {
+    readStat: pid => {
+      try { return readFileSync(`/proc/${pid}/stat`, 'utf8') } catch { return null }
+    },
+    readArgv: pid => {
+      try { return readFileSync(`/proc/${pid}/cmdline`, 'utf8') } catch { return null }
+    },
+  })
+  const decision = channelGateDecision(ancestry, process.env.TELEGRAM_BRIDGE_FORCE)
+  if (!decision.allow) {
+    // stderr only, never server.log: every unrelated claude on the box trips
+    // this, and the log belongs to the live channel.
+    process.stderr.write(
+      `[telegram-bridge] declining to start: ${decision.reason}. This bridge only ` +
+      `runs in a session launched with --channels …telegram… ` +
+      `(set TELEGRAM_BRIDGE_FORCE=1 to override).\n`,
+    )
+    process.exit(0)
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Paths + config
 // ---------------------------------------------------------------------------
 

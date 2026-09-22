@@ -60,6 +60,12 @@ def run(cmd: list[str], timeout: int = 5) -> str:
 
 TELEGRAM_PLUGIN_MARKER = "claude-plugins-official/telegram"
 
+# Identifier that only exists in a server.ts carrying the channel gate (the
+# refusal to run outside a `--channels …telegram…` session). Grepping the
+# deployed file for it is how the doctor tells a gated deploy from a stale or
+# upstream-vanilla one. If server.ts renames the function, rename it here.
+CHANNEL_GATE_SENTINEL = "channelGateDecision"
+
 
 def check_bun_processes() -> list[dict]:
     """Find all bun server.ts processes, distinguishing Telegram bot from other bun."""
@@ -265,6 +271,42 @@ def classify_bridges(
             }
         )
     return bridges
+
+
+def classify_bridge_gating(
+    pids: list[int],
+    *,
+    find_owning_claude=_find_owning_claude,
+    read_cmdline=_read_proc_cmdline,
+) -> list[dict]:
+    """Decide, per bridge pid, whether its owning session asked for the channel.
+
+    The telegram plugin is enabled user-wide, so every claude on the box used
+    to spawn a bridge and every bridge polled the same inbound.db — a Gas City
+    role session claimed Igor's message on 2026-09-22. server.ts now refuses to
+    start unless its owning claude carries `--channels …telegram…`; this
+    function is the doctor's independent check that no ungated bridge survived
+    (a pre-gate process, or a stale plugin-cache copy without the gate).
+
+      gated=True   owning claude has --channels telegram — legitimate
+      gated=False  owning claude never asked for the channel — it is racing
+                   for Igor's inbound rows
+      gated=None   ancestry unreadable (claude exited, /proc raced) — unknown
+
+    Pure function — all I/O is injected so tests can drive it without /proc.
+    """
+    rows: list[dict] = []
+    for pid in pids:
+        owning = find_owning_claude(pid)
+        argv = read_cmdline(owning) if owning is not None else None
+        rows.append(
+            {
+                "pid": pid,
+                "owning_claude": owning,
+                "gated": None if argv is None else session_subscribed_to_telegram(argv),
+            }
+        )
+    return rows
 
 
 def parse_bridge_pid(identity: str) -> int | None:
@@ -1000,6 +1042,87 @@ def _doctor_check_server_ts(report: DoctorReport) -> None:
         )
 
 
+def _doctor_check_channel_gate(
+    report: DoctorReport,
+    *,
+    find_bridges=_find_telegram_bridge_pids,
+    find_plugin=None,
+    classify=classify_bridge_gating,
+) -> None:
+    """Report the channel gate: deployed? and is every live bridge gated?
+
+    Two independent facts, because they fail independently. The plugin cache
+    can be reverted by a plugin auto-update (vanilla server.ts has no gate)
+    while every current bridge is still fine; and a bridge started before the
+    gate was deployed keeps racing for inbound rows long after the cache is
+    correct.
+
+    Discovery inputs are injected for tests.
+    """
+    report.section("CHANNEL GATE")
+    if find_plugin is None:
+        find_plugin = _find_plugin_server_ts
+
+    plugin_info = find_plugin()
+    if plugin_info is None:
+        report.warn("no plugin-cache server.ts found — cannot confirm the gate is deployed")
+    else:
+        plugin_path = plugin_info[0]
+        try:
+            deployed = Path(plugin_path).read_text(errors="replace")
+        except OSError as e:
+            report.warn(f"could not read {plugin_path}: {e}")
+        else:
+            if CHANNEL_GATE_SENTINEL in deployed:
+                report.ok(
+                    f"gate deployed — {plugin_path} refuses to start outside a "
+                    "--channels telegram session"
+                )
+            else:
+                report.fail(
+                    f"gate MISSING from {plugin_path} — every claude on this box "
+                    "spawns a bridge that races for Igor's inbound rows. Redeploy: "
+                    "cp $TELEGRAM_SOURCE_DIR/server.ts <that path>"
+                )
+
+    if os.environ.get("TELEGRAM_BRIDGE_FORCE"):
+        report.note(
+            "TELEGRAM_BRIDGE_FORCE is set in this environment — a bridge started "
+            "from here bypasses the gate"
+        )
+
+    pids_or_err = find_bridges()
+    if isinstance(pids_or_err, str):
+        report.warn(f"cannot enumerate bridges: {pids_or_err}")
+        return
+    if not pids_or_err:
+        report.note("no telegram bridge running — nothing to gate")
+        return
+
+    rows = classify(pids_or_err)
+    ungated = [r for r in rows if r["gated"] is False]
+    unknown = [r for r in rows if r["gated"] is None]
+    gated = [r for r in rows if r["gated"] is True]
+
+    for r in ungated:
+        report.fail(
+            f"ungated bridge pid={r['pid']} (claude={r['owning_claude']}) — that "
+            "session never asked for --channels telegram yet competes for inbound "
+            f"rows; kill -TERM {r['pid']}"
+        )
+    for r in unknown:
+        report.warn(
+            f"bridge pid={r['pid']} — owning claude {r['owning_claude']} unreadable, "
+            "gating unknown"
+        )
+    if gated and not ungated and not unknown:
+        report.ok(
+            f"{len(gated)} bridge(s) running, all owned by --channels telegram sessions"
+        )
+    elif gated:
+        report.note(f"{len(gated)} bridge(s) correctly gated")
+
+
 # DELIVERY check knobs: how many recently-delivered rows to attribute, and how
 # fresh a foreign-delivered row must be to count as red (older ones are noted
 # as stale — a prior session may have legitimately handled them).
@@ -1438,6 +1561,7 @@ def run_doctor() -> int:
     _doctor_check_socket(report, base)
     _doctor_check_inbound_db(report, base)
     _doctor_check_server_ts(report)
+    _doctor_check_channel_gate(report)
     _doctor_check_delivery(report, base)
     _doctor_check_session_subscription(report)
     _doctor_check_deploy(report)

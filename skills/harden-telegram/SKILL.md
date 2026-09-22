@@ -39,6 +39,7 @@ Two env vars parameterize the tool:
 
 - **`LARRY_TELEGRAM_DIR`** — runtime state directory (`bot.pid`, `bot.sock`, `inbound.db`, `server.log`, `attachments/`). Defaults to `~/larry-telegram/` if unset. The telegram_bot.py production process reads the same variable.
 - **`TELEGRAM_SOURCE_DIR`** — directory containing the canonical `server.ts` + `telegram_bot.py` source you deploy from. **Defaults to the sibling `server/` subdirectory of this skill when unset.** Override if you're deploying from a different checkout (e.g. an in-flight feature branch elsewhere). The drift check always runs against whichever directory resolves.
+- **`TELEGRAM_BRIDGE_FORCE`** — set to `1` to bypass the channel gate (see below) and start the bridge in a session that never asked for the channel. For manual runs, tests, and non-Claude MCP hosts only. Never set it in a shell that launches Claude sessions.
 
 ### Source layout
 
@@ -88,6 +89,19 @@ The doctor's `DELIVERY` section detects this:
 - · Pre-migration DBs (no `delivered_to` column) skip attribution with a note — never a crash. Old rows stay NULL; restarting `telegram_bot.py` applies the idempotent `ALTER TABLE`.
 
 Attribution mechanics: `server.ts` stamps `inbound.delivered_to` with its bridge identity (`BRIDGE_ID`) whenever it marks a row delivered — `CLAUDE_CODE_SESSION_ID` when the plugin env provides it (verified present on plugin-spawned bridges), else `hostname:pid:starttime`. `telegram_bot.py` owns the schema and adds the column on startup. The doctor matches stamps against this session's bridges by session id (read from `/proc/<pid>/environ`) with a pid fallback.
+
+### CHANNEL GATE check
+
+The plugin is enabled user-wide, so **every** `claude` process on the box spawns a bridge — a `claude -p` one-liner, a Gas City role session, a `grok` terminal that starts Claude Code's plugins, a subagent's scratch session. Each of those bridges polls the same `inbound.db` and the first one awake claims the row. On 2026-09-22 a Gas City role session claimed Igor's message and Larry never saw it; setting `enabledPlugins: false` in that session's `--settings` file did not stop the spawn.
+
+`server.ts` therefore gates itself: it walks up from its own pid to the nearest `claude` ancestor, reads that process's argv, and **exits 0 before loading the token, opening `inbound.db`, or registering a single MCP tool** unless the argv carries `--channels` with a value containing `telegram`. It prints one stderr line saying why it declined. `TELEGRAM_BRIDGE_FORCE=1` is the explicit override. On a host with no readable `/proc` (macOS, Windows) the gate fails open — it is a Linux-only defense, and bricking every bridge where the check cannot run is worse than the race.
+
+The doctor's `CHANNEL GATE` section reports two independent facts, because they fail independently:
+
+- ✅ `gate deployed — <plugin path> refuses to start outside a --channels telegram session` / ❌ `gate MISSING from <plugin path>` — greps the deployed plugin-cache copy. Red means a plugin auto-update reverted it to upstream vanilla (or it was never deployed); redeploy per Tier 2a.
+- ❌ `ungated bridge pid=N (claude=M)` — a live bridge whose owning session never asked for `--channels telegram`. It started before the gate was deployed and is still racing for Igor's rows; `kill -TERM` it. ✅ `N bridge(s) running, all owned by --channels telegram sessions` is the healthy line.
+
+The gate is defense in depth against the `DELIVERY` race above, not a replacement for it: two sessions both launched with `--channels telegram` still race, and the `DELIVERY` check is what catches that.
 
 The related `SESSION` check — claude launched without `--channels plugin:telegram@claude-plugins-official` — is also ❌ as of the same incident. The other half of the 2026-07-22 failure was a primary session resumed without `--channels`: inbound could never surface there, and the doctor printed that as a ⚠️ while still exiting green. A session that cannot receive inbound is a broken chain; the check keeps its relaunch hint. Intentionally send-only sessions can ignore that specific red.
 
@@ -163,14 +177,18 @@ Any one of these triggers the protocol. Do not wait for confirmation across mult
 bun resolves imports relative to the real file path. Symlinking `server.ts` into the plugin cache breaks module resolution (`Cannot find module '@modelcontextprotocol/sdk'`).
 
 ```bash
-# Find the active plugin version (may be 0.0.4 or 0.0.5 — don't guess):
-cat ~/.claude/plugins/installed_plugins.json | python3 -c "import json,sys;print(json.load(sys.stdin)['telegram@claude-plugins-official'][0]['installPath'])"
+# Find the active plugin version (don't guess — and the file has a v1 and a
+# v2 shape; v2 nests everything under "plugins"):
+python3 -c "import json,pathlib;d=json.load(open(pathlib.Path.home()/'.claude/plugins/installed_plugins.json'));p=d.get('plugins',d);print(p['telegram@claude-plugins-official'][0]['installPath'])"
 
 # Deploy (TELEGRAM_SOURCE_DIR points at your canonical source tree):
 cp "$TELEGRAM_SOURCE_DIR/server.ts" <that-path>/server.ts
+cmp -s "$TELEGRAM_SOURCE_DIR/server.ts" <that-path>/server.ts && echo deployed
 ```
 
 Always back up first: `cp server.ts server.ts.backup-$(date +%Y%m%d-%H%M%S)`.
+
+**A deploy takes effect for NEW sessions only** — the running bun process keeps serving the old code (Tier 2b). That is the point for the channel gate: the live bridge is untouched, and every session started afterwards is gated.
 
 Doctor catches source/plugin drift automatically via sha256 compare when `TELEGRAM_SOURCE_DIR` is set.
 
@@ -266,6 +284,14 @@ Run the doctor first. If it's clean but Telegram is still misbehaving, walk this
 **Symptom:** `409 Conflict` in log, messages don't arrive.
 **Cause:** Two instances polling the same bot token. `flock` should prevent this in steady state, but a crashed singleton can leave a dangling PID file.
 **Fix:** `pkill -f telegram_bot.py`, verify only one comes back, check doctor. The 409 retry loop in `telegram_bot.py` uses exponential backoff — Telegram drops the stale poller on its own once a fresh `getUpdates` arrives.
+
+### Another session answered Igor, or nothing arrived at all
+
+**Symptom:** a message Igor sent never surfaced in the session he was talking to, but `inbound.db` shows the row `delivered = 1`. Or: "why is every session talking on telegram?"
+
+**Cause:** a bridge belonging to some other `claude` on the box claimed the row. Every session spawns one, because the plugin is enabled user-wide.
+
+**Fix:** run the doctor and read `CHANNEL GATE`. `gate MISSING` → redeploy (Tier 2a); new sessions stop spawning bridges immediately, already-running ones don't. `ungated bridge pid=N` → `kill -TERM N`, it predates the gate. Both green and the message still went astray → it is the `DELIVERY` race between two legitimately-subscribed sessions, not the gate.
 
 ### Plugin auto-update overwrites deployed server.ts
 
