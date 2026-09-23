@@ -29,11 +29,15 @@ into a prompt by hand; `wake.sh` prints it.**
 
 ## Wake him
 
-1. Worktree for the job, off upstream:
+1. Worktree for the job: lease a Treehouse slot, then branch off upstream:
 
    ```bash
-   cd ~/gits/larry-blog && git fetch upstream && git worktree add .worktrees/<slug> -b <slug> upstream/main && (cd .worktrees/<slug> && just worktree-init)
+   cd ~/gits/larry-blog && WT=$(treehouse get --lease --lease-holder gutter-<slug>)
+   cd "$WT" && git fetch upstream && git switch -c <slug> upstream/main
+   ls -d node_modules _site back-links.json || just worktree-init   # only a brand-new slot is cold
    ```
+
+   Release it with `treehouse return "$WT"` once the PR is pushed and its preview is no longer needed.
 
 2. Build the prompt: the bundle, then the brief.
 
