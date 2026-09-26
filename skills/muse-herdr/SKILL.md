@@ -38,9 +38,11 @@ Before any Herdr command, confirm you are inside a Herdr pane (`test "${HERDR_EN
    (`send-keys <name> 2`, then `Enter`), then prompt again.
 4. **Prompt with the file.** `herdr agent prompt <name> "Read /tmp/<scope>/<task>-brief.md and do what it says,
 starting with step 1."` Do not `--wait` on a long job.
-5. **Watch for approvals.** Arm a Monitor on `bash <this skill dir>/watch-blocked.sh <name>` (persistent). It
-   prints one line when the agent blocks (with the last screen lines) and one when it settles. Read the prompt,
-   then answer it: `herdr agent send-keys <name> y` (or the key the prompt names). Igor: "You can always
+5. **Watch it.** Arm a persistent Monitor on `<this skill dir>/watch.py <name>`. It prints a line when the
+   agent blocks on a prompt (`BLOCKED`, with the last screen lines), when its model call fails (`FAILED`), when
+   its screen stops moving for five minutes (`STALLED`), when it settles, and a `WATCHER` line whenever a
+   `herdr` call fails, so silence never means the watcher went blind. It exits when the agent is gone. Read
+   the prompt, then answer it: `herdr agent send-keys <name> y` (or the key the prompt names). Igor: "You can always
    approve Muse." Still stop for anything destructive (`rm -rf`, `reset --hard`, a push).
    Do **not** run a parser that types keys on its own: the first auto-approver matched a sub-agent's output
    and typed a stray `y` into Muse's input, which then prefixed the next prompt.
@@ -75,6 +77,10 @@ right --cwd <repo> --no-focus`), close panes whose agent is done and whose outpu
 Muse for the next brief instead of starting another, and keep one status file per job. The only pane not to
 restart is the user's own interactive one (its profile is theirs). They share the machine: one heavy process
 at a time, and the headless graders count against the same memory.
+
+One Monitor watches them all: `watch.py` with no names follows every named Muse in `herdr agent list`
+(`--kind` for another agent), so a new pane joins without re-arming it. Igor (2026-09-13): "they're all stuck;
+your monitor needs to check for all the stuck agents."
 
 **"◆ keychain item for meta is unreadable (os status -67701)"** after a prompt, with no work following: the
 session is dead (its keychain access expired). Igor: "When you see this, the session is dead. You need to
