@@ -25,8 +25,8 @@ from unittest.mock import patch
 sys.path.insert(0, str(Path(__file__).parent))
 
 from generate import (  # noqa: E402
-    GEMINI_FAST_MODEL,
-    GEMINI_PRO_MODEL,
+    GPT_MODEL,
+    MUSE_MODEL,
     HEALTHY_ALPHA_MAX_PCT,
     HEALTHY_ALPHA_MIN_PCT,
     INTERIOR_HOLE_CLOSE_RADIUS,
@@ -305,56 +305,45 @@ class TestEvalAlphaInteriorHoles(unittest.TestCase):
         self.assertLess(metrics["interior_hole_largest_px"], 100)
 
 
-class TestGeminiModelSelection(unittest.TestCase):
-    """generate_one plumbs config.gemini_model into the subprocess env via
-    GEMINI_IMAGE_MODEL, which gemini-image.sh reads to derive the API URL.
+class TestModelSelection(unittest.TestCase):
+    """generate_one passes config.model and the aspect to openrouter-image.py
+    as CLI flags, and the ref image as --ref.
 
-    These tests mock subprocess.run so they don't hit the network; they
-    just assert on the env dict the subprocess was called with.
+    subprocess.run is mocked so nothing hits the network.
     """
 
-    def _make_config(self, gemini_model):
-        return GenerateConfig(
-            gemini_script="/fake/gemini-image.sh",
+    def _run(self, model, ref=None):
+        config = GenerateConfig(
+            image_script="/fake/openrouter-image.py",
             style="fake-style",
-            ref_image=None,
+            ref_image=ref,
             aspect="3:4",
             transparent=False,  # skip Recraft + eval paths
-            gemini_model=gemini_model,
+            model=model,
         )
-
-    def _make_direction(self):
-        return Direction(scene="fake scene", shirt="X", output="/tmp/fake.webp")
-
-    def test_fast_default_passes_flash_model_in_env(self):
-        config = self._make_config(GEMINI_FAST_MODEL)
-        direction = self._make_direction()
-
+        direction = Direction(scene="fake scene", shirt="X", output="/tmp/fake.webp")
         with patch("generate.subprocess.run") as mock_run:
             mock_run.return_value = subprocess.CompletedProcess(
                 args=[], returncode=0, stdout="", stderr=""
             )
             generate_one(direction, config)
-
         self.assertEqual(mock_run.call_count, 1)
-        call_kwargs = mock_run.call_args.kwargs
-        env = call_kwargs["env"]
-        self.assertEqual(env["GEMINI_IMAGE_MODEL"], "gemini-3.1-flash-image-preview")
+        return mock_run.call_args.args[0]
 
-    def test_no_fast_passes_pro_model_in_env(self):
-        config = self._make_config(GEMINI_PRO_MODEL)
-        direction = self._make_direction()
+    def _flag(self, cmd, name):
+        return cmd[cmd.index(name) + 1]
 
-        with patch("generate.subprocess.run") as mock_run:
-            mock_run.return_value = subprocess.CompletedProcess(
-                args=[], returncode=0, stdout="", stderr=""
-            )
-            generate_one(direction, config)
+    def test_default_model_is_muse(self):
+        self.assertEqual(GenerateConfig("s", "st", None, "1:1").model, MUSE_MODEL)
+        cmd = self._run(MUSE_MODEL)
+        self.assertEqual(self._flag(cmd, "--model"), "meta/muse-image")
+        self.assertEqual(self._flag(cmd, "--aspect"), "3:4")
+        self.assertNotIn("--ref", cmd)
 
-        self.assertEqual(mock_run.call_count, 1)
-        call_kwargs = mock_run.call_args.kwargs
-        env = call_kwargs["env"]
-        self.assertEqual(env["GEMINI_IMAGE_MODEL"], "gemini-3-pro-image-preview")
+    def test_gpt_model_and_ref_are_passed(self):
+        cmd = self._run(GPT_MODEL, ref="/refs/canon.webp")
+        self.assertEqual(self._flag(cmd, "--model"), "openai/gpt-image-2.5-sunburst")
+        self.assertEqual(self._flag(cmd, "--ref"), "/refs/canon.webp")
 
 
 if __name__ == "__main__":

@@ -55,8 +55,8 @@ SUPPORTED_EXTS = {".png", ".jpg", ".jpeg", ".webp"}
 MIN_OUTPUT_BYTES = 1024
 
 # WebP conversion quality when the caller asks for `.webp` output.
-# Matches what gemini-image.sh uses (`cwebp -q 90`) so file sizes and
-# visuals stay consistent with Gemini's direct WebP output.
+# Matches openrouter-image.py's WebP quality (90) so a stripped image
+# looks like its unstripped source.
 WEBP_QUALITY = 90
 
 
@@ -160,8 +160,8 @@ def _write_with_format(img_bytes: bytes, output_path: str) -> tuple[bool, str | 
 
     Recraft's removeBackground endpoint only emits PNG with alpha. If
     the caller asks for .webp, we go PNG → cwebp → WebP-with-alpha (same
-    `cwebp -q 90` invocation gemini-image.sh uses, so visual quality
-    stays consistent with the upstream Gemini output). For any other
+    quality openrouter-image.py uses, so visual quality stays consistent
+    with the upstream render). For any other
     extension, we write the PNG bytes verbatim (caller's problem if they
     asked for .jpg — alpha would be dropped). Falls back to PNG if cwebp
     is missing, with a clear message rather than silent rename.
@@ -218,7 +218,7 @@ def strip_background(
     Output format follows the extension on `output_path`:
         - .png  → Recraft's PNG-with-alpha bytes verbatim
         - .webp → Recraft PNG → cwebp -q 90 → WebP-with-alpha (matches
-                  gemini-image.sh's quality settings)
+                  openrouter-image.py's quality setting)
         - other → PNG bytes written verbatim (caller's problem if alpha is lost)
 
     Returns:
