@@ -1,9 +1,9 @@
 # Brief: <task> (<issue>)
 
-You are Muse, working for <user> in `<repo path>`. **Work in the worktree `<repo>/.claude/worktrees/<name>`
-(branch `<branch>`, at <sha>): `cd` there first and run every git command with `-C` that path.** Read its
-`AGENTS.md` (or `CLAUDE.md`) in full first. Edit only with your file-edit tools. Never push. Never `git add -A`.
-Do not touch <files another job is live in>.
+You are Muse, working for <user> on `<repo path>`. **You start in your own worktree,
+`~/.herdr/worktrees/<repo>/<name>` (branch `<branch>`, at <sha>): work and commit there, and never `cd` into
+the main checkout.** Read its `AGENTS.md` (or `CLAUDE.md`) in full first. Edit only with your file-edit tools.
+Never push. Never `git add -A`. Do not touch <files another job is live in>.
 
 The plan: <absolute path of the design note or review, with the sections to read>. The steps, as filed in
 issue <#N> (line numbers from <sha>):
