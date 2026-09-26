@@ -5,6 +5,7 @@ Run with: python3 -m unittest test_telegram_debug.py
 """
 
 import os
+import json
 import sqlite3
 import sys
 import tempfile
@@ -401,99 +402,33 @@ class TestReadBotToken(unittest.TestCase):
 
 
 class TestDefaultChatId(unittest.TestCase):
-    """Drive _default_chat_id via the LARRY_TELEGRAM_DIR env var it honors."""
+    def test_explicit_private_destination_rechecked_against_current_policy(self):
+        from unittest.mock import patch
 
-    def _with_db(self, rows):
-        """rows: list of (chat_id,) or (chat_id, gate_action) tuples.
-
-        gate_action defaults to 'allow' so existing cases read unchanged.
-        """
-        tmp = tempfile.TemporaryDirectory()
-        db = Path(tmp.name) / "inbound.db"
-        con = sqlite3.connect(db)
-        con.execute(
-            "CREATE TABLE inbound"
-            " (id INTEGER PRIMARY KEY, chat_id INTEGER, gate_action TEXT)"
-        )
-        con.executemany(
-            "INSERT INTO inbound (chat_id, gate_action) VALUES (?, ?)",
-            [(r[0], r[1] if len(r) > 1 else "allow") for r in rows],
-        )
-        con.commit()
-        con.close()
-        return tmp  # caller keeps reference alive
-
-    def test_missing_db_returns_none(self):
-        with tempfile.TemporaryDirectory() as d:
-            old = os.environ.get("LARRY_TELEGRAM_DIR")
-            os.environ["LARRY_TELEGRAM_DIR"] = d
-            try:
-                self.assertIsNone(_default_chat_id())
-            finally:
-                if old is None:
-                    del os.environ["LARRY_TELEGRAM_DIR"]
-                else:
-                    os.environ["LARRY_TELEGRAM_DIR"] = old
-
-    def test_returns_latest_chat_id_as_string(self):
-        tmp = self._with_db([(111,), (222,), (333,)])
-        old = os.environ.get("LARRY_TELEGRAM_DIR")
-        os.environ["LARRY_TELEGRAM_DIR"] = tmp.name
-        try:
-            result = _default_chat_id()
-            self.assertEqual(result, "333")
-            self.assertIsInstance(result, str)  # int → str coercion
-        finally:
-            tmp.cleanup()
-            if old is None:
-                del os.environ["LARRY_TELEGRAM_DIR"]
-            else:
-                os.environ["LARRY_TELEGRAM_DIR"] = old
-
-    def test_empty_table_returns_none(self):
-        tmp = self._with_db([])
-        old = os.environ.get("LARRY_TELEGRAM_DIR")
-        os.environ["LARRY_TELEGRAM_DIR"] = tmp.name
-        try:
+        with (
+            tempfile.TemporaryDirectory() as d,
+            patch.dict(
+                os.environ,
+                {
+                    "TELEGRAM_STATE_DIR": d,
+                    "TELEGRAM_ALERT_CHAT_ID": "42",
+                },
+            ),
+        ):
+            access = Path(d) / "access.json"
+            access.write_text(
+                json.dumps({"dmPolicy": "allowlist", "allowFrom": ["42"]})
+            )
+            self.assertEqual(_default_chat_id(), "42")
+            access.write_text(json.dumps({"dmPolicy": "allowlist", "allowFrom": []}))
             self.assertIsNone(_default_chat_id())
-        finally:
-            tmp.cleanup()
-            if old is None:
-                del os.environ["LARRY_TELEGRAM_DIR"]
-            else:
-                os.environ["LARRY_TELEGRAM_DIR"] = old
-
-    def test_skips_newer_non_allowed_rows(self):
-        """A stranger DM must never become the outbound default. The bot
-        records drop/pair rows too, so the newest row is not necessarily a
-        row Larry is allowed to talk to — every daemon direct-send (nudge
-        fallback, watchdog alert, restart status) relies on this default."""
-        tmp = self._with_db([(111, "allow"), (999, "drop"), (888, "pair")])
-        old = os.environ.get("LARRY_TELEGRAM_DIR")
-        os.environ["LARRY_TELEGRAM_DIR"] = tmp.name
-        try:
-            self.assertEqual(_default_chat_id(), "111")
-        finally:
-            tmp.cleanup()
-            if old is None:
-                del os.environ["LARRY_TELEGRAM_DIR"]
-            else:
-                os.environ["LARRY_TELEGRAM_DIR"] = old
-
-    def test_only_non_allowed_rows_returns_none(self):
-        """Fail closed: with nothing but stranger traffic on record there is
-        no safe default, and the caller's "no chat_id" error is correct."""
-        tmp = self._with_db([(999, "drop"), (888, "pair")])
-        old = os.environ.get("LARRY_TELEGRAM_DIR")
-        os.environ["LARRY_TELEGRAM_DIR"] = tmp.name
-        try:
+            os.environ["TELEGRAM_ALERT_CHAT_ID"] = "-42"
+            access.write_text(
+                json.dumps({"dmPolicy": "allowlist", "allowFrom": ["-42"]})
+            )
             self.assertIsNone(_default_chat_id())
-        finally:
-            tmp.cleanup()
-            if old is None:
-                del os.environ["LARRY_TELEGRAM_DIR"]
-            else:
-                os.environ["LARRY_TELEGRAM_DIR"] = old
+            os.environ.pop("TELEGRAM_ALERT_CHAT_ID")
+            self.assertIsNone(_default_chat_id())
 
 
 class TestBuildDirectRequest(unittest.TestCase):
@@ -1230,27 +1165,19 @@ class TestClassifyBridgeGating(unittest.TestCase):
             {100: 300},
             {300: ["claude", "--channels", "plugin:telegram@claude-plugins-official"]},
         )
-        self.assertEqual(
-            rows, [{"pid": 100, "owning_claude": 300, "gated": True}]
-        )
+        self.assertEqual(rows, [{"pid": 100, "owning_claude": 300, "gated": True}])
 
     def test_ungated_bridge(self):
         rows = self._classify([100], {100: 300}, {300: ["claude", "-p", "say ok"]})
-        self.assertEqual(
-            rows, [{"pid": 100, "owning_claude": 300, "gated": False}]
-        )
+        self.assertEqual(rows, [{"pid": 100, "owning_claude": 300, "gated": False}])
 
     def test_orphaned_bridge_is_unknown(self):
         rows = self._classify([100], {100: None}, {})
-        self.assertEqual(
-            rows, [{"pid": 100, "owning_claude": None, "gated": None}]
-        )
+        self.assertEqual(rows, [{"pid": 100, "owning_claude": None, "gated": None}])
 
     def test_unreadable_cmdline_is_unknown(self):
         rows = self._classify([100], {100: 300}, {})
-        self.assertEqual(
-            rows, [{"pid": 100, "owning_claude": 300, "gated": None}]
-        )
+        self.assertEqual(rows, [{"pid": 100, "owning_claude": 300, "gated": None}])
 
     def test_mixed_fleet(self):
         rows = self._classify(
@@ -1283,7 +1210,9 @@ class TestDoctorCheckChannelGate(unittest.TestCase):
                 report,
                 find_bridges=lambda: bridges,
                 find_plugin=(
-                    (lambda: (plugin, "deadbeef")) if deployed_src is not None else (lambda: None)
+                    (lambda: (plugin, "deadbeef"))
+                    if deployed_src is not None
+                    else (lambda: None)
                 ),
                 classify=lambda pids: classify_bridge_gating(
                     pids,
@@ -1308,9 +1237,14 @@ class TestDoctorCheckChannelGate(unittest.TestCase):
             cmdlines={300: self.GATED},
         )
         self.assertEqual(report.failures, 0)
-        self.assertTrue(any("gate deployed" in line for line in report.lines), report.lines)
         self.assertTrue(
-            any("all owned by --channels telegram sessions" in line for line in report.lines),
+            any("gate deployed" in line for line in report.lines), report.lines
+        )
+        self.assertTrue(
+            any(
+                "all owned by --channels telegram sessions" in line
+                for line in report.lines
+            ),
             report.lines,
         )
 
@@ -1323,7 +1257,9 @@ class TestDoctorCheckChannelGate(unittest.TestCase):
             cmdlines={},
         )
         self.assertEqual(report.failures, 1)
-        self.assertTrue(any("gate MISSING" in line for line in report.lines), report.lines)
+        self.assertTrue(
+            any("gate MISSING" in line for line in report.lines), report.lines
+        )
 
     def test_ungated_bridge_is_red(self):
         report = self._run(
@@ -1335,7 +1271,9 @@ class TestDoctorCheckChannelGate(unittest.TestCase):
         self.assertTrue(
             any("ungated bridge pid=101" in line for line in report.lines), report.lines
         )
-        self.assertTrue(any("kill -TERM 101" in line for line in report.lines), report.lines)
+        self.assertTrue(
+            any("kill -TERM 101" in line for line in report.lines), report.lines
+        )
 
     def test_unknown_ancestry_warns_not_red(self):
         report = self._run(

@@ -37,7 +37,16 @@ from pathlib import Path
 # module path. Only `python3 telegram_debug.py <subcommand>` needs it, and
 # the PEP 723 shebang (`uv run --script`) provides it on that path.
 
-STATE_DIR = Path(os.environ.get("HOME", "/tmp")) / ".claude" / "channels" / "telegram"
+
+def _state_dir() -> Path:
+    return Path(
+        os.environ.get(
+            "TELEGRAM_STATE_DIR", str(Path.home() / ".claude" / "channels" / "telegram")
+        )
+    ).expanduser()
+
+
+STATE_DIR = _state_dir()
 PLUGIN_DIR = (
     Path(os.environ.get("HOME", "/tmp"))
     / ".claude"
@@ -46,7 +55,12 @@ PLUGIN_DIR = (
     / "claude-plugins-official"
     / "telegram"
 )
-LOG_DB = Path(os.environ.get("HOME", "/tmp")) / ".claude" / "telegram_log.db"
+LOG_DB = (
+    Path(
+        os.environ.get("LARRY_TELEGRAM_DIR", str(Path.home() / "larry-telegram"))
+    ).expanduser()
+    / "telegram_log.db"
+)
 
 
 def run(cmd: list[str], timeout: int = 5) -> str:
@@ -431,7 +445,7 @@ def check_pid_file(_name: str, path: Path) -> dict:
 
 def check_server_log(n: int = 20) -> list[str]:
     """Read last N lines of server.log."""
-    log_file = STATE_DIR / "server.log"
+    log_file = _base_dir() / "server.log"
     if not log_file.exists():
         return ["(no server.log)"]
     try:
@@ -442,20 +456,18 @@ def check_server_log(n: int = 20) -> list[str]:
 
 
 def check_inbound_log(n: int = 20) -> list[dict]:
-    """Read last N inbound.jsonl entries."""
-    log_file = STATE_DIR / "inbound.jsonl"
-    if not log_file.exists():
-        return []
+    """Read current queue rows without creating or changing runtime state."""
+    db = _base_dir() / "inbound.db"
     try:
-        lines = log_file.read_text().strip().splitlines()
-        entries = []
-        for line in lines[-n:]:
-            try:
-                entries.append(json.loads(line))
-            except json.JSONDecodeError:
-                entries.append({"raw": line})
-        return entries
-    except OSError:
+        with sqlite3.connect(f"file:{db}?mode=ro", uri=True) as conn:
+            conn.row_factory = sqlite3.Row
+            return [
+                dict(row)
+                for row in conn.execute(
+                    "SELECT * FROM inbound ORDER BY id DESC LIMIT ?", (n,)
+                )
+            ]
+    except sqlite3.Error:
         return []
 
 
@@ -469,7 +481,7 @@ def check_telegram_db(n: int = 10) -> dict:
         cur.execute("SELECT count(*) FROM messages")
         total = cur.fetchone()[0]
         cur.execute(
-            "SELECT count(*) FROM messages WHERE timestamp >= datetime('now', '-24 hours')"
+            "SELECT count(*) FROM messages WHERE julianday(timestamp) >= julianday('now', '-24 hours')"
         )
         recent = cur.fetchone()[0]
         cur.execute(
@@ -579,7 +591,7 @@ def check_plugin_deploy() -> dict:
         # Check feature markers
         try:
             content = deployed_file.read_text()
-            result["has_resilience"] = "logInbound" in content
+            result["has_resilience"] = "selectUndelivered" in content
             result["has_heartbeat"] = "heartbeat" in content
         except OSError:
             pass
@@ -619,7 +631,7 @@ def full_diagnostic(tail: int = 20) -> dict:
         "timestamp": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
         "bun_processes": check_bun_processes(),
         "claude_sessions": check_claude_sessions(),
-        "bot_pid": check_pid_file("bot", STATE_DIR / "bot.pid"),
+        "bot_pid": check_pid_file("bot", _base_dir() / "bot.pid"),
         "server_log": check_server_log(n=tail),
         "inbound_log": check_inbound_log(n=tail),
         "telegram_db": check_telegram_db(n=tail),
@@ -1013,7 +1025,7 @@ def _doctor_check_server_ts(report: DoctorReport) -> None:
         return
 
     if len(ours) == 0:
-        report.warn(
+        report.fail(
             f"no bridge owned by this Claude session (pid={our_claude}) — "
             "MCP tools may be disconnected; /reload-plugins to respawn"
         )
@@ -1065,7 +1077,9 @@ def _doctor_check_channel_gate(
 
     plugin_info = find_plugin()
     if plugin_info is None:
-        report.warn("no plugin-cache server.ts found — cannot confirm the gate is deployed")
+        report.warn(
+            "no plugin-cache server.ts found — cannot confirm the gate is deployed"
+        )
     else:
         plugin_path = plugin_info[0]
         try:
@@ -1392,31 +1406,16 @@ def _doctor_check_deploy(report: DoctorReport) -> None:
 
 
 def _doctor_check_token(report: DoctorReport) -> None:
-    token_file = Path.home() / ".claude" / "channels" / "telegram" / ".env"
-    if not token_file.exists():
-        report.fail(f"token file missing: {token_file}")
-        return
-    if not os.access(token_file, os.R_OK):
-        report.fail(f"token file {token_file} not readable")
-        return
     try:
-        content = token_file.read_text()
-    except OSError as e:
-        report.fail(f"token file read failed: {e}")
-        return
-    has_token = any(
-        line.strip().startswith("TELEGRAM_BOT_TOKEN=")
-        and len(line.split("=", 1)[1].strip()) > 0
-        for line in content.splitlines()
-    )
-    if has_token:
-        report.ok("token: present")
+        _read_bot_token()
+    except (OSError, RuntimeError) as e:
+        report.fail(str(e))
     else:
-        report.fail("token: missing TELEGRAM_BOT_TOKEN= line")
+        report.ok("token: present")
 
 
 def _doctor_check_access(report: DoctorReport) -> None:
-    access_file = Path.home() / ".claude" / "channels" / "telegram" / "access.json"
+    access_file = _state_dir() / "access.json"
     if not access_file.exists():
         report.fail(f"access.json missing at {access_file}")
         return
@@ -1608,15 +1607,15 @@ def run_paths() -> int:
             [
                 (
                     ".env (BOT_TOKEN)",
-                    Path.home() / ".claude" / "channels" / "telegram" / ".env",
+                    _state_dir() / ".env",
                 ),
                 (
                     "access.json",
-                    Path.home() / ".claude" / "channels" / "telegram" / "access.json",
+                    _state_dir() / "access.json",
                 ),
                 (
                     "approved/",
-                    Path.home() / ".claude" / "channels" / "telegram" / "approved",
+                    _state_dir() / "approved",
                 ),
             ],
         ),
@@ -1718,8 +1717,10 @@ def _read_bot_token(token_file: Path | None = None) -> str:
 
     `token_file` is injected for tests; defaults to the canonical path.
     """
+    if token_file is None and os.environ.get("TELEGRAM_BOT_TOKEN"):
+        return os.environ["TELEGRAM_BOT_TOKEN"]
     if token_file is None:
-        token_file = Path.home() / ".claude" / "channels" / "telegram" / ".env"
+        token_file = _state_dir() / ".env"
     if not token_file.exists():
         raise RuntimeError(f"token file missing: {token_file}")
     token = parse_env_token(token_file.read_text())
@@ -1729,36 +1730,20 @@ def _read_bot_token(token_file: Path | None = None) -> str:
 
 
 def _default_chat_id() -> str | None:
-    """Pull the most recent gate-allowed inbound chat_id from inbound.db.
-
-    The gate filter is load-bearing, not cosmetic. telegram_bot.py INSERTs a
-    row for *every* inbound event, including `drop` and `pair` rows from
-    strangers (dmPolicy is pairing, so strangers reach the bot by design).
-    Every daemon `direct-send` — nudge fallbacks, watchdog red/recovery
-    alerts, /restart-larry status lines — omits --chat-id and lands here, so
-    an unfiltered "newest row" default would address Igor's personal coaching
-    text to whichever stranger DM'd the bot most recently. Same reasoning as
-    show_undelivered(), which filters gate_action = 'allow' on the read side.
-    """
-    db = (
-        Path(os.environ.get("LARRY_TELEGRAM_DIR", Path.home() / "larry-telegram"))
-        / "inbound.db"
-    )
-    if not db.exists():
-        return None
+    """Require an explicit, currently authorized private alert destination."""
+    chat_id = os.environ.get("TELEGRAM_ALERT_CHAT_ID", "")
     try:
-        con = sqlite3.connect(f"file:{db}?mode=ro", uri=True, timeout=1)
-        row = con.execute(
-            "SELECT chat_id FROM inbound WHERE gate_action = 'allow'"
-            " ORDER BY id DESC LIMIT 1"
-        ).fetchone()
-        con.close()
-        return str(row[0]) if row else None
-    except Exception as e:
-        # Don't swallow silently — the caller's "no chat_id" error is
-        # confusing if the real failure was a corrupt DB or locked file.
-        print(f"default chat_id lookup failed: {e}", file=sys.stderr)
-        return None
+        access = json.loads((_state_dir() / "access.json").read_text())
+        if (
+            chat_id.isdecimal()
+            and int(chat_id) > 0
+            and access.get("dmPolicy") != "disabled"
+            and chat_id in access.get("allowFrom", [])
+        ):
+            return chat_id
+    except (OSError, ValueError, TypeError):
+        pass
+    return None
 
 
 TELEGRAM_API_BASE = "https://api.telegram.org"
@@ -1814,7 +1799,7 @@ def send_direct(text: str, chat_id: str | None = None) -> int:
         chat_id = _default_chat_id()
     if not chat_id:
         print(
-            "direct send failed: no chat_id (pass --chat-id or have an inbound message on record)",
+            "direct send failed: no chat_id (pass --chat-id or configure an authorized TELEGRAM_ALERT_CHAT_ID)",
             file=sys.stderr,
         )
         return 1
@@ -2134,6 +2119,8 @@ def _build_app():
         """Run the full diagnostic report when no subcommand is given."""
         if ctx.invoked_subcommand is not None:
             return
+        if not json_out:
+            raise typer.Exit(run_doctor())
         diag = full_diagnostic(tail=tail)
         if json_out:
             print(json.dumps(diag, indent=2, default=str))
@@ -2158,7 +2145,7 @@ def _build_app():
         chat_id: str | None = typer.Option(
             None,
             "--chat-id",
-            help="Target chat_id. Defaults to the last inbound chat_id from inbound.db.",
+            help="Target chat_id. Defaults to authorized TELEGRAM_ALERT_CHAT_ID.",
         ),
     ) -> None:
         """EMERGENCY DIRECT-SEND via Telegram Bot API — bypasses MCP entirely.
