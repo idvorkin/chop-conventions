@@ -44,8 +44,7 @@ def extract_channel_messages(text: str) -> list[dict]:
     avoids silent drops when an upstream writer reorders tag attributes.
     """
     pattern = re.compile(
-        r'<channel\s+source="plugin:telegram:telegram"'
-        r'(?P<attrs>[^>]*)>'
+        r"<channel\s+(?P<attrs>[^>]*)>"
         r"(?P<body>.*?)"
         r"</channel>",
         re.DOTALL,
@@ -54,6 +53,8 @@ def extract_channel_messages(text: str) -> list[dict]:
     messages = []
     for match in pattern.finditer(text):
         attrs = dict(re.findall(r'(\w+)="([^"]*)"', match.group("attrs")))
+        if attrs.get("source") != "plugin:telegram:telegram":
+            continue
         msg = {
             "chat_id": attrs.get("chat_id"),
             "message_id": attrs.get("message_id"),
