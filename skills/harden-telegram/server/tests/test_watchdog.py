@@ -179,7 +179,7 @@ class TestRecoverySequence(unittest.TestCase):
     def test_full_recovery_sequence(
         self, mock_send, mock_mono, mock_sleep, mock_capture
     ):
-        """Should send Escape, C-u, /reload-plugins and verify Reloaded:."""
+        """Should send Escape x2, Enter x3, C-u, /reload-plugins and verify Reloaded:."""
         mock_send.return_value = True
         # For wait_for_idle_prompt + reload confirmation loops
         mock_mono.side_effect = [0, 1, 0, 1]
@@ -188,23 +188,31 @@ class TestRecoverySequence(unittest.TestCase):
         result = watchdog.do_recovery("%3")
         self.assertTrue(result)
 
-        # Verify Escape, C-u, and /reload-plugins were sent
-        send_calls = mock_send.call_args_list
-        self.assertEqual(send_calls[0].args, ("%3", "Escape"))
-        # C-u to clear input
-        self.assertEqual(send_calls[1].args, ("%3", "C-u"))
-        # /reload-plugins with Enter as separate arg
-        self.assertEqual(send_calls[2].args, ("%3", "/reload-plugins", "Enter"))
+        # Escape x2 cancels generation, Enter x3 dismisses prompts, C-u clears the
+        # input line, then /reload-plugins with Enter as a separate arg.
+        self.assertEqual(
+            [c.args for c in mock_send.call_args_list],
+            [("%3", "Escape")] * 2
+            + [("%3", "Enter")] * 3
+            + [("%3", "C-u"), ("%3", "/reload-plugins", "Enter")],
+        )
 
+    @patch("watchdog.tmux_capture_pane", return_value="")
     @patch("watchdog.time.sleep")
+    @patch("watchdog.time.monotonic")
     @patch("watchdog.tmux_send_keys")
-    def test_recovery_aborts_on_escape_failure(self, mock_send, mock_sleep):
-        """Should abort if Escape send fails."""
+    def test_clearing_keys_failing_is_not_fatal_but_the_reload_is(
+        self, mock_send, mock_mono, mock_sleep, mock_capture
+    ):
+        """A failed clearing key does not stop recovery; the /reload-plugins send decides."""
         mock_send.return_value = False
+        mock_mono.side_effect = [0, 100]  # wait_for_idle_prompt times out at once
 
         result = watchdog.do_recovery("%3")
         self.assertFalse(result)
-        self.assertEqual(mock_send.call_count, 1)
+        self.assertEqual(
+            mock_send.call_args_list[-1].args, ("%3", "/reload-plugins", "Enter")
+        )
 
     @patch("watchdog.tmux_capture_pane", return_value="  ❯ \n")
     @patch("watchdog.time.sleep")
@@ -215,7 +223,8 @@ class TestRecoverySequence(unittest.TestCase):
     ):
         """Should abort if /reload-plugins send fails."""
         mock_mono.side_effect = [0, 1]  # for wait_for_idle_prompt
-        mock_send.side_effect = [True, True, False]  # Escape ok, C-u ok, reload fails
+        # Escape x2, Enter x3 and C-u ok, reload fails
+        mock_send.side_effect = [True] * 6 + [False]
 
         result = watchdog.do_recovery("%3")
         self.assertFalse(result)
@@ -262,49 +271,50 @@ class TestWaitForNewBun(unittest.TestCase):
         self.assertFalse(result)
 
 
-class TestMainEntryValidation(unittest.TestCase):
-    """Tests for main() argument validation."""
+class TestDaemonEntryValidation(unittest.TestCase):
+    """Tests for the `daemon` subcommand's environment validation.
 
-    @patch.dict(
-        os.environ,
-        {"WATCHDOG_BUN_PID": "", "WATCHDOG_CLAUDE_PID": "", "WATCHDOG_TMUX_PANE": ""},
-        clear=False,
-    )
+    The CLI is Typer (`_build_app`), so these need typer: run under
+    `uv run --with typer` (the repo's `just fast-test` does).
+    """
+
+    def run_daemon(self, env):
+        from typer.testing import CliRunner
+
+        return CliRunner().invoke(watchdog._build_app(), ["daemon"], env=env)
+
     def test_missing_pids_exits(self):
         """Should exit with code 1 when PIDs are missing."""
-        with self.assertRaises(SystemExit) as ctx:
-            watchdog.main()
-        self.assertEqual(ctx.exception.code, 1)
+        result = self.run_daemon(
+            {
+                "WATCHDOG_BUN_PID": "",
+                "WATCHDOG_CLAUDE_PID": "",
+                "WATCHDOG_TMUX_PANE": "",
+            }
+        )
+        self.assertEqual(result.exit_code, 1)
 
-    @patch.dict(
-        os.environ,
-        {
-            "WATCHDOG_BUN_PID": "123",
-            "WATCHDOG_CLAUDE_PID": "456",
-            "WATCHDOG_TMUX_PANE": "",
-        },
-        clear=False,
-    )
     def test_missing_tmux_pane_exits_cleanly(self):
         """Should exit with code 0 when tmux pane is not set."""
-        with self.assertRaises(SystemExit) as ctx:
-            watchdog.main()
-        self.assertEqual(ctx.exception.code, 0)
+        result = self.run_daemon(
+            {
+                "WATCHDOG_BUN_PID": "123",
+                "WATCHDOG_CLAUDE_PID": "456",
+                "WATCHDOG_TMUX_PANE": "",
+            }
+        )
+        self.assertEqual(result.exit_code, 0)
 
-    @patch.dict(
-        os.environ,
-        {
-            "WATCHDOG_BUN_PID": "abc",
-            "WATCHDOG_CLAUDE_PID": "def",
-            "WATCHDOG_TMUX_PANE": "%3",
-        },
-        clear=False,
-    )
     def test_invalid_pid_format_exits(self):
         """Should exit with code 1 for non-numeric PIDs."""
-        with self.assertRaises(SystemExit) as ctx:
-            watchdog.main()
-        self.assertEqual(ctx.exception.code, 1)
+        result = self.run_daemon(
+            {
+                "WATCHDOG_BUN_PID": "abc",
+                "WATCHDOG_CLAUDE_PID": "def",
+                "WATCHDOG_TMUX_PANE": "%3",
+            }
+        )
+        self.assertEqual(result.exit_code, 1)
 
 
 if __name__ == "__main__":
