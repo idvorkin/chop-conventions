@@ -22,15 +22,20 @@ Before any Herdr command, confirm you are inside a Herdr pane (`test "${HERDR_EN
    work, what to read first, the steps with file:line references, what it must not touch, how each step lands
    (commit format, tests, the rung it cannot run), where to write status. Decisions already taken are stated as
    decisions, not questions.
-2. **Its own worktree.** `git worktree add .claude/worktrees/<name> -b <branch>`; the brief tells it to `cd`
-   there and to pass `-C <path>` to every git command. Your uncommitted experiments in the main checkout stay
-   yours. **Provision the worktree's gitignored assets before anything builds** (downloaded models, fixtures,
+2. **Its own worktree, from Herdr.** `herdr worktree create --cwd <repo> --branch <name> --base main --no-focus`
+   makes the checkout under `~/.herdr/worktrees/<repo>/<name>` and a pane whose shell starts there; the agent is
+   started in that pane (step 3), so its process lives in the worktree and never `cd`s into it, and its commits
+   cannot land on the main checkout's branch. Review its commits, `git merge --ff-only <name>`, then
+   `herdr worktree remove`. Your uncommitted experiments in the main checkout stay yours. **Provision the worktree's gitignored assets before anything builds** (downloaded models, fixtures,
    `.env`): a fresh worktree has none of them, the build succeeds anyway, and the app then fails in a way that
    looks like the Muse's change (an afternoon's five 240 s timeouts in exercise-analyzer were a missing
    `.mlpackage`, not the refactor). Copy them from the main checkout or run the repo's fetch recipe.
-3. **Start or reuse the pane.** An existing Muse pane: `herdr agent list` shows its name. A new one needs a
-   free shell pane in the repo: `herdr agent start <name> --kind muse --pane <pane-id>`. Auto-approve flags on
-   the agent's command line are refused by the auto-mode classifier; use the default profile.
+3. **Start or reuse the pane.** An existing Muse pane: `herdr agent list` shows its name. A new one goes in
+   the worktree's root pane (`root_pane.pane_id` in the create output):
+   `herdr agent start <name> --kind muse --pane <pane-id>` (`--kind codex` works the same). Auto-approve flags on
+   the agent's command line are refused by the auto-mode classifier; use the default profile. `agent_not_ready`
+   or `agent_blocked` at start: read the pane first; a CLI self-update prompt (Codex) gets Skip
+   (`send-keys <name> 2`, then `Enter`), then prompt again.
 4. **Prompt with the file.** `herdr agent prompt <name> "Read /tmp/<scope>/<task>-brief.md and do what it says,
 starting with step 1."` Do not `--wait` on a long job.
 5. **Watch for approvals.** Arm a Monitor on `bash <this skill dir>/watch-blocked.sh <name>` (persistent). It
