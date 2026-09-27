@@ -130,7 +130,6 @@ class TestGascityProfile(unittest.TestCase):
         self.assertTrue(PROFILES["gascity"](facts))
 
 
-
 class TestHostHealth(unittest.TestCase):
     def _find(self, **kw):
         facts = HostFacts(
@@ -192,7 +191,9 @@ class TestHostHealth(unittest.TestCase):
         from md_probe import SleepEvent
 
         got = self._find(
-            sleeps=[SleepEvent("2026-09-26 22:22:03", "Software Sleep pid=40700", 40700)]
+            sleeps=[
+                SleepEvent("2026-09-26 22:22:03", "Software Sleep pid=40700", 40700)
+            ]
         )
         self.assertEqual([f.severity for f in got], ["note"])
 
