@@ -1,4 +1,4 @@
-"""Pure probe logic for machine-doctor: /proc parsing, spike detection.
+"""Pure probe logic for machine-doctor: /proc and macOS tool parsing, spike detection.
 
 Stdlib only — no subprocess, no filesystem, no live /proc. Every function takes
 text or values and returns values, so the module is fully unit-testable with
@@ -67,6 +67,9 @@ class MemInfo:
     # Reclaimable slab (dentry/inode cache). Counts as "used" in `free` but is
     # not in any process's RSS, so it is most of the used-minus-RSS gap.
     sreclaimable_kb: int = 0
+    # macOS only: the kernel's own verdict (normal | warn | critical). Linux has
+    # no equivalent single number; MemAvailable is the signal there.
+    pressure: str | None = None
 
 
 def parse_meminfo(text: str) -> MemInfo:
@@ -307,6 +310,8 @@ def detect_spike(
             f"MemAvailable {mem.mem_avail_kb // 1024}MB is under "
             f"{cfg.mem_avail_pct}% of {mem.mem_total_kb // 1024}MB"
         )
+    if mem.pressure == "critical":
+        reasons.append("macOS memory pressure is critical")
 
     return nxt, reasons
 
@@ -358,7 +363,7 @@ def render_tree(procs: list[ProcSample], cmdlines: dict[int, str]) -> str:
         cpu = "-" if p.cpu_pct is None else f"{p.cpu_pct:.0f}%"
         cl = redact(cmdlines.get(p.pid, ""))[:200]
         lines.append(
-            f"{'  ' * depth}{p.pid} {p.comm} cpu={cpu} rss={p.rss_kb // 1024}MB "
+            f"{'  ' * depth}{p.pid} {p.comm} cpu={cpu} mem={p.rss_kb // 1024}MB "
             f"etime={p.etime_s}s ppid={p.ppid} {cl}".rstrip()
         )
         for k in sorted(kids.get(p.pid, []), key=lambda x: x.pid):
@@ -367,3 +372,228 @@ def render_tree(procs: list[ProcSample], cmdlines: dict[int, str]) -> str:
     for r in sorted(roots, key=lambda x: x.pid):
         emit(r, 0)
     return "\n".join(lines)
+
+
+# ---------------------------------------------------------------------------
+# macOS: no /proc, so the same facts come from ps / top / sysctl / vm_stat /
+# pmset text. Same contract as above: text in, values out.
+# ---------------------------------------------------------------------------
+
+
+def cpu_totals_from_ticks(user: int, system: int, idle: int, nice: int) -> CpuTotals:
+    """host_statistics(HOST_CPU_LOAD_INFO) ticks -> the /proc/stat shape, so
+    idle_pct_between works unchanged."""
+    return CpuTotals(busy=user + system + nice, total=user + system + idle + nice)
+
+
+def parse_ps_duration(text: str) -> float:
+    """ps TIME / ETIME: '[dd-][hh:]mm:ss[.cc]' -> seconds. TIME on macOS runs
+    minutes past 59 ('3480:00.89'), which the positional sum handles."""
+    days = 0
+    t = text.strip()
+    if "-" in t:
+        d, t = t.split("-", 1)
+        days = int(d)
+    secs = 0.0
+    for part in t.split(":"):
+        secs = secs * 60 + float(part)
+    return days * 86400 + secs
+
+
+@dataclass(frozen=True)
+class PsRow:
+    pid: int
+    ppid: int
+    state: str
+    cpu_s: float  # cumulative user+system CPU seconds
+    etime_s: int
+    rss_kb: int
+    comm: str
+
+
+def parse_ps_rows(text: str) -> list[PsRow]:
+    """`ps -Ao pid=,ppid=,stat=,time=,etime=,rss=,comm=`. comm is last because
+    it is a full executable path that may contain spaces; keep its basename to
+    match Linux's short comm."""
+    rows: list[PsRow] = []
+    for line in text.splitlines():
+        f = line.split(None, 6)
+        if len(f) < 7 or not f[0].isdigit():
+            continue
+        try:
+            rows.append(
+                PsRow(
+                    pid=int(f[0]),
+                    ppid=int(f[1]),
+                    state=f[2][0],
+                    cpu_s=parse_ps_duration(f[3]),
+                    etime_s=int(parse_ps_duration(f[4])),
+                    rss_kb=int(f[5]),
+                    comm=f[6].rstrip("/").rsplit("/", 1)[-1],
+                )
+            )
+        except ValueError:
+            continue
+    return rows
+
+
+_SIZE_RE = re.compile(r"^(\d+(?:\.\d+)?)([BKMGT])[+-]?$")
+_SIZE_KB = {"B": 1 / 1024, "K": 1, "M": 1024, "G": 1024**2, "T": 1024**3}
+
+
+def parse_top_size(text: str) -> int | None:
+    """top's '12G+', '3074M-', '750K', '0B' -> KB."""
+    m = _SIZE_RE.match(text.strip())
+    return round(float(m.group(1)) * _SIZE_KB[m.group(2)]) if m else None
+
+
+def parse_top_mem(text: str) -> dict[int, int]:
+    """`top -l 1 -stats pid,mem` -> {pid: footprint_kb}.
+
+    On macOS this is the number that matters, not RSS: it includes compressed
+    pages. A VM whose memory sits in the compressor shows a few hundred MB of
+    RSS and a 12G footprint.
+    """
+    out: dict[int, int] = {}
+    body = False
+    for line in text.splitlines():
+        f = line.split()
+        if f[:2] == ["PID", "MEM"]:
+            body = True
+            continue
+        if body and len(f) >= 2 and f[0].isdigit():
+            kb = parse_top_size(f[1])
+            if kb is not None:
+                out[int(f[0])] = kb
+    return out
+
+
+_SWAP_RE = re.compile(r"(total|used|free)\s*=\s*([\d.]+)([MG])")
+
+
+def parse_swapusage(text: str) -> tuple[int, int]:
+    """`sysctl vm.swapusage` -> (total_kb, free_kb). macOS grows and shrinks the
+    swap file on demand, so 'free' can fall while pressure is easing."""
+    vals = {
+        k: float(v) * (1024 if u == "M" else 1024**2)
+        for k, v, u in _SWAP_RE.findall(text)
+    }
+    return round(vals.get("total", 0)), round(vals.get("free", 0))
+
+
+def parse_vm_stat(text: str) -> dict[str, int]:
+    """`vm_stat` -> {'page_kb', 'swapouts', 'compressor_kb'} (cumulative swapouts
+    in pages; compressor_kb is physical memory the compressor occupies)."""
+    out: dict[str, int] = {}
+    m = re.search(r"page size of (\d+) bytes", text)
+    page_kb = int(m.group(1)) // 1024 if m else 16
+    out["page_kb"] = page_kb
+    for line in text.splitlines():
+        key, _, val = line.partition(":")
+        val = val.strip().rstrip(".")
+        if not val.isdigit():
+            continue
+        if key.strip() == "Swapouts":
+            out["swapouts"] = int(val)
+        elif key.strip() == "Pages occupied by compressor":
+            out["compressor_kb"] = int(val) * page_kb
+    return out
+
+
+def pressure_name(level: int | None) -> str | None:
+    """kern.memorystatus_vm_pressure_level: 1 normal, 2 warn, 4 critical."""
+    return (
+        {1: "normal", 2: "warn", 4: "critical"}.get(level)
+        if level is not None
+        else None
+    )
+
+
+def parse_speed_limit(text: str) -> int | None:
+    """`pmset -g therm` -> CPU_Speed_Limit percent; None when never throttled."""
+    m = re.search(r"CPU_Speed_Limit\s*=\s*(\d+)", text)
+    return int(m.group(1)) if m else None
+
+
+@dataclass(frozen=True)
+class SleepEvent:
+    when: str  # 'YYYY-MM-DD HH:MM:SS' local, as pmset prints it
+    reason: str
+    pid: int | None  # set for 'Software Sleep pid=N' (a forced sleep)
+
+    @property
+    def forced(self) -> bool:
+        """A process asked for sleep (`pmset sleepnow`, the Apple menu, a
+        script) - often the user. Gets through `caffeinate`; worth naming."""
+        return self.pid is not None
+
+    @property
+    def thermal(self) -> bool:
+        """Too hot to stay awake - a problem."""
+        return "Thermal" in self.reason
+
+
+_SLEEP_RE = re.compile(
+    r"^(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}) [+-]\d{4} Sleep\s+Entering Sleep state due to '([^']*)'"
+)
+
+
+def parse_pmset_sleeps(text: str) -> list[SleepEvent]:
+    """Every non-maintenance sleep in `pmset -g log`. Maintenance sleeps are
+    the dark-wake network chatter (every minute or so overnight) - noise."""
+    out: list[SleepEvent] = []
+    for line in text.splitlines():
+        m = _SLEEP_RE.match(line)
+        if not m or m.group(2) == "Maintenance Sleep":
+            continue
+        pid = re.search(r"Software Sleep pid=(\d+)", m.group(2))
+        out.append(
+            SleepEvent(m.group(1), m.group(2), int(pid.group(1)) if pid else None)
+        )
+    return out
+
+
+def parse_df(text: str) -> dict[str, int]:
+    """`df -Pk` -> {mount: used %}. The mount is the last field and may hold
+    spaces, so split off exactly the five numeric columns first."""
+    out: dict[str, int] = {}
+    for line in text.splitlines()[1:]:
+        m = re.match(r"^\S.*?\s+\d+\s+\d+\s+\d+\s+(\d+)%\s+(/.*)$", line)
+        if m:
+            out[m.group(2)] = int(m.group(1))
+    return out
+
+
+_DATA_MOUNTS = ("/", "/System/Volumes/Data", "/home", "/tmp", "/var")
+
+
+def select_mounts(disks: dict[str, int]) -> dict[str, int]:
+    """Keep the volumes a person fills: the system/data volumes and top-level
+    /Volumes/<name> drives. Everything else is full by design and would only
+    train the reader to ignore disk warnings: read-only simulator images, /dev,
+    autofs `home`, macOS's sealed system sub-volumes."""
+    return {
+        m: pct
+        for m, pct in disks.items()
+        if m in _DATA_MOUNTS or re.fullmatch(r"/Volumes/[^/]+", m)
+    }
+
+
+def parse_catcher_log(text: str) -> dict[str, str]:
+    """sleep-catcher.sh's log -> {event time: the indented detail lines under
+    its 'FORCED sleep (...) at <time>' header}."""
+    out: dict[str, str] = {}
+    current: str | None = None
+    for line in text.splitlines():
+        m = re.search(
+            r"FORCED sleep \(.*\) at (\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})", line
+        )
+        if m:
+            current = m.group(1)
+            out[current] = ""
+        elif current and (line.startswith("    ") or re.match(r"^\S+ \S+   ", line)):
+            detail = re.sub(r"^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2} ", "", line)
+            out[current] += detail + "\n"
+        else:
+            current = None
+    return out

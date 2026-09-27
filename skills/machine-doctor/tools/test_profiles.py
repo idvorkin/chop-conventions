@@ -130,5 +130,73 @@ class TestGascityProfile(unittest.TestCase):
         self.assertTrue(PROFILES["gascity"](facts))
 
 
+class TestHostHealth(unittest.TestCase):
+    def _find(self, **kw):
+        facts = HostFacts(
+            mem_total_kb=16 * 1024 * 1024, mem_avail_kb=8 * 1024 * 1024, **kw
+        )
+        return PROFILES["generic"](facts)
+
+    def test_quiet_host_has_no_findings(self):
+        self.assertEqual(self._find(pressure="normal", disks={"/": 40}), [])
+
+    def test_pressure_warn_and_critical(self):
+        warn = self._find(pressure="warn", compressor_kb=6 * 1024 * 1024)
+        self.assertEqual([f.severity for f in warn], ["warn"])
+        self.assertIn("compressor holds 6144MB", _msgs(warn))
+        self.assertEqual(
+            [f.severity for f in self._find(pressure="critical")], ["fail"]
+        )
+
+    def test_swap_nearly_full(self):
+        got = self._find(swap_total_kb=4 * 1024 * 1024, swap_free_kb=300 * 1024)
+        self.assertIn("swap 92% used", _msgs(got))
+
+    def test_disk_thresholds(self):
+        got = self._find(disks={"/": 91, "/Volumes/x": 96, "/Volumes/y": 50})
+        self.assertEqual(
+            sorted((f.severity, f.message) for f in got),
+            [("fail", "disk /Volumes/x is 96% full"), ("warn", "disk / is 91% full")],
+        )
+
+    def test_vm_allowed_most_of_host_ram(self):
+        got = self._find(vm_mem_mib={"OrbStack VM": 12288})
+        self.assertIn("75%", _msgs(got))
+        self.assertIn("orb config set memory_mib 8192", _msgs(got))
+        self.assertEqual(self._find(vm_mem_mib={"OrbStack VM": 8192}), [])
+
+    def test_windowserver_leak(self):
+        got = self._find(procs=[_proc(436, rss=3 * 1024 * 1024, comm="WindowServer")])
+        self.assertIn("WindowServer footprint 3072MB", _msgs(got))
+
+    def test_thermal_and_forced_sleeps(self):
+        from md_probe import SleepEvent
+
+        got = self._find(
+            speed_limit=70,
+            sleeps=[
+                SleepEvent("2026-09-26 21:00:00", "Idle Sleep", None),
+                SleepEvent("2026-09-26 22:22:03", "Software Sleep pid=40700", 40700),
+                SleepEvent("2026-09-26 23:10:00", "Dark Wake Thermal Emergency", None),
+            ],
+        )
+        by_sev = {f.severity: f.message for f in got if "sleep" in f.message}
+        self.assertIn("CPU speed limited to 70%", _msgs(got))
+        self.assertIn("1 thermal sleep(s)", by_sev["warn"])
+        self.assertIn("23:10:00", by_sev["warn"])
+        self.assertIn("1 sleep(s) requested by a process", by_sev["note"])
+        self.assertIn("22:22:03", by_sev["note"])
+
+    def test_forced_sleep_alone_is_only_a_note(self):
+        from md_probe import SleepEvent
+
+        got = self._find(
+            sleeps=[
+                SleepEvent("2026-09-26 22:22:03", "Software Sleep pid=40700", 40700)
+            ]
+        )
+        self.assertEqual([f.severity for f in got], ["note"])
+
+
 if __name__ == "__main__":
     unittest.main()
