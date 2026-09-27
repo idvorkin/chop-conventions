@@ -30,7 +30,7 @@ box was quiet.
 All cpu%% figures are measured over the sampling interval (never ps-style
 lifetime averages). Every printed or persisted command line is redacted first.
 
-Exit codes: 0 ok; 1 findings/no-data; 2 bad arguments.
+Exit codes: 0 ok; 1 findings/no-data; 2 bad arguments (or `sleeps` off macOS).
 """
 
 import ctypes
