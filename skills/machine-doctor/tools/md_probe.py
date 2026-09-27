@@ -64,6 +64,9 @@ class MemInfo:
     mem_avail_kb: int
     swap_total_kb: int
     swap_free_kb: int
+    # Reclaimable slab (dentry/inode cache). Counts as "used" in `free` but is
+    # not in any process's RSS, so it is most of the used-minus-RSS gap.
+    sreclaimable_kb: int = 0
 
 
 def parse_meminfo(text: str) -> MemInfo:
@@ -78,6 +81,7 @@ def parse_meminfo(text: str) -> MemInfo:
         mem_avail_kb=vals.get("MemAvailable", 0),
         swap_total_kb=vals.get("SwapTotal", 0),
         swap_free_kb=vals.get("SwapFree", 0),
+        sreclaimable_kb=vals.get("SReclaimable", 0),
     )
 
 
@@ -170,6 +174,85 @@ def top_n(procs: list[ProcSample], n: int = 10) -> list[ProcSample]:
     )
 
 
+# ---------------------------------------------------------------------------
+# Memory by app: RSS grouped by what a human would call the program
+# ---------------------------------------------------------------------------
+
+# Interpreters whose comm says nothing: name them by the script they run.
+_INTERP_RE = re.compile(r"^(python3?|node|bun|deno|ruby|uv|uvx)[\d.]*$")
+JEKYLL_RE = re.compile(r"(^|/)jekyll\s+(serve|server|build)\b")
+
+
+def _interp_script(argv: list[str]) -> str:
+    """First non-flag argument after the interpreter, skipping `uv run` and
+    taking the module name for `-m mod`."""
+    rest = argv[1:]
+    i = 0
+    while i < len(rest):
+        a = rest[i]
+        if a == "-m" and i + 1 < len(rest):
+            return rest[i + 1]
+        if a in ("-c", "-e"):  # inline code: no script to name
+            return ""
+        if a in ("run", "tool", "exec") or a.startswith("-"):
+            i += 1
+            continue
+        return a.rsplit("/", 1)[-1]
+    return ""
+
+
+def app_name(comm: str, cmdline: str) -> str:
+    """Collapse one process to an app label. Families that fan out into many
+    PIDs (claude, jekyll, dolt servers) collapse to one row; bare interpreters
+    are named by their script (`python3:serve.py`), else by comm."""
+    if comm.startswith("claude"):
+        return "claude"
+    if "dolt sql-server" in cmdline:
+        return "dolt sql-server"
+    if JEKYLL_RE.search(cmdline):
+        return "jekyll"
+    if "pytest" in cmdline:
+        return "pytest"
+    argv = cmdline.split()
+    base = argv[0].rsplit("/", 1)[-1] if argv else comm
+    m = _INTERP_RE.match(base) or _INTERP_RE.match(comm)
+    if m:
+        script = _interp_script(argv)
+        return f"{m.group(1)}:{script}" if script else m.group(1)
+    return comm
+
+
+@dataclass(frozen=True)
+class AppMem:
+    name: str
+    rss_kb: int
+    count: int
+
+
+def mem_by_app(
+    procs: list[ProcSample], cmdlines: dict[int, str], top: int = 15
+) -> tuple[list[AppMem], int, int]:
+    """(top rows by RSS, everything-else KB, total KB). Total is the sum of ALL
+    RSS, so rows + everything-else == total exactly. pytest-xdist workers run
+    as anonymous `python -c ...`; they inherit the parent's `pytest` label.
+    RSS double-counts shared pages, so treat this as a ranking, not a ledger."""
+    by_pid = {p.pid: p for p in procs}
+    labels = {p.pid: app_name(p.comm, cmdlines.get(p.pid, "")) for p in procs}
+    for p in procs:
+        parent = labels.get(p.ppid)
+        if parent == "pytest" and labels[p.pid].startswith("python"):
+            labels[p.pid] = "pytest"
+    rss: dict[str, int] = {}
+    count: dict[str, int] = {}
+    for pid, name in labels.items():
+        rss[name] = rss.get(name, 0) + by_pid[pid].rss_kb
+        count[name] = count.get(name, 0) + 1
+    total = sum(rss.values())
+    ranked = sorted(rss, key=lambda n: -rss[n])[:top]
+    rows = [AppMem(n, rss[n], count[n]) for n in ranked]
+    return rows, total - sum(r.rss_kb for r in rows), total
+
+
 @dataclass(frozen=True)
 class SpikeConfig:
     cpu_pct: float = 300.0  # below cpu-watchdog's 400% throttle, deliberately
@@ -206,7 +289,9 @@ def detect_spike(
         worst = max(hot, key=lambda p: p.cpu_pct or 0.0)
         reasons.append(f"proc {worst.comm} pid={worst.pid} at {worst.cpu_pct:.0f}% cpu")
 
-    nxt.low_idle = nxt.low_idle + 1 if (idle_pct is not None and idle_pct < cfg.idle_pct) else 0
+    nxt.low_idle = (
+        nxt.low_idle + 1 if (idle_pct is not None and idle_pct < cfg.idle_pct) else 0
+    )
     if nxt.low_idle >= cfg.consecutive:
         reasons.append(f"idle {idle_pct}% for {nxt.low_idle} samples")
 
@@ -214,7 +299,10 @@ def detect_spike(
     if nxt.swapping >= cfg.consecutive:
         reasons.append(f"swap-out {swap_out} KB/s for {nxt.swapping} samples")
 
-    if mem.mem_total_kb > 0 and mem.mem_avail_kb * 100 < mem.mem_total_kb * cfg.mem_avail_pct:
+    if (
+        mem.mem_total_kb > 0
+        and mem.mem_avail_kb * 100 < mem.mem_total_kb * cfg.mem_avail_pct
+    ):
         reasons.append(
             f"MemAvailable {mem.mem_avail_kb // 1024}MB is under "
             f"{cfg.mem_avail_pct}% of {mem.mem_total_kb // 1024}MB"

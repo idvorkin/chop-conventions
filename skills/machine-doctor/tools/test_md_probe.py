@@ -5,16 +5,30 @@ Stdlib only — no uv, no typer, no live /proc.
 """
 
 import unittest
+from datetime import datetime
 
 from md_probe import (
     CpuTotals,
+    ProcSample,
+    SpikeConfig,
+    SpikeState,
+    app_name,
+    detect_spike,
+    etime_s,
     idle_pct_between,
+    interval_cpu_pct,
+    mem_by_app,
     parse_cpu_totals,
+    parse_duration,
     parse_loadavg,
     parse_meminfo,
+    parse_pid_stat,
     parse_pswpout,
     redact,
+    render_tree,
+    resolve_at,
     swap_out_kb_s,
+    top_n,
 )
 
 
@@ -102,26 +116,10 @@ class TestSwapOut(unittest.TestCase):
         self.assertEqual(swap_out_kb_s(9999, 3, 10), 0)
 
 
-from datetime import datetime
-
-from md_probe import (
-    PidStat,
-    ProcSample,
-    SpikeConfig,
-    SpikeState,
-    detect_spike,
-    etime_s,
-    interval_cpu_pct,
-    parse_duration,
-    parse_pid_stat,
-    render_tree,
-    resolve_at,
-    top_n,
-)
-
-
 def _proc(pid, cpu=0.0, rss=0, ppid=1, comm="x", etime=100):
-    return ProcSample(pid=pid, ppid=ppid, comm=comm, cpu_pct=cpu, rss_kb=rss, etime_s=etime)
+    return ProcSample(
+        pid=pid, ppid=ppid, comm=comm, cpu_pct=cpu, rss_kb=rss, etime_s=etime
+    )
 
 
 class TestPidStat(unittest.TestCase):
@@ -183,7 +181,9 @@ class TestDetectSpike(unittest.TestCase):
         self.assertEqual(reasons, [])
 
     def test_hot_process_fires_immediately(self):
-        st, reasons = self._detect(SpikeState(), procs=[_proc(9, cpu=400.0, comm="cc1")])
+        st, reasons = self._detect(
+            SpikeState(), procs=[_proc(9, cpu=400.0, comm="cc1")]
+        )
         self.assertTrue(any("cc1" in r for r in reasons))
 
     def test_low_idle_needs_two_consecutive_samples(self):
@@ -237,7 +237,11 @@ class TestTimeParsing(unittest.TestCase):
 
 class TestRenderTree(unittest.TestCase):
     def test_children_indented_under_parents(self):
-        procs = [_proc(1, comm="init"), _proc(20, ppid=1, comm="make"), _proc(21, ppid=20, comm="cc1")]
+        procs = [
+            _proc(1, comm="init"),
+            _proc(20, ppid=1, comm="make"),
+            _proc(21, ppid=20, comm="cc1"),
+        ]
         out = render_tree(procs, {})
         lines = out.splitlines()
         self.assertTrue(lines[0].startswith("1 init"))
@@ -249,6 +253,94 @@ class TestRenderTree(unittest.TestCase):
         out = render_tree(procs, {5: "tmux -e ANTHROPIC_API_KEY=sk-leak123"})
         self.assertNotIn("sk-leak123", out)
         self.assertIn("<redacted>", out)
+
+
+class TestMeminfoSlab(unittest.TestCase):
+    def test_sreclaimable_parsed(self):
+        text = "MemTotal: 100 kB\nMemAvailable: 40 kB\nSReclaimable: 30 kB\n"
+        self.assertEqual(parse_meminfo(text).sreclaimable_kb, 30)
+
+
+class TestAppName(unittest.TestCase):
+    def test_interpreter_named_by_script(self):
+        self.assertEqual(
+            app_name("python3", "/usr/bin/python3.13 /x/serve.py 8778"),
+            "python3:serve.py",
+        )
+        self.assertEqual(
+            app_name("node", "node /a/b/vite.js --port 5173"), "node:vite.js"
+        )
+
+    def test_python_module_and_inline_code(self):
+        self.assertEqual(
+            app_name("python3", "python3 -u -m http.server 8000"), "python3:http.server"
+        )
+        self.assertEqual(app_name("python3", "python3 -c import sys"), "python3")
+
+    def test_uv_run_skips_subcommand_and_flags(self):
+        self.assertEqual(
+            app_name("uv", "uv run --script /s/watch.py run"), "uv:watch.py"
+        )
+
+    def test_families_collapse(self):
+        self.assertEqual(app_name("claude", "claude --resume"), "claude")
+        self.assertEqual(
+            app_name("dolt", "/bin/dolt sql-server --config c.yaml"), "dolt sql-server"
+        )
+        self.assertEqual(
+            app_name(
+                "bundle",
+                "/h/.bundle/ruby/4.0.0/bin/jekyll server --incremental --port 4015",
+            ),
+            "jekyll",
+        )
+        self.assertEqual(app_name("python3", "python3 -m pytest -n 4"), "pytest")
+
+    def test_wrapper_is_not_the_server(self):
+        self.assertEqual(app_name("just", "just jekyll-serve 4015 35815"), "just")
+
+    def test_plain_binary_uses_comm(self):
+        self.assertEqual(
+            app_name("tailscaled", "/usr/sbin/tailscaled --state=x"), "tailscaled"
+        )
+
+
+def _p(pid, rss, comm="x", ppid=1):
+    return ProcSample(pid=pid, ppid=ppid, comm=comm, cpu_pct=0.0, rss_kb=rss, etime_s=1)
+
+
+class TestMemByApp(unittest.TestCase):
+    def test_groups_and_totals_balance(self):
+        procs = [
+            _p(1, 100, "claude"),
+            _p(2, 50, "claude"),
+            _p(3, 30, "sshd"),
+            _p(4, 5, "cat"),
+        ]
+        rows, rest, total = mem_by_app(procs, {}, top=2)
+        self.assertEqual(
+            [(r.name, r.rss_kb, r.count) for r in rows],
+            [("claude", 150, 2), ("sshd", 30, 1)],
+        )
+        self.assertEqual(rest, 5)
+        self.assertEqual(total, 185)
+        self.assertEqual(sum(r.rss_kb for r in rows) + rest, total)
+
+    def test_xdist_workers_inherit_pytest(self):
+        procs = [
+            _p(10, 100, "python3"),
+            _p(11, 40, "python3", ppid=10),
+            _p(12, 40, "python3", ppid=10),
+        ]
+        cmd = {
+            10: "python3 -m pytest -n 2",
+            11: "python3 -c import sys",
+            12: "python3 -c import sys",
+        }
+        rows, _, _ = mem_by_app(procs, cmd)
+        self.assertEqual(
+            [(r.name, r.rss_kb, r.count) for r in rows], [("pytest", 180, 3)]
+        )
 
 
 if __name__ == "__main__":

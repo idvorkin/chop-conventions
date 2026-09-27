@@ -8,15 +8,15 @@ allowed-tools: Bash, Read, Glob, Grep
 
 Diagnose and repair system health. Tiers:
 
-| Invocation                 | Scope                                                                  |
-| -------------------------- | ---------------------------------------------------------------------- |
-| `/machine-doctor`          | Quick vitals — CPU hogs, memory, disk                                  |
-| `/machine-doctor watch`    | Record resource history — adaptive sampling, spike dumps               |
-| `/machine-doctor report`   | Who has been hot over the last N hours (needs a prior `watch`)         |
-| `/machine-doctor gastown`  | Gas Town (`gt`) agent shutdown and cleanup                             |
-| `/machine-doctor gascity`  | Gas City (`gc`) leak hunt — now `snapshot --profile gascity`           |
-| `/machine-doctor guards`   | Set up / verify two-layer CPU guard (OrbStack VM cap + in-VM watchdog) |
-| `/machine-doctor deep`     | Full probe — git locks, orphaned worktrees, stale servers, MCP         |
+| Invocation                | Scope                                                                  |
+| ------------------------- | ---------------------------------------------------------------------- |
+| `/machine-doctor`         | Quick vitals — CPU hogs, memory, disk                                  |
+| `/machine-doctor watch`   | Record resource history — adaptive sampling, spike dumps               |
+| `/machine-doctor report`  | Who has been hot over the last N hours (needs a prior `watch`)         |
+| `/machine-doctor gastown` | Gas Town (`gt`) agent shutdown and cleanup                             |
+| `/machine-doctor gascity` | Gas City (`gc`) leak hunt — now `snapshot --profile gascity`           |
+| `/machine-doctor guards`  | Set up / verify two-layer CPU guard (OrbStack VM cap + in-VM watchdog) |
+| `/machine-doctor deep`    | Full probe — git locks, orphaned worktrees, stale servers, MCP         |
 
 Always start with **Step 0: Platform Detection**, then run the requested tier.
 
@@ -86,6 +86,8 @@ procs --sortd cpu | head -20
 
 Flag Claude processes, node processes, and dolt/jekyll servers specifically.
 
+**Load far above `nproc` with high `%sy` and lots of niced CPU is a fan-out, not one hog.** No single row looks guilty, so attribute by parent chain: `/usr/bin/ps -o pid,ppid,etime,args -p <PID>` and walk `ppid` up until you hit the thing that started it. Typical culprits: a pre-commit hook running `pytest -n N` plus a JS test runner, or a loop of `bd` calls hammering the repo's `dolt sql-server` — for the latter, find who is calling `bd` rather than blaming dolt.
+
 ### 1b. Memory
 
 ```bash
@@ -93,11 +95,14 @@ Flag Claude processes, node processes, and dolt/jekyll servers specifically.
 vm_stat | head -10
 sysctl hw.memsize
 
-# Linux
-free -h
+# Linux: RSS grouped by app, top rows + "everything else" + TOTAL
+skills/machine-doctor/tools/machine_doctor.py mem
 ```
 
-Flag if available memory is under 500MB.
+Flag if available memory is under 500MB. When asked "what's using memory", answer **by app, not by PID**, with a TOTAL row: `mem` collapses claude sessions, pytest workers, jekyll previews and `dolt sql-server`s into one row each and names bare interpreters by their script (`python3:serve.py`).
+
+- **`used` in `free -h` exceeding summed RSS is kernel memory, not a leak** — mostly `SReclaimable` slab (dentry/inode cache), which the kernel drops under pressure. `mem` prints the gap and the slab size side by side.
+- **"Can we compact memory?" — not from inside an OrbStack container.** `/proc/sys` is mounted read-only, so `compact_memory` / `drop_caches` fail even with sudo, and `swapoff`/`swapon` are restricted too. The only in-VM lever is stopping processes; returning memory to the Mac is OrbStack's job. Swap still in use after a spike has passed is harmless residue.
 
 ### 1c. Disk
 
@@ -251,6 +256,7 @@ skills/machine-doctor/tools/machine_doctor.py watch                 # 30s sample
 skills/machine-doctor/tools/machine_doctor.py report --since 6h     # who has been hot, grouped by comm
 skills/machine-doctor/tools/machine_doctor.py at 07:16              # what was running then
 skills/machine-doctor/tools/machine_doctor.py snapshot              # right now + generic leak checks
+skills/machine-doctor/tools/machine_doctor.py mem                   # RSS by app with TOTAL (Tier 1b)
 ```
 
 Key behaviors:
@@ -285,7 +291,7 @@ skills/machine-doctor/tools/machine_doctor.py snapshot --profile gascity   # exi
 **The runbook lives in a separate file to keep SKILL.md lean.** When the user invokes
 `/machine-doctor gascity` — or Tier 1a shows `gc`/`dolt` processes on a box where
 no city should be running — Read [`doctor-gascity.md`](./doctor-gascity.md) for the
-shutdown order, orphaned-tmux cleanup, the credentials-in-argv exposure, what *not* to
+shutdown order, orphaned-tmux cleanup, the credentials-in-argv exposure, what _not_ to
 kill, and the gotchas (`ps` alias, self-matching `pkill`, load-average vs CPU-idle).
 
 ---
@@ -348,7 +354,14 @@ pgrep -af 'dolt sql-server' 2>&1
 pgrep -af 'node.*serve' 2>&1
 ```
 
-Report running servers and whether they're responding. Offer to kill unresponsive ones.
+Report running servers and whether they're responding. Offer to kill unresponsive ones. `snapshot` flags the first two leak patterns below automatically:
+
+- **Server whose `/proc/<PID>/cwd` reads `… (deleted)`** — its worktree was removed under it; nothing can reach it. Strongest kill signal.
+- **`jekyll serve` previews more than a day old** — agents start one per blog worktree (100–250MB each) and never stop them.
+- **Duplicate concurrent `pytest -n N` runs in the same worktree** — one is abandoned; compare `etime` and kill the older.
+- **Idle per-repo `dolt sql-server` for scratch or deleted dirs** — `bd` starts these on demand and leaves them running.
+
+**jekyll ignores SIGTERM; SIGINT stops it** (and its `just`/`bash` wrappers exit with it). Kill escalation is TERM → INT → KILL.
 
 ### 3d. MCP Servers
 
@@ -458,4 +471,4 @@ Verify with `top -o cpu` or Activity Monitor.
 - **Never kill processes without reporting what they are first.** Show the user what you found and ask before killing (except Gas Town when explicitly requested).
 - **Never remove git locks without checking lsof.** A held lock means a process is actively using it.
 - **Never prune worktrees with uncommitted changes.** Report and let the user decide.
-- **Prefer graceful shutdown over kill -9.** Escalate force only when graceful fails.
+- **Prefer graceful shutdown over kill -9.** Escalate TERM → INT → KILL, checking between steps; some servers (jekyll) only honor INT.
