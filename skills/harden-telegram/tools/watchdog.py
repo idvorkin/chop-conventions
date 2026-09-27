@@ -10,10 +10,9 @@ Telegram MCP watchdog — auto-recover Claude Code's Telegram plugin.
 
 When the bun process running server.ts dies, this watchdog detects the death
 and sends /reload-plugins into Claude Code's tmux pane via tmux send-keys.
-The reloaded plugin spawns a new bun process, which spawns a new watchdog,
-so the old one exits (self-replacing chain).
+The watchdog adopts a verified replacement bridge and continues supervising.
 
-Spawned by server.ts as a detached process. Accepts context via env vars:
+Optional daemon mode accepts context via env vars:
   WATCHDOG_BUN_PID     - PID of the bun process to monitor
   WATCHDOG_CLAUDE_PID  - PID of the Claude Code process
   WATCHDOG_TMUX_PANE   - tmux pane identifier (e.g. %3)
@@ -36,6 +35,7 @@ PID_FILE = os.path.join(
 POLL_INTERVAL = 5  # seconds between liveness checks
 SETTLE_DELAY = 2  # seconds to wait after bun death before recovery
 NEW_BUN_TIMEOUT = 60  # seconds to wait for new bun to appear
+
 
 # Sentinel returned by _resolve_pane_via_rmux_helper when the caller should
 # fall back to the Python walker. Distinct from None (which is a *definitive*
@@ -345,26 +345,38 @@ def tmux_send_keys(pane: str, *keys: str) -> bool:
         return False
 
 
-def wait_for_new_bun(timeout: int = NEW_BUN_TIMEOUT) -> bool:
-    """Wait for a new bun server.ts process to appear."""
+def bridge_pids(claude_pid: int) -> set[int]:
+    """Reuse the doctor's Telegram-path and Claude-ancestry checks."""
+    from telegram_debug import _find_telegram_bridge_pids, _find_owning_claude
+
+    candidates = _find_telegram_bridge_pids()
+    if isinstance(candidates, str):
+        return set()
+    return {pid for pid in candidates if _find_owning_claude(pid) == claude_pid}
+
+
+def claude_for_pane(pane: str) -> int | None:
+    from telegram_debug import check_claude_sessions
+
+    matches = [
+        int(row["pid"])
+        for row in check_claude_sessions()
+        if str(row["pid"]).isdigit() and resolve_pane_for_pid(int(row["pid"])) == pane
+    ]
+    return matches[0] if len(matches) == 1 else None
+
+
+def wait_for_new_bun(
+    claude_pid: int, previous: set[int], timeout: int = NEW_BUN_TIMEOUT
+) -> int | None:
+    """Return a new Telegram bridge owned by the selected Claude session."""
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
-        try:
-            result = subprocess.run(
-                ["pgrep", "-f", "bun.*server.ts"],
-                capture_output=True,
-                text=True,
-                timeout=5,
-            )
-            if result.returncode == 0 and result.stdout.strip():
-                log(
-                    f"new bun process detected: PID {result.stdout.strip().splitlines()[0]}"
-                )
-                return True
-        except (subprocess.TimeoutExpired, FileNotFoundError):
-            pass
+        fresh = bridge_pids(claude_pid) - previous
+        if len(fresh) == 1:
+            return fresh.pop()
         time.sleep(2)
-    return False
+    return None
 
 
 def wait_for_idle_prompt(tmux_pane: str, timeout: int = 30) -> bool:
@@ -385,52 +397,20 @@ def wait_for_idle_prompt(tmux_pane: str, timeout: int = 30) -> bool:
 
 
 def do_recovery(tmux_pane: str) -> bool:
-    """Execute the recovery sequence via tmux send-keys."""
-    log("starting recovery sequence")
-
-    # Step 1: Let Claude notice the disconnect
-    log("waiting 2s for Claude to notice disconnect")
-    time.sleep(SETTLE_DELAY)
-
-    # Step 2: Escape x2 to cancel generation + dismiss any prompts
-    log("sending Escape x2 + Enter x3 to clear state")
-    tmux_send_keys(tmux_pane, "Escape")
-    time.sleep(0.3)
-    tmux_send_keys(tmux_pane, "Escape")
-    time.sleep(0.3)
-    # Enter x3 to dismiss any queued input or confirmation prompts
-    tmux_send_keys(tmux_pane, "Enter")
-    time.sleep(0.3)
-    tmux_send_keys(tmux_pane, "Enter")
-    time.sleep(0.3)
-    tmux_send_keys(tmux_pane, "Enter")
-    time.sleep(0.5)
-
-    # Step 3: Wait for Claude to return to idle prompt
-    log("waiting for idle prompt...")
-    if not wait_for_idle_prompt(tmux_pane, timeout=30):
-        log("Claude not idle after 30s — trying /reload-plugins anyway")
-
-    # Step 4: Clear any text in the input box, then send /reload-plugins
-    tmux_send_keys(tmux_pane, "C-u")  # Ctrl-U clears the input line
-    time.sleep(0.3)
-    log("sending /reload-plugins")
-    if not tmux_send_keys(tmux_pane, "/reload-plugins", "Enter"):
-        log("failed to send /reload-plugins")
+    """Reload only a verified, idle Claude pane and verify a fresh bridge."""
+    owner = claude_for_pane(tmux_pane)
+    if owner is None:
+        log("cannot verify Claude ownership of pane; refusing recovery")
         return False
-
-    # Step 5: Wait for reload and verify it ran
-    log("waiting for reload to complete...")
-    deadline = time.monotonic() + 15
-    while time.monotonic() < deadline:
-        capture = tmux_capture_pane(tmux_pane)
-        if "Reloaded:" in capture:
-            log("confirmed: /reload-plugins executed successfully")
-            return True
-        time.sleep(1)
-
-    log("could not confirm /reload-plugins ran — 'Reloaded:' not found in pane")
-    return False
+    previous = bridge_pids(owner)
+    if not wait_for_idle_prompt(tmux_pane, timeout=30):
+        return False
+    if claude_for_pane(tmux_pane) != owner:
+        return False
+    if not tmux_send_keys(tmux_pane, "/reload-plugins", "Enter"):
+        return False
+    # Old scrollback is never evidence of this attempt's success.
+    return wait_for_new_bun(owner, previous) is not None
 
 
 def tmux_active_pane() -> str:
@@ -461,24 +441,8 @@ def tmux_active_pane() -> str:
 
 
 def detect_tmux_pane() -> str:
-    """Detect the tmux pane containing the caller.
-
-    Prefers parent-PID chain resolution (derives the answer from the
-    kernel process tree, so it survives backgrounding, disown, and
-    stale `TMUX_PANE`). Falls back to unscoped `display-message` only
-    if the walk can't resolve a pane. Logs which path was taken so
-    failures surface.
-    """
-    resolved = resolve_pane_for_pid(os.getpid())
-    if resolved:
-        log(f"resolved pane {resolved} from parent chain (pid {os.getpid()})")
-        return resolved
-    fallback = tmux_active_pane()
-    if fallback:
-        log(
-            f"could not resolve pane from parent chain, falling back to tmux active pane {fallback}"
-        )
-    return fallback
+    """Fail closed when the caller's process ancestry has no owning pane."""
+    return resolve_pane_for_pid(os.getpid()) or ""
 
 
 def find_claude_pid() -> int | None:
@@ -530,7 +494,7 @@ def tmux_capture_pane(pane: str) -> str:
     return ""
 
 
-def cmd_reload(tmux_pane: str | None = None, message: str | None = None) -> None:
+def cmd_reload(tmux_pane: str | None = None, message: str | None = None) -> bool:
     """Send /reload-plugins to Claude's tmux pane. Full live test."""
     pane = tmux_pane or detect_tmux_pane()
     if not pane:
@@ -600,6 +564,7 @@ def cmd_reload(tmux_pane: str | None = None, message: str | None = None) -> None
         log(f"could not write state file: {e}")
 
     log("=== Reload Test Complete ===")
+    return success
 
 
 def _build_app():
@@ -643,7 +608,8 @@ def _build_app():
         if not resolved_pane:
             log("ERROR: no pane specified and auto-detect failed. Use --pane or --pid.")
             raise typer.Exit(1)
-        cmd_reload(resolved_pane, message=message)
+        if not cmd_reload(resolved_pane, message=message):
+            raise typer.Exit(1)
 
     @app.command()
     def daemon() -> None:
@@ -668,7 +634,9 @@ def _build_app():
             log(f"invalid PID values: bun={bun_pid_str!r} claude={claude_pid_str!r}")
             raise typer.Exit(1)
 
-        log(f"starting: bun_pid={bun_pid} claude_pid={claude_pid} tmux_pane={tmux_pane}")
+        log(
+            f"starting: bun_pid={bun_pid} claude_pid={claude_pid} tmux_pane={tmux_pane}"
+        )
 
         # --- Singleton ---
         if not acquire_singleton():
@@ -698,19 +666,18 @@ def _build_app():
                 if not is_pid_alive(bun_pid):
                     log(f"bun process (PID {bun_pid}) is dead!")
 
+                    if resolve_pane_for_pid(claude_pid) != tmux_pane:
+                        log("pane ownership changed; refusing recovery")
+                        continue
                     if do_recovery(tmux_pane):
-                        log("recovery sequence sent, waiting for new bun process")
-                        if wait_for_new_bun():
+                        replacements = bridge_pids(claude_pid)
+                        if len(replacements) == 1:
+                            bun_pid = replacements.pop()
                             log(
-                                "new bun process started — new watchdog will take over, exiting"
+                                f"adopted replacement bridge {bun_pid}; continuing supervision"
                             )
-                        else:
-                            log("no new bun process appeared within timeout")
                     else:
-                        log("recovery sequence failed")
-                    # Either way, exit — if recovery worked, new watchdog replaces us;
-                    # if it failed, we can't do more.
-                    break
+                        log("recovery failed; will retry on the next check")
         finally:
             cleanup_pid_file()
 

@@ -25,6 +25,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import contextlib
+import copy
 import datetime as _dt
 import fcntl
 import json
@@ -159,6 +160,59 @@ def save_access(access: dict[str, Any]) -> None:
     os.replace(tmp, p)
 
 
+_static_access: dict[str, Any] | None = None
+
+
+def initialize_access() -> None:
+    """Freeze the inbound policy at startup when static mode is requested."""
+    global _static_access
+    _static_access = None
+    if os.environ.get("TELEGRAM_ACCESS_MODE") == "static":
+        _static_access = copy.deepcopy(load_access())
+        if _static_access["dmPolicy"] == "pairing":
+            _static_access["dmPolicy"] = "allowlist"
+        _static_access["pending"] = {}
+
+
+def effective_access() -> dict[str, Any]:
+    return (
+        copy.deepcopy(_static_access) if _static_access is not None else load_access()
+    )
+
+
+def permission_sender_allowed(chat_type: str, sender_id: str) -> bool:
+    access = effective_access()
+    return (
+        chat_type == "private"
+        and access["dmPolicy"] != "disabled"
+        and sender_id in access["allowFrom"]
+    )
+
+
+def mentions_bot(msg: Any, bot_username: str, bot_id: int | None) -> bool:
+    reply = getattr(msg, "reply_to_message", None)
+    author = getattr(reply, "from_user", None)
+    if bot_id is not None and getattr(author, "id", None) == bot_id:
+        return True
+    for field, entities_field in (
+        ("text", "entities"),
+        ("caption", "caption_entities"),
+    ):
+        text = getattr(msg, field, None) or ""
+        for entity in getattr(msg, entities_field, None) or []:
+            if entity.type == "text_mention" and bot_id is not None:
+                if getattr(getattr(entity, "user", None), "id", None) == bot_id:
+                    return True
+            if entity.type == "mention" and bot_username:
+                # Telegram entity offsets are UTF-16 code units.
+                value = text.encode("utf-16-le")[
+                    entity.offset * 2 : (entity.offset + entity.length) * 2
+                ].decode("utf-16-le")
+                if value.casefold() == f"@{bot_username}".casefold():
+                    return True
+    return False
+
+
 def gate_message(evt: dict[str, Any]) -> dict[str, Any]:
     """Port of server.ts:gate() — evaluate allowlist + pairing for an inbound event.
 
@@ -167,7 +221,7 @@ def gate_message(evt: dict[str, Any]) -> dict[str, Any]:
     For pair: also {"code": str, "isResend": bool}.
     For allow in a group: also {"require_mention": bool}.
     """
-    access = load_access()
+    access = effective_access()
     # prune expired pending
     now_ms = int(time.time() * 1000)
     changed = False
@@ -530,10 +584,11 @@ def main() -> None:
             pass
         return
 
-    asyncio.run(run())
+    os.environ["LARRY_TELEGRAM_DIR"] = str(base)
+    asyncio.run(run(base))
 
 
-async def run() -> None:
+async def run(base: Path) -> None:
     """Main asyncio entry — wires python-telegram-bot Application and polls forever."""
     import aiosqlite
     from telegram.ext import (
@@ -545,9 +600,7 @@ async def run() -> None:
     )
 
     token = read_env_token()
-    base = Path(
-        os.environ.get("LARRY_TELEGRAM_DIR", str(Path.home() / "larry-telegram"))
-    ).expanduser()
+    initialize_access()
     base.mkdir(parents=True, exist_ok=True)
     db_path = base / "inbound.db"
     init_db_sync(db_path)
@@ -566,6 +619,7 @@ async def run() -> None:
         await state["db"].execute("PRAGMA journal_mode=WAL")
         me = await app.bot.get_me()
         state["bot_username"] = me.username or ""
+        state["bot_id"] = me.id
         # Bind Unix domain socket for wakeup signaling.
         sock_path = base / "bot.sock"
         state["socket_server"] = await start_socket_server(sock_path)
@@ -882,7 +936,7 @@ async def cmd_start(update: "Update", ctx: "ContextTypes.DEFAULT_TYPE") -> None:
     msg = update.effective_message
     if msg is None or msg.chat.type != "private":
         return
-    access = load_access()
+    access = effective_access()
     if access["dmPolicy"] == "disabled":
         await ctx.bot.send_message(
             chat_id=msg.chat.id,
@@ -930,7 +984,7 @@ async def cmd_status(update: "Update", ctx: "ContextTypes.DEFAULT_TYPE") -> None
     if user is None:
         return
     sender_id = str(user.id)
-    access = load_access()
+    access = effective_access()
 
     if sender_id in access["allowFrom"]:
         name = f"@{user.username}" if user.username else sender_id
@@ -999,13 +1053,19 @@ async def handle_any_message(
     gate_res = gate_message(evt)
     state = ctx.application.bot_data["state"]
     db = state["db"]
+    if gate_res.get("require_mention") and not mentions_bot(
+        msg, state.get("bot_username", ""), state.get("bot_id")
+    ):
+        gate_res = {"action": "drop"}
 
     # Classify message_type. Permission replies (e.g. "yes abcde") only count
     # once the sender has cleared the gate — mirrors server.ts which runs the
     # permission intercept *after* gate() returns deliver.
     message_type = "message"
     perm_match = None
-    if gate_res["action"] == "allow":
+    if gate_res["action"] == "allow" and permission_sender_allowed(
+        msg.chat.type, evt["from_id"]
+    ):
         perm_match = PERMISSION_REPLY_RE.match(evt["text"] or "")
         if perm_match:
             message_type = "permission_reply"
@@ -1166,10 +1226,11 @@ async def handle_callback_query(
             pass
         return
 
-    access = load_access()
     user = update.effective_user
     sender_id = str(user.id) if user else ""
-    if sender_id not in access["allowFrom"]:
+    if not permission_sender_allowed(
+        getattr(getattr(cq.message, "chat", None), "type", ""), sender_id
+    ):
         try:
             await cq.answer(text="Not authorized.")
         except Exception:

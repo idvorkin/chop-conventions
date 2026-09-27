@@ -170,105 +170,36 @@ class TestTmuxSendKeys(unittest.TestCase):
 
 
 class TestRecoverySequence(unittest.TestCase):
-    """Tests for the recovery sequence with mocked tmux."""
+    def test_idle_timeout_never_sends_keys(self):
+        with (
+            patch("watchdog.claude_for_pane", return_value=100),
+            patch("watchdog.bridge_pids", return_value={200}),
+            patch("watchdog.wait_for_idle_prompt", return_value=False),
+            patch("watchdog.tmux_send_keys") as send,
+        ):
+            self.assertFalse(watchdog.do_recovery("%3"))
+            send.assert_not_called()
 
-    @patch("watchdog.tmux_capture_pane", return_value="  ❯ \n")
-    @patch("watchdog.time.sleep")
-    @patch("watchdog.time.monotonic")
-    @patch("watchdog.tmux_send_keys")
-    def test_full_recovery_sequence(
-        self, mock_send, mock_mono, mock_sleep, mock_capture
-    ):
-        """Should send Escape x2, Enter x3, C-u, /reload-plugins and verify Reloaded:."""
-        mock_send.return_value = True
-        # For wait_for_idle_prompt + reload confirmation loops
-        mock_mono.side_effect = [0, 1, 0, 1]
-        mock_capture.return_value = "  ❯ \nReloaded: 5 plugins\n"
-
-        result = watchdog.do_recovery("%3")
-        self.assertTrue(result)
-
-        # Escape x2 cancels generation, Enter x3 dismisses prompts, C-u clears the
-        # input line, then /reload-plugins with Enter as a separate arg.
-        self.assertEqual(
-            [c.args for c in mock_send.call_args_list],
-            [("%3", "Escape")] * 2
-            + [("%3", "Enter")] * 3
-            + [("%3", "C-u"), ("%3", "/reload-plugins", "Enter")],
-        )
-
-    @patch("watchdog.tmux_capture_pane", return_value="")
-    @patch("watchdog.time.sleep")
-    @patch("watchdog.time.monotonic")
-    @patch("watchdog.tmux_send_keys")
-    def test_clearing_keys_failing_is_not_fatal_but_the_reload_is(
-        self, mock_send, mock_mono, mock_sleep, mock_capture
-    ):
-        """A failed clearing key does not stop recovery; the /reload-plugins send decides."""
-        mock_send.return_value = False
-        mock_mono.side_effect = [0, 100]  # wait_for_idle_prompt times out at once
-
-        result = watchdog.do_recovery("%3")
-        self.assertFalse(result)
-        self.assertEqual(
-            mock_send.call_args_list[-1].args, ("%3", "/reload-plugins", "Enter")
-        )
-
-    @patch("watchdog.tmux_capture_pane", return_value="  ❯ \n")
-    @patch("watchdog.time.sleep")
-    @patch("watchdog.time.monotonic")
-    @patch("watchdog.tmux_send_keys")
-    def test_recovery_aborts_on_reload_failure(
-        self, mock_send, mock_mono, mock_sleep, mock_capture
-    ):
-        """Should abort if /reload-plugins send fails."""
-        mock_mono.side_effect = [0, 1]  # for wait_for_idle_prompt
-        # Escape x2, Enter x3 and C-u ok, reload fails
-        mock_send.side_effect = [True] * 6 + [False]
-
-        result = watchdog.do_recovery("%3")
-        self.assertFalse(result)
-
-    @patch("watchdog.tmux_capture_pane", return_value="  ❯ \nReloaded: 5 plugins\n")
-    @patch("watchdog.time.sleep")
-    @patch("watchdog.time.monotonic")
-    @patch("watchdog.tmux_send_keys")
-    def test_recovery_verifies_reloaded(
-        self, mock_send, mock_mono, mock_sleep, mock_capture
-    ):
-        """Should verify 'Reloaded:' appears in tmux capture."""
-        mock_send.return_value = True
-        mock_mono.side_effect = [0, 1, 0, 1]
-
-        result = watchdog.do_recovery("%3")
-        self.assertTrue(result)
+    def test_send_failure_never_waits_for_replacement(self):
+        with (
+            patch("watchdog.claude_for_pane", return_value=100),
+            patch("watchdog.bridge_pids", return_value={200}),
+            patch("watchdog.wait_for_idle_prompt", return_value=True),
+            patch("watchdog.tmux_send_keys", return_value=False),
+            patch("watchdog.wait_for_new_bun") as wait,
+        ):
+            self.assertFalse(watchdog.do_recovery("%3"))
+            wait.assert_not_called()
 
 
 class TestWaitForNewBun(unittest.TestCase):
-    """Tests for wait_for_new_bun with mocked subprocess."""
-
-    @patch("watchdog.time.sleep")
-    @patch("watchdog.time.monotonic")
-    @patch("watchdog.subprocess.run")
-    def test_bun_appears_immediately(self, mock_run, mock_mono, mock_sleep):
-        """Should return True when new bun process is found."""
-        mock_mono.side_effect = [0, 1]  # start, first check
-        mock_run.return_value = MagicMock(returncode=0, stdout="12345\n")
-
-        result = watchdog.wait_for_new_bun(timeout=10)
-        self.assertTrue(result)
-
-    @patch("watchdog.time.sleep")
-    @patch("watchdog.time.monotonic")
-    @patch("watchdog.subprocess.run")
-    def test_bun_never_appears(self, mock_run, mock_mono, mock_sleep):
-        """Should return False after timeout when no bun appears."""
-        # monotonic: start=0, then always past deadline
-        mock_mono.side_effect = [0, 100]
-        mock_run.return_value = MagicMock(returncode=1, stdout="")
-
-        result = watchdog.wait_for_new_bun(timeout=10)
-        self.assertFalse(result)
+    def test_existing_bridge_is_not_a_replacement(self):
+        with (
+            patch("watchdog.time.sleep"),
+            patch("watchdog.time.monotonic", side_effect=[0, 1, 20]),
+            patch("watchdog.bridge_pids", return_value={200}),
+        ):
+            self.assertIsNone(watchdog.wait_for_new_bun(100, {200}, timeout=10))
 
 
 class TestDaemonEntryValidation(unittest.TestCase):
