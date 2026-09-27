@@ -1,6 +1,6 @@
 ---
 name: machine-doctor
-description: Diagnose and fix system health issues — rogue processes, Gas Town and Gas City runaway agents, resource exhaustion, stale dev servers, and orphaned git state — plus historical forensics ("who was hot at 7:16?") via the vendored machine_doctor.py recorder. Use when the machine is slow, unresponsive, or something feels wrong — now or earlier.
+description: Diagnose and fix system health issues — rogue processes, Gas Town and Gas City runaway agents, resource exhaustion, macOS DNS/network failures, stale dev servers, and orphaned git state — plus historical forensics ("who was hot at 7:16?") via the vendored machine_doctor.py recorder. Use when the machine is slow, unresponsive, or something feels wrong — now or earlier.
 allowed-tools: Bash, Read, Glob, Grep
 ---
 
@@ -16,6 +16,7 @@ Diagnose and repair system health. Tiers:
 | `/machine-doctor gastown` | Gas Town (`gt`) agent shutdown and cleanup                             |
 | `/machine-doctor gascity` | Gas City (`gc`) leak hunt — now `snapshot --profile gascity`           |
 | `/machine-doctor guards`  | Set up / verify two-layer CPU guard (OrbStack VM cap + in-VM watchdog) |
+| `/machine-doctor network` | macOS DNS and API connectivity diagnosis and recovery                  |
 | `/machine-doctor deep`    | Full probe — git locks, orphaned worktrees, stale servers, MCP         |
 
 Always start with **Step 0: Platform Detection**, then run the requested tier.
@@ -301,6 +302,16 @@ kill, and the gotchas (`ps` alias, self-matching `pkill`, load-average vs CPU-id
 Set up or verify the two-layer CPU guard for Igor's OrbStack Linux VM. Layer 1 is a Mac-side hypervisor cap (`orb config set cpu <N>`). Layer 2 is an in-VM reactive watchdog (`cpu-watchdog.sh` from [idvorkin/Settings](https://github.com/idvorkin/Settings/blob/main/shared/cpu-watchdog.sh)) that attaches `cpulimit` to runaway processes.
 
 **This tier lives in a separate file to keep SKILL.md lean.** When the user invokes `/machine-doctor guards`, or when Tier 1e reports the guards as missing, Read [`doctor-guards.md`](./doctor-guards.md) in this directory for the full runbook — why the canonical `systemd-run --scope` approach doesn't work on OrbStack, Layer 1 / Layer 2 setup recipes, the `~/.zshrc` boot hook, the smoke test, and caveats.
+
+---
+
+## Tier: macOS Networking (`/machine-doctor network`)
+
+For network failures on a Mac, including Claude Code API lookup failures while other
+sites work, read [doctor-network.md](./doctor-network.md). It covers the read-only
+`tools/network_doctor.py` diagnostic, local DNS cache recovery, sandbox restrictions,
+and verification after repair. Route networking complaints here after platform
+detection, even when the user does not name this tier.
 
 ---
 
