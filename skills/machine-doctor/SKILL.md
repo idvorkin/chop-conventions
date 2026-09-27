@@ -101,7 +101,7 @@ skills/machine-doctor/tools/machine_doctor.py mem
 
 Flag if available memory is under 500MB. When asked "what's using memory", answer **by app, not by PID**, with a TOTAL row: `mem` collapses claude sessions, pytest workers, jekyll previews and `dolt sql-server`s into one row each and names bare interpreters by their script (`python3:serve.py`).
 
-- **`used` in `free -h` exceeds summed RSS — that gap is mostly `SReclaimable` slab** (dentry/inode cache), not a leak; `mem` prints it. The kernel drops it under pressure.
+- **`used` in `free -h` exceeding summed RSS is kernel memory, not a leak** — mostly `SReclaimable` slab (dentry/inode cache), which the kernel drops under pressure. `mem` prints the gap and the slab size side by side.
 - **"Can we compact memory?" — not from inside an OrbStack container.** `/proc/sys` is mounted read-only, so `compact_memory` / `drop_caches` fail even with sudo, and `swapoff`/`swapon` are restricted too. The only in-VM lever is stopping processes; returning memory to the Mac is OrbStack's job. Swap still in use after a spike has passed is harmless residue.
 
 ### 1c. Disk

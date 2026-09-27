@@ -480,12 +480,16 @@ def _build_app():
             print(f"{r.name[:32]:<32} {mb(r.rss_kb):>10} {r.count:>6}")
         print(f"{'everything else':<32} {mb(rest_kb):>10}")
         print(f"{'TOTAL (sum of RSS)':<32} {mb(total_kb):>10}")
+        gap_kb = used_kb - total_kb
         print(
             f"\nused (MemTotal-MemAvailable) {mb(used_kb)} of {mb(mi.mem_total_kb)}; "
-            f"reclaimable slab {mb(mi.sreclaimable_kb)}. "
-            "used minus RSS is mostly that slab (dentry/inode cache), not a leak; "
-            "RSS double-counts shared pages."
+            f"used minus RSS {mb(gap_kb)}; reclaimable slab {mb(mi.sreclaimable_kb)}."
         )
+        if gap_kb > 0:
+            print(
+                "used beyond RSS is kernel memory (slab, page tables, shmem), not a "
+                "process leak; RSS double-counts shared pages."
+            )
 
     @app.command()
     def snapshot(
