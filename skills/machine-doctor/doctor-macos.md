@@ -45,6 +45,11 @@ most of the host's RAM**, the guest fills it (builds, test runners, file
 watchers), and the host swaps. `snapshot` warns when a VM cap exceeds half of
 host RAM.
 
+`snapshot` never starts OrbStack: it runs `orb status` first and reads the cap
+(`orb config show`) and `docker stats` only when that says Running. A stopped
+VM is skipped silently. Those commands can boot it, so run them by hand only
+when a running VM is acceptable.
+
 ```bash
 orb config show | grep -E '^(cpu|memory_mib):'     # the caps
 docker stats --no-stream                           # which container

@@ -338,8 +338,18 @@ def _socket_live(name: str) -> bool:
         return False
 
 
-def _orbstack_mem_mib() -> dict[str, int]:
+def _orbstack_running() -> bool | None:
+    """None when the orb CLI is absent, else whether `orb status` says Running.
+    `orb status` is the one orb command that never starts the VM — `orb config
+    show`, `orb list` and docker under OrbStack can all boot a stopped 12GB VM,
+    and a diagnostic must not change what it diagnoses."""
     if not shutil.which("orb"):
+        return None
+    return _run(["orb", "status"], timeout=10).strip() == "Running"
+
+
+def _orbstack_mem_mib() -> dict[str, int]:
+    if not _orbstack_running():
         return {}
     m = re.search(
         r"^memory_mib:\s*(\d+)", _run(["orb", "config", "show"], timeout=10), re.M
@@ -392,6 +402,8 @@ def read_containers() -> list[str]:
     says the VM is busy; this says which container inside it."""
     if not shutil.which("docker"):
         return []
+    if IS_DARWIN and _orbstack_running() is False:
+        return []  # docker would wake the stopped OrbStack VM
     out = _run(
         [
             "docker",
