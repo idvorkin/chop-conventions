@@ -39,6 +39,14 @@ def ipv4_answers(output):
     return addresses
 
 
+HOST_LABEL = re.compile(r"[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?")
+
+
+def valid_hostname(host):
+    labels = host.split(".")
+    return len(host) <= 253 and all(HOST_LABEL.fullmatch(label) for label in labels)
+
+
 def classify(https, dns):
     if https["code"] == 0 and re.fullmatch(r"[1-5][0-9]{2}", https["output"]):
         return (
@@ -113,7 +121,6 @@ def diagnose(host, server):
 
 def _build_app():
     import typer
-    from rich import print as rich_print
 
     app = typer.Typer()
 
@@ -121,9 +128,9 @@ def _build_app():
     def main(host: str = "api.anthropic.com", dns_server: str = "1.1.1.1"):
         """Compare Mac application lookup with direct DNS, without changing settings."""
         if platform.system() != "Darwin":
-            rich_print("[red]Run this diagnostic on the affected Mac host.[/red]")
+            typer.echo("Run this diagnostic on the affected Mac host.", err=True)
             raise typer.Exit(2)
-        if not re.fullmatch(r"[A-Za-z0-9](?:[A-Za-z0-9.-]{0,251}[A-Za-z0-9])?", host):
+        if not valid_hostname(host):
             raise typer.BadParameter("Use a DNS hostname, without a URL or port.")
         try:
             ipaddress.ip_address(dns_server)
