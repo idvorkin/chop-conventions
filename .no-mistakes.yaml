@@ -1,0 +1,96 @@
+# no-mistakes gate config. commands, review, document, protected_paths and no_ci
+# are read only from the default branch, so changes here take effect once merged.
+#
+# This repo ships to every opted-in machine: claude-md/ fragments are @-imported into
+# ~/.claude/CLAUDE.md and skills/ are symlinked into ~/.claude/skills, so a bad merge
+# lands everywhere on the next /up-to-date.
+
+commands:
+  # Every skill's test_*.py under pytest (`just test` = `just fast-test`), ~6 s.
+  # Not covered: the bun suites in skills/harden-telegram/server/tests/*.ts (no just target;
+  # bun is not installed on every machine) and the `slow` two-process kill-test.
+  test: "just test"
+  # The pre-commit hooks on the branch's own diff. `test` is skipped because
+  # commands.test runs it; `biome-check` is skipped because there is no biome config,
+  # so its defaults (tabs, semicolons, double quotes) would rewrite all of server.ts.
+  lint: "SKIP=test,biome-check pre-commit run --from-ref \"$(git merge-base HEAD origin/main)\" --to-ref HEAD"
+
+# CI exists but runs no tests: .github/workflows/claude-code-review.yml posts a Claude
+# review comment on every PR, claude.yml answers @claude mentions.
+
+ignore_patterns:
+  - "zz-chop-logs/**"
+  - "copied_prompts/**"
+  - "bun.lock"
+  - "server.ts.pre-split"
+
+# Shipped-everywhere surfaces: an automatic fix commit touching these parks for Igor.
+protected_paths:
+  - "claude-md/**"
+  - ".github/workflows/**"
+
+review:
+  path_instructions:
+    - path: "claude-md/**"
+      instructions: |
+        These fragments are shipped, not documentation: /up-to-date symlinks them into
+        ~/.claude/claude-md/ and every machine's CLAUDE.md @-imports them. Each file's header
+        states its scope and a rule must fit it. global.md: true on every machine (fresh
+        macOS laptop and OrbStack VM alike) AND a rule Igor intends to share; being defensible
+        everywhere is not enough, so personal-preference rules belong in machines/<name>.md.
+        machines/mac.md and machines/orbstack-dev.md are linked as machine.md by
+        classify_machine in skills/up-to-date/diagnose.py; dev-machine.md only on hosts with
+        Tailscale and a c-<digits> hostname. Flag project names, issue IDs or paths that only
+        exist on one machine in global.md.
+    - path: "SKILL.md"
+      instructions: |
+        Frontmatter carries name, description and allowed-tools (every existing skill has all
+        three). The name must not collide with a Claude Code built-in command. A new skill
+        directory gets a row in README.md's "Available Skills" table. Pure markdown is the
+        default: a helper script earns its place only when it both parallelizes subprocess
+        calls and needs unit-tested classification logic. "Check X at path Y" prose belongs in
+        the skill's doctor script, not the SKILL.md. Past ~500 lines, or ~100 lines for one
+        tier, factor the tier into a sibling .md loaded on demand.
+    - path: "*.py"
+      instructions: |
+        Standalone scripts with third-party deps use `#!/usr/bin/env -S uv run --script` with a
+        PEP 723 block; stdlib hooks may use python3, and skills/bulk is a pyproject package.
+        Import non-stdlib deps lazily (inside a `_build_app()`-style builder called from
+        __main__): `just fast-test` imports modules with only pytest and typer available.
+        Injectable runners are declared `run=None` and resolved to subprocess.run in the body;
+        `run=subprocess.run` as a default defeats test patching. Code that signals processes by
+        pattern must exclude lifeline processes (tailscaled, etserver, etterminal, tmux, sshd,
+        init-like, kernel threads).
+    - path: "test_*.py"
+      instructions: |
+        Tests run in the pre-commit hook on Igor's live machines, so they must not touch real
+        state: code that signals processes by pattern (pkill, os.kill) is mocked and never runs
+        against the real process table; a test that spawns its own real processes (e.g.
+        test_singleton_rejects_second_instance) must stop them itself; HOME is pointed at a
+        temp dir when code reads ~; git run in a temp repo gets an env with GIT_DIR,
+        GIT_INDEX_FILE and GIT_WORK_TREE removed (see test_diagnose.py), or it writes into the
+        enclosing repo's index and config. Slow multi-process tests are marked
+        `@pytest.mark.slow`, which fast-test deselects.
+    - path: "skills/harden-telegram/server/*.ts"
+      instructions: |
+        tests/test_channel_gate.ts extracts the block between the "BEGIN/END channel-gate pure
+        logic" markers in server.ts verbatim; keep the markers and keep that block free of
+        imports. tests/test_assert_sendable.ts holds a hand-ported copy of assertSendable, so a
+        change to assertSendable must be mirrored there. No just target runs these bun tests:
+        ask for `bun skills/harden-telegram/server/tests/<file>.ts` output when server.ts changes.
+    - path: ".github/workflows/**"
+      instructions: |
+        claude-code-action refuses its token exchange (401) unless the workflow file
+        byte-matches the default branch, so a PR editing a workflow fails that workflow's own
+        run; that failure is expected, not a regression. Read
+        dev-inner-loop/github-action-claude-code-action-gotcha.md before approving changes here.
+
+document:
+  instructions: |
+    CLAUDE.md owns conventions for working in this repo (skill authoring, scripting defaults,
+    git inner-loop). README.md owns the human introduction, skill install steps and the
+    Available Skills table. Each skills/<name>/SKILL.md owns that skill's behaviour. AGENTS.md is
+    a pointer to CLAUDE.md; never edit inside the BEGIN/END BEADS INTEGRATION markers in either
+    file. claude-md/*.md are shipped rules, not docs about this repo: never add documentation to
+    them as a side effect of a code change. docs/superpowers/, docs/plans/, docs/agent-notes/ and
+    zz-chop-logs/ are dated records; do not update them to match new code.
