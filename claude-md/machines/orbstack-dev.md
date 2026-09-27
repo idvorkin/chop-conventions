@@ -11,3 +11,7 @@ this file when `classify_machine` returns `"orbstack-dev"`.
 ## Shell aliases
 
 - `ps` is aliased to a **pager wrapper** in this shell — invocations with positional args error with `invalid value for '--pager'`. Use `/bin/ps -f` explicitly, or `pgrep -f <pattern>` for PID lookup.
+
+## macOS-only tools
+
+- **Don't touch yabai or Alfred config here.** They only run on the Mac host, so nothing on this Linux VM can test them. If Igor asks for yabai/Alfred work, stop and warn that he's probably on the wrong machine; do it from the Mac.
