@@ -38,6 +38,7 @@ from diagnose import (
 )
 
 FORK_ORGS = ["idvorkin-ai-tools"]
+CANONICAL_ORGS = ["idvorkin", "idvorkin-ai-tools"]
 
 
 class TestParseRemotes(unittest.TestCase):
@@ -95,17 +96,29 @@ class TestIsForkUrl(unittest.TestCase):
 class TestClassifyRemotes(unittest.TestCase):
     def test_single_canonical_origin_is_clean(self):
         remotes = [Remote("origin", "git@github.com:idvorkin/foo.git")]
-        result = classify_remotes(remotes, FORK_ORGS)
+        result = classify_remotes(remotes, FORK_ORGS, CANONICAL_ORGS)
         self.assertEqual(result.source, "origin")
         self.assertFalse(result.is_fork_workflow)
         self.assertEqual(result.issues, [])
+
+    def test_canonical_ai_tools_origin_without_upstream_is_clean(self):
+        # `idvorkin-ai-tools` hosts canonical repos (e.g. stack-picker-2).
+        # A lone origin there must NOT be flagged fork_without_canonical.
+        remotes = [
+            Remote("origin", "git@github.com:idvorkin-ai-tools/stack-picker-2.git")
+        ]
+        result = classify_remotes(remotes, FORK_ORGS, CANONICAL_ORGS)
+        kinds = [i.kind for i in result.issues]
+        self.assertNotIn("fork_without_canonical", kinds)
+        self.assertEqual(result.issues, [])
+        self.assertFalse(result.is_fork_workflow)
 
     def test_proper_fork_workflow_is_clean(self):
         remotes = [
             Remote("origin", "git@github.com:idvorkin-ai-tools/foo.git"),
             Remote("upstream", "git@github.com:idvorkin/foo.git"),
         ]
-        result = classify_remotes(remotes, FORK_ORGS)
+        result = classify_remotes(remotes, FORK_ORGS, CANONICAL_ORGS)
         self.assertEqual(result.source, "upstream")
         self.assertTrue(result.is_fork_workflow)
         self.assertEqual(result.issues, [])
@@ -115,7 +128,7 @@ class TestClassifyRemotes(unittest.TestCase):
             Remote("origin", "git@github.com:idvorkin/foo.git"),
             Remote("fork", "git@github.com:idvorkin-ai-tools/foo.git"),
         ]
-        result = classify_remotes(remotes, FORK_ORGS)
+        result = classify_remotes(remotes, FORK_ORGS, CANONICAL_ORGS)
         kinds = [i.kind for i in result.issues]
         self.assertIn("non_standard_name", kinds)
 
@@ -125,14 +138,15 @@ class TestClassifyRemotes(unittest.TestCase):
             Remote("origin", "git@github.com:idvorkin/foo.git"),
             Remote("upstream", "git@github.com:idvorkin-ai-tools/foo.git"),
         ]
-        result = classify_remotes(remotes, FORK_ORGS)
+        result = classify_remotes(remotes, FORK_ORGS, CANONICAL_ORGS)
         kinds = [i.kind for i in result.issues]
         self.assertIn("swapped_remotes", kinds)
 
-    def test_lone_fork_remote_flagged(self):
-        # Only a fork exists; no canonical remote to PR against
-        remotes = [Remote("origin", "git@github.com:idvorkin-ai-tools/foo.git")]
-        result = classify_remotes(remotes, FORK_ORGS)
+    def test_lone_fork_in_non_canonical_org_still_flagged(self):
+        # Genuine lone fork: the org hosts forks only (not canonical repos),
+        # and no canonical remote exists to PR against.
+        remotes = [Remote("origin", "git@github.com:someuser-forks/foo.git")]
+        result = classify_remotes(remotes, ["someuser-forks"], CANONICAL_ORGS)
         kinds = [i.kind for i in result.issues]
         self.assertIn("fork_without_canonical", kinds)
 
@@ -141,7 +155,7 @@ class TestClassifyRemotes(unittest.TestCase):
             Remote("origin", "git@github.com:idvorkin/foo.git"),
             Remote("upstream", "git@github.com:idvorkin-ai-tools/foo.git"),
         ]
-        result = classify_remotes(remotes, FORK_ORGS)
+        result = classify_remotes(remotes, FORK_ORGS, CANONICAL_ORGS)
         for issue in result.issues:
             self.assertTrue(issue.fix, f"issue {issue.kind} missing fix command")
 
