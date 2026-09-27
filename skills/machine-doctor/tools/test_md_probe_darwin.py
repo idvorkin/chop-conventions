@@ -191,8 +191,9 @@ class TestSleeps(unittest.TestCase):
         self.assertEqual(self.events[0].pid, 40700)
         self.assertEqual(self.events[0].when, "2026-09-26 22:22:03")
 
-    def test_unexpected(self):
-        self.assertEqual([e.unexpected for e in self.events], [True, True, False])
+    def test_forced_and_thermal_are_separate(self):
+        self.assertEqual([e.forced for e in self.events], [True, False, False])
+        self.assertEqual([e.thermal for e in self.events], [False, True, False])
 
 
 class TestCatcherLog(unittest.TestCase):

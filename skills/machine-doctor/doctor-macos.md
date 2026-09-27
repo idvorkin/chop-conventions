@@ -141,7 +141,10 @@ Ask about anything whose owner you cannot name from its path.
 
 **caffeinate cannot block a forced sleep.** It only prevents _idle_ sleep. A
 process calling `pmset sleepnow` (or `IOPMSleepSystem`), and thermal
-emergencies, go straight through it.
+emergencies, go straight through it. A forced sleep is not a problem in itself —
+a process asked, and that is often the user (the Apple menu, a sleep shortcut,
+their own `pmset sleepnow` alias). `snapshot` lists forced sleeps as a neutral
+note; only thermal sleeps are a warning.
 
 ### Reading why it slept
 
@@ -154,15 +157,17 @@ It parses `pmset -g log` and prints every sleep except maintenance ones:
 | Reason in `pmset -g log`          | Meaning                                                   |
 | --------------------------------- | --------------------------------------------------------- |
 | `Idle Sleep`                      | nothing held an assertion — expected                      |
-| `Software Sleep pid=N`            | **forced**: process N asked for sleep                     |
+| `Software Sleep pid=N`            | forced: process N asked — often the user; listed, neutral |
 | `Dark Wake Thermal Emergency`     | too hot to stay awake during a dark wake — check CPU load |
 | `Clamshell Sleep`, `Power Button` | the user                                                  |
 | `Maintenance Sleep`               | returning to sleep after a network dark wake — noise      |
 
-For a forced sleep, `sleeps` names pid N from the unified log (`log show
+`sleeps` marks thermal sleeps `⚠` (and exits 1 only for those) and forced
+sleeps `·`. For a forced sleep it names pid N from the unified log (`log show
 --predicate 'processID == N'`). It is often `bash`: a `bash -c "... pmset
 sleepnow"` execs `pmset` in place, keeping bash's pid. The _parent_ that ran
-that bash is what you want, and it is gone by the time anyone looks.
+that bash is what you want, and it is gone by the time anyone looks. If the
+user did not ask for the sleep, that parent is the thing to find.
 
 ### Catching the next one live
 

@@ -363,7 +363,7 @@ def render_tree(procs: list[ProcSample], cmdlines: dict[int, str]) -> str:
         cpu = "-" if p.cpu_pct is None else f"{p.cpu_pct:.0f}%"
         cl = redact(cmdlines.get(p.pid, ""))[:200]
         lines.append(
-            f"{'  ' * depth}{p.pid} {p.comm} cpu={cpu} rss={p.rss_kb // 1024}MB "
+            f"{'  ' * depth}{p.pid} {p.comm} cpu={cpu} mem={p.rss_kb // 1024}MB "
             f"etime={p.etime_s}s ppid={p.ppid} {cl}".rstrip()
         )
         for k in sorted(kids.get(p.pid, []), key=lambda x: x.pid):
@@ -522,10 +522,15 @@ class SleepEvent:
     pid: int | None  # set for 'Software Sleep pid=N' (a forced sleep)
 
     @property
-    def unexpected(self) -> bool:
-        """Forced and thermal sleeps get through `caffeinate`; idle sleep and
-        the user closing the lid do not need explaining."""
-        return self.pid is not None or "Thermal" in self.reason
+    def forced(self) -> bool:
+        """A process asked for sleep (`pmset sleepnow`, the Apple menu, a
+        script) - often the user. Gets through `caffeinate`; worth naming."""
+        return self.pid is not None
+
+    @property
+    def thermal(self) -> bool:
+        """Too hot to stay awake - a problem."""
+        return "Thermal" in self.reason
 
 
 _SLEEP_RE = re.compile(

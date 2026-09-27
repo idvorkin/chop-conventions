@@ -35,7 +35,7 @@ WINDOWSERVER_WARN_KB = 2 * 1024 * 1024
 
 @dataclass(frozen=True)
 class Finding:
-    severity: str  # "warn" | "fail"
+    severity: str  # "note" | "warn" | "fail"; a note is never a problem
     message: str
 
 
@@ -229,15 +229,22 @@ def power_findings(facts: HostFacts) -> list[Finding]:
                 "warn", f"thermal throttling: CPU speed limited to {facts.speed_limit}%"
             )
         )
-    odd = [e for e in facts.sleeps if e.unexpected]
-    if odd:
-        last = odd[-1]
+    hot = [e for e in facts.sleeps if e.thermal]
+    if hot:
         out.append(
             Finding(
                 "warn",
-                f"{len(odd)} forced/thermal sleep(s) recently, last {last.when} "
-                f"({last.reason}) — `caffeinate` cannot block these; run `sleeps` to "
-                "name the requester",
+                f"{len(hot)} thermal sleep(s) recently, last {hot[-1].when} "
+                f"({hot[-1].reason}) — find the load",
+            )
+        )
+    forced = [e for e in facts.sleeps if e.forced]
+    if forced:
+        out.append(
+            Finding(
+                "note",
+                f"{len(forced)} sleep(s) requested by a process (pmset sleepnow, "
+                f"Apple menu, a script), last {forced[-1].when} — `sleeps` names who",
             )
         )
     return out

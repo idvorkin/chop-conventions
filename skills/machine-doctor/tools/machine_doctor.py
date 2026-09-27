@@ -87,6 +87,7 @@ from profiles import PROFILES, USER_SOCKETS, HostFacts, is_deleted_cwd, is_jekyl
 OK = "✓"
 WARN = "⚠"
 BAD = "✗"
+NOTE = "·"
 
 IS_DARWIN = sys.platform == "darwin"
 HERTZ = os.sysconf("SC_CLK_TCK")
@@ -182,15 +183,19 @@ def _uptime_s() -> float:
     return float(text.split()[0]) if text else 0.0
 
 
+if IS_DARWIN:
+    _LIBC = ctypes.CDLL(ctypes.util.find_library("c"))
+    _LIBC.mach_host_self.restype = ctypes.c_uint
+    _MACH_HOST = _LIBC.mach_host_self()
+
+
 def _darwin_cpu_totals() -> CpuTotals:
     """host_statistics(HOST_CPU_LOAD_INFO): cumulative user/system/idle/nice
     ticks, the Mach twin of /proc/stat's `cpu ` line. Includes kernel time,
     which matters: memory compression and swap show up as system CPU."""
-    libc = ctypes.CDLL(ctypes.util.find_library("c"))
-    libc.mach_host_self.restype = ctypes.c_uint
     ticks = (ctypes.c_uint * 4)()
     count = ctypes.c_uint(4)  # HOST_CPU_LOAD_INFO_COUNT
-    kr = libc.host_statistics(libc.mach_host_self(), 3, ticks, ctypes.byref(count))
+    kr = _LIBC.host_statistics(_MACH_HOST, 3, ticks, ctypes.byref(count))
     if kr != 0:
         raise OSError(f"host_statistics failed: kern_return={kr}")
     user, system, idle, nice = ticks
@@ -421,7 +426,7 @@ def collect_facts(
         swap_free_kb=mem.swap_free_kb,
         pressure=mem.pressure,
     )
-    facts.disks = select_mounts(parse_df(_run(["df", "-Pk"])))
+    facts.disks = select_mounts(parse_df(_run(["df", "-Pkl"])))
     facts.vm_mem_mib = _orbstack_mem_mib()
     if IS_DARWIN:
         facts.compressor_kb = parse_vm_stat(_run(["vm_stat"])).get("compressor_kb")
@@ -772,8 +777,8 @@ def _build_app():
                                 "pid": p.pid,
                                 "comm": p.comm,
                                 "cpu_pct": p.cpu_pct,
-                                "mem_kb": p.rss_kb,
-                                "mem_kind": MEM_LABEL.lower(),
+                                "rss_kb": p.rss_kb,
+                                "mem_kind": "footprint" if IS_DARWIN else "rss",
                                 "cmdline": redact(_cmdline(p.pid))[:200],
                             }
                             for p in hot
@@ -813,7 +818,7 @@ def _build_app():
         if not findings:
             print(f"{OK} no findings")
         for f in findings:
-            mark = BAD if f.severity == "fail" else WARN
+            mark = {"fail": BAD, "warn": WARN}.get(f.severity, NOTE)
             print(f"{mark} {f.message}")
         raise t.Exit(1 if failures else 0)
 
@@ -821,7 +826,7 @@ def _build_app():
     def sleeps(
         since: str = typer.Option("24h", "--since", help="Window: <int><s|m|h|d>."),
     ) -> None:
-        """Why the Mac slept — every non-maintenance sleep; names who forced one."""
+        """Why the Mac slept — every non-maintenance sleep; names who requested one."""
         import typer as t
 
         if not IS_DARWIN:
@@ -842,7 +847,7 @@ def _build_app():
             parse_catcher_log(CATCHER_LOG.read_text()) if CATCHER_LOG.exists() else {}
         )
         for e in events:
-            mark = WARN if e.unexpected else " "
+            mark = WARN if e.thermal else NOTE if e.forced else " "
             print(f"{mark} {e.when}  {e.reason}")
             if e.pid is None:
                 continue
@@ -854,13 +859,13 @@ def _build_app():
                 print("      caught live by sleep-catcher:")
                 for ln in catches[e.when].rstrip().splitlines():
                     print(f"      {ln}")
-        forced = [e for e in events if e.pid is not None]
+        forced = [e for e in events if e.forced]
         if forced and not any(e.when in catches for e in forced):
             print(
                 "\nThe requester's parent chain died with it. To catch the next one live:\n"
                 f"  {CATCHER} install"
             )
-        raise t.Exit(1 if any(e.unexpected for e in events) else 0)
+        raise t.Exit(1 if any(e.thermal for e in events) else 0)
 
     return app
 

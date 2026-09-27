@@ -130,9 +130,6 @@ class TestGascityProfile(unittest.TestCase):
         self.assertTrue(PROFILES["gascity"](facts))
 
 
-if __name__ == "__main__":
-    unittest.main()
-
 
 class TestHostHealth(unittest.TestCase):
     def _find(self, **kw):
@@ -181,9 +178,24 @@ class TestHostHealth(unittest.TestCase):
             sleeps=[
                 SleepEvent("2026-09-26 21:00:00", "Idle Sleep", None),
                 SleepEvent("2026-09-26 22:22:03", "Software Sleep pid=40700", 40700),
+                SleepEvent("2026-09-26 23:10:00", "Dark Wake Thermal Emergency", None),
             ],
         )
-        msgs = _msgs(got)
-        self.assertIn("CPU speed limited to 70%", msgs)
-        self.assertIn("1 forced/thermal sleep(s)", msgs)
-        self.assertIn("22:22:03", msgs)
+        by_sev = {f.severity: f.message for f in got if "sleep" in f.message}
+        self.assertIn("CPU speed limited to 70%", _msgs(got))
+        self.assertIn("1 thermal sleep(s)", by_sev["warn"])
+        self.assertIn("23:10:00", by_sev["warn"])
+        self.assertIn("1 sleep(s) requested by a process", by_sev["note"])
+        self.assertIn("22:22:03", by_sev["note"])
+
+    def test_forced_sleep_alone_is_only_a_note(self):
+        from md_probe import SleepEvent
+
+        got = self._find(
+            sleeps=[SleepEvent("2026-09-26 22:22:03", "Software Sleep pid=40700", 40700)]
+        )
+        self.assertEqual([f.severity for f in got], ["note"])
+
+
+if __name__ == "__main__":
+    unittest.main()

@@ -191,7 +191,7 @@ install) install ;;
 uninstall) uninstall ;;
 status) status ;;
 *)
-    sed -n '2,22p' "$SCRIPT"
+    sed -n '2,23p' "$SCRIPT"
     exit 1
     ;;
 esac
