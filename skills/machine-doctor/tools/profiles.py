@@ -7,7 +7,7 @@ a dict, not a plugin framework (N=2).
 
 from dataclasses import dataclass, field
 
-from md_probe import JEKYLL_RE, ProcSample
+from md_probe import JEKYLL_RE, ProcSample, SleepEvent
 
 # The human's own tmux sockets. Never a Gas City leak — flagging these trains
 # the reader to ignore the tool.
@@ -23,6 +23,14 @@ STALE_JEKYLL_S = 24 * 3600
 SHELL_COMMS = frozenset(
     {"bash", "sh", "zsh", "dash", "fish", "tmux", "just", "nvim", "vim"}
 )
+SWAP_USED_WARN_PCT = 90
+DISK_WARN_PCT = 90
+DISK_FAIL_PCT = 95
+# A VM allowed more than this share of host RAM starves the host once the
+# guest fills it: its pages land in the host's compressor and swap.
+VM_MEM_WARN_PCT = 50
+# WindowServer footprint past this is the long-uptime leak; logout resets it.
+WINDOWSERVER_WARN_KB = 2 * 1024 * 1024
 
 
 @dataclass(frozen=True)
@@ -49,6 +57,14 @@ class HostFacts:
     idle_pct: int | None = None
     mem_total_kb: int = 0
     mem_avail_kb: int = 0
+    swap_total_kb: int = 0
+    swap_free_kb: int = 0
+    pressure: str | None = None  # macOS: normal | warn | critical
+    compressor_kb: int | None = None  # macOS
+    disks: dict[str, int] = field(default_factory=dict)  # mount -> used %
+    speed_limit: int | None = None  # macOS thermal CPU_Speed_Limit %
+    vm_mem_mib: dict[str, int] = field(default_factory=dict)  # VM name -> memory cap
+    sleeps: list[SleepEvent] = field(default_factory=list)  # macOS, recent window
 
 
 def classify_dolt(cwd: str) -> str:
@@ -130,6 +146,100 @@ def generic_findings(facts: HostFacts) -> list[Finding]:
                     f"{p.rss_kb // 1024}MB — stop with SIGINT (it ignores SIGTERM)",
                 )
             )
+    out += memory_findings(facts)
+    out += disk_findings(facts)
+    out += vm_findings(facts)
+    out += power_findings(facts)
+    return out
+
+
+def memory_findings(facts: HostFacts) -> list[Finding]:
+    out: list[Finding] = []
+    if facts.pressure in ("warn", "critical"):
+        comp = (
+            f", compressor holds {facts.compressor_kb // 1024}MB"
+            if facts.compressor_kb is not None
+            else ""
+        )
+        out.append(
+            Finding(
+                "fail" if facts.pressure == "critical" else "warn",
+                f"macOS memory pressure is {facts.pressure}{comp} — rank by footprint "
+                "(top -o mem), not RSS: compressed pages are invisible to RSS",
+            )
+        )
+    if facts.swap_total_kb > 0:
+        used_pct = (
+            100 * (facts.swap_total_kb - facts.swap_free_kb) // facts.swap_total_kb
+        )
+        if used_pct >= SWAP_USED_WARN_PCT:
+            out.append(
+                Finding(
+                    "warn",
+                    f"swap {used_pct}% used ({facts.swap_free_kb // 1024}MB free of "
+                    f"{facts.swap_total_kb // 1024}MB)",
+                )
+            )
+    for p in facts.procs:
+        if p.comm == "WindowServer" and p.rss_kb > WINDOWSERVER_WARN_KB:
+            out.append(
+                Finding(
+                    "warn",
+                    f"WindowServer footprint {p.rss_kb // 1024}MB — long-uptime leak; "
+                    "logging out and back in resets it",
+                )
+            )
+    return out
+
+
+def disk_findings(facts: HostFacts) -> list[Finding]:
+    out: list[Finding] = []
+    for mount, pct in sorted(facts.disks.items()):
+        if pct >= DISK_FAIL_PCT:
+            out.append(Finding("fail", f"disk {mount} is {pct}% full"))
+        elif pct >= DISK_WARN_PCT:
+            out.append(Finding("warn", f"disk {mount} is {pct}% full"))
+    return out
+
+
+def vm_findings(facts: HostFacts) -> list[Finding]:
+    out: list[Finding] = []
+    if facts.mem_total_kb <= 0:
+        return out
+    host_mib = facts.mem_total_kb // 1024
+    for name, mib in sorted(facts.vm_mem_mib.items()):
+        if mib * 100 > host_mib * VM_MEM_WARN_PCT:
+            half = host_mib // 2 // 1024 * 1024
+            out.append(
+                Finding(
+                    "warn",
+                    f"{name} may take {mib}MiB of {host_mib}MiB host RAM "
+                    f"({100 * mib // host_mib}%) — when the guest fills it, the host "
+                    f"swaps; e.g. `orb config set memory_mib {half}`",
+                )
+            )
+    return out
+
+
+def power_findings(facts: HostFacts) -> list[Finding]:
+    out: list[Finding] = []
+    if facts.speed_limit is not None and facts.speed_limit < 100:
+        out.append(
+            Finding(
+                "warn", f"thermal throttling: CPU speed limited to {facts.speed_limit}%"
+            )
+        )
+    odd = [e for e in facts.sleeps if e.unexpected]
+    if odd:
+        last = odd[-1]
+        out.append(
+            Finding(
+                "warn",
+                f"{len(odd)} forced/thermal sleep(s) recently, last {last.when} "
+                f"({last.reason}) — `caffeinate` cannot block these; run `sleeps` to "
+                "name the requester",
+            )
+        )
     return out
 
 

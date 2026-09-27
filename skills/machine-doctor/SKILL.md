@@ -1,6 +1,6 @@
 ---
 name: machine-doctor
-description: Diagnose and fix system health issues — rogue processes, Gas Town and Gas City runaway agents, resource exhaustion, macOS DNS/network failures, stale dev servers, and orphaned git state — plus historical forensics ("who was hot at 7:16?") via the vendored machine_doctor.py recorder. Use when the machine is slow, unresponsive, or something feels wrong — now or earlier.
+description: Diagnose and fix system health issues on Linux and macOS — rogue processes, memory pressure and swap, VMs/containers starving the host, full disks, thermal throttling, unexplained sleeps, macOS DNS/network failures, Gas Town and Gas City runaway agents, stale dev servers, and orphaned git state — plus historical forensics ("who was hot at 7:16?", "why did it sleep at 22:22?") via the vendored machine_doctor.py recorder. Use when the machine is slow, unresponsive, keeps sleeping, or something feels wrong — now or earlier.
 allowed-tools: Bash, Read, Glob, Grep
 ---
 
@@ -18,8 +18,30 @@ Diagnose and repair system health. Tiers:
 | `/machine-doctor guards`  | Set up / verify two-layer CPU guard (OrbStack VM cap + in-VM watchdog) |
 | `/machine-doctor network` | macOS DNS and API connectivity diagnosis and recovery                  |
 | `/machine-doctor deep`    | Full probe — git locks, orphaned worktrees, stale servers, MCP         |
+| `/machine-doctor sleeps`  | macOS: why it slept; who forced it (`caffeinate` can't block that)     |
+| `/machine-doctor mac`     | macOS runbook — memory pressure, VM memory reclaim, disk, sleep        |
 
 Always start with **Step 0: Platform Detection**, then run the requested tier.
+
+### What machine-doctor keeps healthy
+
+Every row is checked by `machine_doctor.py snapshot` unless marked. The runbook
+column is where the fix lives.
+
+| Area                  | Healthy                                               | Usual culprit                                          | Fix in                          |
+| --------------------- | ----------------------------------------------------- | ------------------------------------------------------ | ------------------------------- |
+| CPU                   | idle ≥25%; no process >300% for long                  | agent swarms, builds, a VM's host process              | Tier 1, Tier 3f, guards         |
+| Memory                | Linux MemAvailable ≥10%; macOS pressure `normal`      | a VM allowed most of host RAM; browsers; leaks         | Tier 1b, `doctor-macos.md` §1–3 |
+| Swap                  | not near full; no sustained swap-out                  | memory pressure (swap is the symptom)                  | same as memory                  |
+| Disk                  | data volumes <90%                                     | caches, VM images, build output                        | Tier 1c, `doctor-macos.md` §4   |
+| VMs / containers      | VM memory cap ≤ half of host RAM; no stale servers    | OrbStack/Docker defaults; forgotten dev servers inside | `doctor-macos.md` §2            |
+| Thermal               | no CPU speed limit                                    | sustained load                                         | find the load                   |
+| Sleep / wake          | no forced or thermal sleeps                           | a script calling `pmset sleepnow`; heat                | `sleeps`, `doctor-macos.md` §5  |
+| Zombies               | none                                                  | a parent not reaping                                   | Tier 1d                         |
+| Agent orchestrators   | none running unless intended                          | Gas Town / Gas City leftovers                          | Tier 2, `doctor-gascity.md`     |
+| CPU guards            | watchdog running, VM CPU cap set (_manual_)           | shell never opened since boot                          | Tier 1e, `doctor-guards.md`     |
+| Dev servers, MCP, npm | responsive or gone (_manual, deep_)                   | days-old servers                                       | Tier 3c–3e                      |
+| Git state             | no stale locks or orphaned worktrees (_manual, deep_) | crashed git processes                                  | Tier 3a–3b                      |
 
 ---
 
@@ -32,13 +54,13 @@ echo "Platform: $OS"
 
 Set these aliases for the rest of the skill:
 
-| Task              | Mac                            | Linux                                                                             |
-| ----------------- | ------------------------------ | --------------------------------------------------------------------------------- |
-| Top CPU processes | `ps aux -r \| head -20`        | `procs --sortd cpu \| head -20` (falls back to `ps aux --sort=-%cpu \| head -20`) |
-| Memory overview   | `vm_stat`                      | `free -h` or `cat /proc/meminfo \| head -5`                                       |
-| Disk usage        | `df -h /`                      | `df -h /`                                                                         |
-| Process search    | `pgrep -af '<pattern>'`        | `pgrep -af '<pattern>'`                                                           |
-| Process tree      | `ps -o pid,ppid,comm -p <PID>` | `/usr/bin/ps -o pid,ppid,comm -p <PID>`                                           |
+| Task              | Mac                                                                                                        | Linux                                                                             |
+| ----------------- | ---------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------- |
+| Top CPU processes | `ps aux -r \| head -20`                                                                                    | `procs --sortd cpu \| head -20` (falls back to `ps aux --sort=-%cpu \| head -20`) |
+| Memory overview   | `sysctl kern.memorystatus_vm_pressure_level vm.swapusage` + `top -l 1 -o mem -n 15 -stats pid,command,mem` | `free -h` or `cat /proc/meminfo \| head -5`                                       |
+| Disk usage        | `df -h / /System/Volumes/Data`                                                                             | `df -h /`                                                                         |
+| Process search    | `pgrep -af '<pattern>'`                                                                                    | `pgrep -af '<pattern>'`                                                           |
+| Process tree      | `ps -o pid,ppid,comm -p <PID>`                                                                             | `/usr/bin/ps -o pid,ppid,comm -p <PID>`                                           |
 
 **Linux note:** Many machines alias `ps` to `procs` and `top` to `btm`. Use `/usr/bin/ps` when you need standard flags like `--ppid` or `-o`.
 
@@ -70,7 +92,16 @@ echo "ENV=$ENV"
 
 ## Tier 1: Quick Vitals (`/machine-doctor`)
 
-Run these checks and present a summary table:
+Run the vendored snapshot first — it checks CPU, memory/pressure, swap, disks,
+zombies, VM memory caps, thermal limits, recent forced/thermal sleeps (macOS)
+and per-container usage, on both Linux and macOS:
+
+```bash
+skills/machine-doctor/tools/machine_doctor.py snapshot     # exit 1 on any failure
+```
+
+Use the manual commands below to dig into what it flags, and present a summary
+table:
 
 ### 1a. CPU Hogs
 
@@ -92,15 +123,22 @@ Flag Claude processes, node processes, and dolt/jekyll servers specifically.
 ### 1b. Memory
 
 ```bash
-# Mac
-vm_stat | head -10
-sysctl hw.memsize
+# Mac — free pages are near zero by design; read the kernel's verdict instead
+sysctl kern.memorystatus_vm_pressure_level   # 1 normal, 2 warn, 4 critical
+sysctl vm.swapusage
+top -l 1 -o mem -n 15 -stats pid,command,mem  # footprint, compressed pages included
 
 # Linux: RSS grouped by app, top rows + "everything else" + TOTAL
 skills/machine-doctor/tools/machine_doctor.py mem
 ```
 
-Flag if available memory is under 500MB. When asked "what's using memory", answer **by app, not by PID**, with a TOTAL row: `mem` collapses claude sessions, pytest workers, jekyll previews and `dolt sql-server`s into one row each and names bare interpreters by their script (`python3:serve.py`).
+Flag Linux if available memory is under 500MB; flag macOS on pressure warn or
+critical. On macOS rank by footprint (`top`'s MEM), not RSS — RSS hides
+compressed memory, which is exactly where a VM's guest memory ends up. If the
+top footprint is a VM (OrbStack Helper, Docker), go to
+[`doctor-macos.md`](./doctor-macos.md) §2.
+
+On Linux, when asked "what's using memory", answer **by app, not by PID**, with a TOTAL row: `mem` collapses claude sessions, pytest workers, jekyll previews and `dolt sql-server`s into one row each and names bare interpreters by their script (`python3:serve.py`).
 
 - **`used` in `free -h` exceeding summed RSS is kernel memory, not a leak** — mostly `SReclaimable` slab (dentry/inode cache), which the kernel drops under pressure. `mem` prints the gap and the slab size side by side.
 - **"Can we compact memory?" — not from inside an OrbStack container.** `/proc/sys` is mounted read-only, so `compact_memory` / `drop_caches` fail even with sudo, and `swapoff`/`swapon` are restricted too. The only in-VM lever is stopping processes; returning memory to the Mac is OrbStack's job. Swap still in use after a spike has passed is harmless residue.
@@ -108,10 +146,11 @@ Flag if available memory is under 500MB. When asked "what's using memory", answe
 ### 1c. Disk
 
 ```bash
-df -h / /tmp
+df -h / /tmp                       # Linux
+df -h / /System/Volumes/Data       # Mac: `/` is the sealed system volume; data lives here
 ```
 
-Flag if any filesystem is above 90%.
+Flag if any data filesystem is above 90%.
 
 ### 1d. Zombie / Orphan Processes
 
@@ -150,6 +189,8 @@ Present results as:
 | Disk       | ok / **full**    | Usage %                      |
 | Zombies    | ok / **found**   | Count                        |
 | CPU guards | ok / **missing** | watchdog running, VM cap set |
+| VM memory  | ok / **too big** | cap vs host RAM (snapshot)   |
+| Sleep      | ok / **forced**  | forced/thermal sleeps, 24h   |
 
 If everything is clean, say so and stop. If problems found, offer to kill the offenders. If the same process class repeatedly shows up as a hog (e.g., multiple Claude/node processes summing to >80% of cores), also suggest running `/machine-doctor deep` for a CPU cap recommendation (Tier 3f).
 
@@ -258,7 +299,12 @@ skills/machine-doctor/tools/machine_doctor.py report --since 6h     # who has be
 skills/machine-doctor/tools/machine_doctor.py at 07:16              # what was running then
 skills/machine-doctor/tools/machine_doctor.py snapshot              # right now + generic leak checks
 skills/machine-doctor/tools/machine_doctor.py mem                   # RSS by app with TOTAL (Tier 1b)
+skills/machine-doctor/tools/machine_doctor.py sleeps --since 24h    # macOS: why it slept, who forced it
 ```
+
+Linux and macOS both work. Linux reads `/proc`; macOS reads Mach CPU ticks,
+`ps`, `top`, `sysctl` and `vm_stat`, and its memory column is the **footprint**
+(labelled `MEM`), not RSS.
 
 Key behaviors:
 
@@ -269,7 +315,7 @@ Key behaviors:
 - **Interval CPU%, not lifetime averages** — a long-lived process that starts spinning
   shows up immediately.
 - Spike triggers (any proc >300% CPU; idle <25% or swap-out sustained 2 samples;
-  MemAvailable <10%) write a full redacted process tree to `spikes/`; samples keep 7 days,
+  MemAvailable <10%; macOS pressure critical) write a full redacted process tree to `spikes/`; samples keep 7 days,
   dumps keep the newest 50.
 
 ### Gas City profile (`/machine-doctor gascity`)
@@ -312,6 +358,23 @@ sites work, read [doctor-network.md](./doctor-network.md). It covers the read-on
 `tools/network_doctor.py` diagnostic, local DNS cache recovery, sandbox restrictions,
 and verification after repair. Route networking complaints here after platform
 detection, even when the user does not name this tier.
+
+---
+
+## Tier: macOS (`/machine-doctor mac`, `/machine-doctor sleeps`)
+
+A Mac fails differently: memory pressure hides in the compressor, a dev VM can be
+allowed most of the host's RAM, `/` is not the disk that fills, and a Mac can be
+put to sleep through `caffeinate`.
+
+**The runbook lives in a separate file to keep SKILL.md lean.** When the host is
+a Mac and `snapshot` flags memory, a VM cap, the Data volume, thermal limits or
+sleeps — or the user says the Mac is laggy or keeps sleeping — Read
+[`doctor-macos.md`](./doctor-macos.md) for reading pressure/footprint correctly,
+finding the container behind a busy VM, handing guest memory back
+(`drop_caches` + `compact_memory`), quitting apps under pressure, safe cache
+cleanup, caffeinate modes, and catching the process behind a forced sleep with
+`tools/sleep-catcher.sh`.
 
 ---
 
@@ -457,6 +520,10 @@ macOS has no native per-user CPU cap. Options:
 
 Verify with `top -o cpu` or Activity Monitor.
 
+**If the VM's pressure is memory, not CPU**, a CPU cap will not help: its guest
+memory lands in the host's compressor and swap. Cap `memory_mib` instead —
+[`doctor-macos.md`](./doctor-macos.md) §2.
+
 ---
 
 ### Output Format
@@ -468,6 +535,8 @@ Verify with `top -o cpu` or Activity Monitor.
 | Disk        | ok / **full**       | Usage %                      |
 | Zombies     | ok / **found**      | Count                        |
 | CPU guards  | ok / **missing**    | watchdog running, VM cap set |
+| VM memory   | ok / **too big**    | cap vs host RAM              |
+| Sleep       | ok / **forced**     | forced/thermal sleeps, 24h   |
 | Gas Town    | clean / **running** | Process count                |
 | Git locks   | ok / **stale**      | Files found                  |
 | Worktrees   | ok / **orphaned**   | Count                        |
