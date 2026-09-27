@@ -14,4 +14,4 @@ this file when `classify_machine` returns `"orbstack-dev"`.
 
 ## macOS-only tools
 
-- **Don't touch yabai, skhd, or Alfred config here.** They only run on the Mac host, so nothing on this Linux VM can test them. If Igor asks for yabai/skhd/Alfred work, stop and warn that he's probably on the wrong machine; do it from the Mac.
+- **Don't touch yabai or Alfred config here.** They only run on the Mac host, so nothing on this Linux VM can test them. If Igor asks for yabai/Alfred work, stop and warn that he's probably on the wrong machine; do it from the Mac.
