@@ -213,6 +213,15 @@ class TestCatcherLog(unittest.TestCase):
         self.assertIn("bash -c pmset sleepnow", detail)
         self.assertNotIn("Idle Sleep", detail)
 
+    def test_details_are_redacted(self):
+        log = (
+            "2026-09-27 05:50:08 FORCED sleep (Software Sleep pid=7) at 2026-09-27 05:50:08\n"
+            "    9 1 01:00 tmux -L city new -e ANTHROPIC_API_KEY=sk-leak123\n"
+        )
+        detail = parse_catcher_log(log)["2026-09-27 05:50:08"]
+        self.assertNotIn("sk-leak123", detail)
+        self.assertIn("ANTHROPIC_API_KEY=<redacted>", detail)
+
 
 class TestDisks(unittest.TestCase):
     def test_mounts_with_spaces(self):

@@ -581,7 +581,7 @@ def select_mounts(disks: dict[str, int]) -> dict[str, int]:
 
 def parse_catcher_log(text: str) -> dict[str, str]:
     """sleep-catcher.sh's log -> {event time: the indented detail lines under
-    its 'FORCED sleep (...) at <time>' header}."""
+    its 'FORCED sleep (...) at <time>' header}, cmdlines redacted."""
     out: dict[str, str] = {}
     current: str | None = None
     for line in text.splitlines():
@@ -593,7 +593,7 @@ def parse_catcher_log(text: str) -> dict[str, str]:
             out[current] = ""
         elif current and (line.startswith("    ") or re.match(r"^\S+ \S+   ", line)):
             detail = re.sub(r"^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2} ", "", line)
-            out[current] += detail + "\n"
+            out[current] += redact(detail) + "\n"
         else:
             current = None
     return out

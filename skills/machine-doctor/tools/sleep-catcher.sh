@@ -15,9 +15,6 @@
 #
 # Usage:
 #   sleep-catcher.sh watch               Catch sleeps as they happen
-#   sleep-catcher.sh replay FROM [TO]    Run past powerd events through the
-#                                        same logic (reasons only; the process
-#                                        table is gone by now)
 #   sleep-catcher.sh install             Install/reload the launchd agent
 #   sleep-catcher.sh uninstall           Remove the launchd agent
 #   sleep-catcher.sh status              Agent state and recent catches
@@ -42,6 +39,12 @@ SCRIPT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/$(basename "${BASH_SOURCE[
 
 pending_dump="" # snapshot taken at WillSleep, awaiting its sleep reason
 
+# Agent tmux servers carry credentials in argv (`-e ANTHROPIC_API_KEY=sk-...`);
+# mirrors md_probe.SECRET_ENV_RE so nothing written here holds a secret.
+redact() {
+    sed -E 's/(-e[[:space:]]+[A-Z0-9_]*(API_KEY|TOKEN|SECRET|PASSWORD)[A-Z0-9_]*)=[^[:space:]]+/\1=<redacted>/g'
+}
+
 log() {
     mkdir -p "$LOG_DIR"
     echo "$(date '+%Y-%m-%d %H:%M:%S') $*" >>"$LOG"
@@ -51,7 +54,7 @@ snapshot() {
     local dump
     dump="$LOG_DIR/ps-$(date '+%Y%m%d-%H%M%S').txt"
     mkdir -p "$LOG_DIR"
-    ps -Ao pid=,ppid=,etime=,command= >"$dump" 2>/dev/null
+    ps -Ao pid=,ppid=,etime=,command= 2>/dev/null | redact >"$dump"
     echo "$dump"
 }
 
@@ -80,9 +83,9 @@ prune_dumps() {
 }
 
 handle() {
-    local line="$1" live="$2" reason pid
+    local line="$1" reason pid
     if [[ "$line" == *"Received kIOMessageSystemWillSleep"* ]]; then
-        [[ "$live" == 1 ]] && pending_dump=$(snapshot)
+        pending_dump=$(snapshot)
         return
     fi
     [[ "$line" =~ Entering\ Sleep\ state\ due\ to\ \'([^\']*)\' ]] || return
@@ -99,7 +102,7 @@ handle() {
         pid="${BASH_REMATCH[1]}"
         log "FORCED sleep ($reason) at $when"
         if [[ -z "$pending_dump" ]]; then
-            log "  no process snapshot (replay, or WillSleep was missed)"
+            log "  no process snapshot (WillSleep was missed)"
         elif chain=$(ancestry "$pid" "$pending_dump"); then
             log "  requester $pid and its parents:"$'\n'"$chain"
         else
@@ -127,23 +130,9 @@ watch() {
         while read -r line; do
             # Only timestamped event lines; the header echoes the predicate text
             [[ "$line" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2} ]] || continue
-            handle "$line" 1
+            handle "$line"
         done
     log "watch: log stream exited"
-}
-
-replay() {
-    local from="${1:?usage: replay FROM [TO], e.g. replay '2026-09-26 21:00'}"
-    local to="${2:-$(date '+%Y-%m-%d %H:%M:%S')}"
-    # `log show` rejects times without seconds
-    [[ "$from" =~ [0-9]{2}:[0-9]{2}$ && ! "$from" =~ :[0-9]{2}:[0-9]{2}$ ]] && from+=":00"
-    [[ "$to" =~ [0-9]{2}:[0-9]{2}$ && ! "$to" =~ :[0-9]{2}:[0-9]{2}$ ]] && to+=":00"
-    log() { echo "$*"; } # print instead of appending to the catch log
-    /usr/bin/log show --start "$from" --end "$to" --style compact --predicate "$PREDICATE" 2>/dev/null |
-        while read -r line; do
-            [[ "$line" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2} ]] || continue
-            handle "$line" 0
-        done
 }
 
 install() {
@@ -186,12 +175,11 @@ status() {
 
 case "${1:-}" in
 watch) watch ;;
-replay) shift; replay "$@" ;;
 install) install ;;
 uninstall) uninstall ;;
 status) status ;;
 *)
-    sed -n '2,23p' "$SCRIPT"
+    sed -n '2,20p' "$SCRIPT"
     exit 1
     ;;
 esac

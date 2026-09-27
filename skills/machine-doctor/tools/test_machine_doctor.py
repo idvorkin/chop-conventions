@@ -60,6 +60,11 @@ class TestOrbStackGate(unittest.TestCase):
         self.assertEqual(md.read_containers(), ["web cpu=1.0% mem=1GiB / 12GiB"])
         self.assertFalse(any(c[0] == "orb" for c in calls))
 
+    def test_linux_guest_skips_vm_cap(self):
+        calls = self._patch(installed={"orb", "docker"}, darwin=False)
+        self.assertEqual(md._orbstack_mem_mib(), {})
+        self.assertEqual(calls, [])
+
 
 if __name__ == "__main__":
     unittest.main()
