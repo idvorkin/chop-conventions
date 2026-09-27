@@ -362,13 +362,15 @@ def test_read_env_token_reads_file(tmp_path, monkeypatch):
     assert telegram_bot.read_env_token() == "file-token"
 
 
-def test_socket_notify_writes_newline(tmp_path):
+def test_socket_notify_writes_newline():
     import socket
+    import tempfile
     import time as _time
 
     import telegram_bot
 
-    sock_path = tmp_path / "bot.sock"
+    # Not tmp_path: under macOS's /var/folders/.../T/ it exceeds AF_UNIX's 104-byte limit.
+    sock_path = Path(tempfile.mkdtemp(dir="/tmp")) / "bot.sock"
     server_thread, stop = telegram_bot.start_socket_server_sync(sock_path)
     try:
         # Wait for socket file to appear
@@ -390,6 +392,9 @@ def test_socket_notify_writes_newline(tmp_path):
     finally:
         stop()
         server_thread.join(timeout=2)
+        import shutil
+
+        shutil.rmtree(sock_path.parent, ignore_errors=True)
 
 
 def test_permission_reply_regex():
