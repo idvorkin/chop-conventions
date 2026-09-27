@@ -64,11 +64,13 @@ review:
     - path: "test_*.py"
       instructions: |
         Tests run in the pre-commit hook on Igor's live machines, so they must not touch real
-        state: signalling paths (pkill, os.kill, subprocess spawns) are mocked, never run
-        against the real process table; HOME is pointed at a temp dir when code reads ~; git
-        run in a temp repo gets an env with GIT_DIR, GIT_INDEX_FILE and GIT_WORK_TREE removed
-        (see test_diagnose.py), or it writes into the enclosing repo's index and config. Tests
-        that spawn real processes are marked `@pytest.mark.slow`, which fast-test deselects.
+        state: code that signals processes by pattern (pkill, os.kill) is mocked and never runs
+        against the real process table; a test that spawns its own real processes (e.g.
+        test_singleton_rejects_second_instance) must stop them itself; HOME is pointed at a
+        temp dir when code reads ~; git run in a temp repo gets an env with GIT_DIR,
+        GIT_INDEX_FILE and GIT_WORK_TREE removed (see test_diagnose.py), or it writes into the
+        enclosing repo's index and config. Slow multi-process tests are marked
+        `@pytest.mark.slow`, which fast-test deselects.
     - path: "skills/harden-telegram/server/*.ts"
       instructions: |
         tests/test_channel_gate.ts extracts the block between the "BEGIN/END channel-gate pure

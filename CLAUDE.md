@@ -8,8 +8,9 @@ Reusable development conventions, skills, and agent definitions designed to be p
 
 ```bash
 just              # List available targets
-just fast-test    # Quick test pass
-just test         # Full test suite
+just fast-test    # pytest over every skill's tests, minus @pytest.mark.slow
+just test         # Same as fast-test; the gate runs this. Not covered: the slow
+                  # kill-test and the bun tests in skills/harden-telegram/server/tests/
 ```
 
 Pre-commit hooks (biome, prettier, ruff, dasel, fast tests) run on `git commit`
