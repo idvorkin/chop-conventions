@@ -16,6 +16,7 @@ records history while it runs and answers retroactively:
     machine_doctor.py report --since 6h        # who has been hot, ranked by comm
     machine_doctor.py at 07:16                 # what was running then
     machine_doctor.py snapshot                 # right now + generic leak checks
+    machine_doctor.py mem                      # RSS grouped by app, with a TOTAL row
     machine_doctor.py snapshot --profile gascity   # + Gas City leak hunt
 
 On-demand only: no daemon, zero idle cost. An incident nobody was watching
@@ -41,6 +42,7 @@ from pathlib import Path
 import md_store as store
 from md_probe import (
     ProcSample,
+    mem_by_app,
     SpikeConfig,
     SpikeState,
     detect_spike,
@@ -59,7 +61,7 @@ from md_probe import (
     swap_out_kb_s,
     top_n,
 )
-from profiles import PROFILES, USER_SOCKETS, HostFacts
+from profiles import PROFILES, USER_SOCKETS, HostFacts, is_deleted_cwd, is_jekyll_server
 
 OK = "✓"
 WARN = "⚠"
@@ -152,7 +154,9 @@ def walk_procs(
                 pid=pid,
                 ppid=st.ppid,
                 comm=st.comm,
-                cpu_pct=interval_cpu_pct(prev_jiffies.get(pid), st.cpu_jiffies, dt_s, HERTZ),
+                cpu_pct=interval_cpu_pct(
+                    prev_jiffies.get(pid), st.cpu_jiffies, dt_s, HERTZ
+                ),
                 rss_kb=st.rss_kb,
                 etime_s=etime_s(st, uptime_s, HERTZ),
             )
@@ -174,8 +178,15 @@ def _socket_live(name: str) -> bool:
         return False
 
 
-def collect_facts(procs: list[ProcSample], zombies: list[int], *, load1: float,
-                  idle_pct: int | None, mem_total_kb: int, mem_avail_kb: int) -> HostFacts:
+def collect_facts(
+    procs: list[ProcSample],
+    zombies: list[int],
+    *,
+    load1: float,
+    idle_pct: int | None,
+    mem_total_kb: int,
+    mem_avail_kb: int,
+) -> HostFacts:
     """Fill HostFacts for the profiles: gc cmdlines, dolt cwds, tmux orphans."""
     facts = HostFacts(
         procs=procs,
@@ -186,6 +197,12 @@ def collect_facts(procs: list[ProcSample], zombies: list[int], *, load1: float,
         mem_avail_kb=mem_avail_kb,
     )
     facts.cmdlines = {pid: _cmdline(pid) for pid in _pids_named("gc")}
+    for p in procs:
+        cwd = _cwd(p.pid)  # unreadable for other users' procs: "" -> skipped
+        if is_deleted_cwd(cwd):
+            facts.deleted_cwds[p.pid] = cwd
+        if is_jekyll_server(p.comm, _cmdline(p.pid)):
+            facts.jekyll_pids.append(p.pid)
     facts.dolt_cwds = {pid: _cwd(pid) for pid in _pids_named("dolt")}
 
     sock_dir = _tmux_socket_dir()
@@ -229,7 +246,9 @@ def _build_app():
     @app.command()
     def watch(
         interval: int = typer.Option(30, "--interval", help="Seconds between samples."),
-        spike_cpu: float = typer.Option(300.0, "--spike-cpu", help="Per-process cpu%% spike trigger."),
+        spike_cpu: float = typer.Option(
+            300.0, "--spike-cpu", help="Per-process cpu%% spike trigger."
+        ),
         db: str = typer.Option(DEFAULT_DB, "--db"),
         state_dir: str = typer.Option(DEFAULT_STATE, "--state-dir"),
     ) -> None:
@@ -311,7 +330,9 @@ def _build_app():
                         f"# load1={load1} idle={idle}% mem_avail={mem.mem_avail_kb // 1024}MB "
                         f"swap_out={so}KB/s nproc={len(procs)} walk={walk_ms:.0f}ms\n\n"
                     )
-                    dump = store.write_spike_dump(sdir, ts, header + render_tree(procs, cmdlines))
+                    dump = store.write_spike_dump(
+                        sdir, ts, header + render_tree(procs, cmdlines)
+                    )
                     last_dump_ts = ts
                     if not in_spike:
                         print(
@@ -338,7 +359,9 @@ def _build_app():
 
     @app.command()
     def report(
-        since: str = typer.Option("6h", "--since", help="Window: <int><s|m|h|d>, e.g. 30m, 6h, 2d."),
+        since: str = typer.Option(
+            "6h", "--since", help="Window: <int><s|m|h|d>, e.g. 30m, 6h, 2d."
+        ),
         top: int = typer.Option(10, "--top"),
         db: str = typer.Option(DEFAULT_DB, "--db"),
         state_dir: str = typer.Option(DEFAULT_STATE, "--state-dir"),
@@ -361,7 +384,9 @@ def _build_app():
             )
             raise t.Exit(1)
 
-        print(f"{n} samples in the last {since} (ΣCPU% ∝ CPU-seconds at a fixed interval)\n")
+        print(
+            f"{n} samples in the last {since} (ΣCPU% ∝ CPU-seconds at a fixed interval)\n"
+        )
         print(f"{'COMM':<24} {'ΣCPU%':>10} {'PEAK-RSS':>10} {'SAMPLES':>8}  SPAN")
         for r in store.report(conn, since_ts, top=top, exclude=REPORT_EXCLUDE):
             span = f"{_ts_label(r.first_ts)[11:]} → {_ts_label(r.last_ts)[11:]}"
@@ -371,12 +396,16 @@ def _build_app():
             )
         spikes = store.spike_count(conn, since_ts)
         if spikes:
-            print(f"\n{spikes} spike sample(s) in window — dumps in {state_dir}/spikes/")
+            print(
+                f"\n{spikes} spike sample(s) in window — dumps in {state_dir}/spikes/"
+            )
 
     @app.command()
     def at(
         when: str = typer.Argument(..., help="'07:16', '07:16:38', or ISO-8601."),
-        tolerance: int = typer.Option(60, "--tolerance", help="Max seconds to the nearest sample."),
+        tolerance: int = typer.Option(
+            60, "--tolerance", help="Max seconds to the nearest sample."
+        ),
         db: str = typer.Option(DEFAULT_DB, "--db"),
         state_dir: str = typer.Option(DEFAULT_STATE, "--state-dir"),
     ) -> None:
@@ -407,11 +436,56 @@ def _build_app():
         print(f"{'PID':>8} {'CPU%':>6} {'RSS':>8} {'ETIME':>8}  COMM")
         for p in store.procs_at(conn, row.ts):
             cpu = "-" if p.cpu_pct is None else f"{p.cpu_pct:.0f}"
-            print(f"{p.pid:>8} {cpu:>6} {p.rss_kb // 1024:>6}MB {p.etime_s:>7}s  {p.comm}")
+            print(
+                f"{p.pid:>8} {cpu:>6} {p.rss_kb // 1024:>6}MB {p.etime_s:>7}s  {p.comm}"
+            )
         if row.is_spike:
             dump = store.dump_path_for(Path(state_dir), row.ts)
             if dump.exists():
                 print(f"\nfull tree at that instant: {dump}")
+
+    @app.command()
+    def mem(
+        top: int = typer.Option(15, "--top", help="Rows before 'everything else'."),
+        as_json: bool = typer.Option(False, "--json"),
+    ) -> None:
+        """Memory by app (not by PID), with everything-else and TOTAL rows."""
+        procs, _, _ = walk_procs({}, 0.0, _uptime_s())
+        procs = [p for p in procs if p.pid != SELF_PID]
+        cmdlines = {p.pid: _cmdline(p.pid) for p in procs}
+        rows, rest_kb, total_kb = mem_by_app(procs, cmdlines, top)
+        mi = parse_meminfo(_read("/proc/meminfo"))
+        used_kb = mi.mem_total_kb - mi.mem_avail_kb
+        if as_json:
+            print(
+                json.dumps(
+                    {
+                        "apps": [
+                            {"app": r.name, "rss_kb": r.rss_kb, "procs": r.count}
+                            for r in rows
+                        ],
+                        "everything_else_kb": rest_kb,
+                        "total_rss_kb": total_kb,
+                        "mem_total_kb": mi.mem_total_kb,
+                        "used_kb": used_kb,
+                        "sreclaimable_kb": mi.sreclaimable_kb,
+                    },
+                    indent=2,
+                )
+            )
+            return
+        mb = lambda kb: f"{kb / 1024:,.0f}MB"  # noqa: E731
+        print(f"{'APP':<32} {'RSS':>10} {'PROCS':>6}")
+        for r in rows:
+            print(f"{r.name[:32]:<32} {mb(r.rss_kb):>10} {r.count:>6}")
+        print(f"{'everything else':<32} {mb(rest_kb):>10}")
+        print(f"{'TOTAL (sum of RSS)':<32} {mb(total_kb):>10}")
+        print(
+            f"\nused (MemTotal-MemAvailable) {mb(used_kb)} of {mb(mi.mem_total_kb)}; "
+            f"reclaimable slab {mb(mi.sreclaimable_kb)}. "
+            "used minus RSS is mostly that slab (dentry/inode cache), not a leak; "
+            "RSS double-counts shared pages."
+        )
 
     @app.command()
     def snapshot(
@@ -422,7 +496,10 @@ def _build_app():
         import typer as t
 
         if profile not in PROFILES:
-            print(f"unknown profile {profile!r}; have: {', '.join(sorted(PROFILES))}", file=sys.stderr)
+            print(
+                f"unknown profile {profile!r}; have: {', '.join(sorted(PROFILES))}",
+                file=sys.stderr,
+            )
             raise t.Exit(2)
 
         # Two walks ~1s apart: interval cpu%, not lifetime averages.
@@ -437,8 +514,12 @@ def _build_app():
         load1 = parse_loadavg(_read("/proc/loadavg"))[0]
 
         facts = collect_facts(
-            procs, zombies, load1=load1, idle_pct=idle,
-            mem_total_kb=mem.mem_total_kb, mem_avail_kb=mem.mem_avail_kb,
+            procs,
+            zombies,
+            load1=load1,
+            idle_pct=idle,
+            mem_total_kb=mem.mem_total_kb,
+            mem_avail_kb=mem.mem_avail_kb,
         )
         findings = PROFILES[profile](facts)
         failures = sum(1 for f in findings if f.severity == "fail")
@@ -465,7 +546,8 @@ def _build_app():
                             for p in hot
                         ],
                         "findings": [
-                            {"severity": f.severity, "message": f.message} for f in findings
+                            {"severity": f.severity, "message": f.message}
+                            for f in findings
                         ],
                     },
                     indent=2,

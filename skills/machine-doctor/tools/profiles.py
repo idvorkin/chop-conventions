@@ -7,7 +7,7 @@ a dict, not a plugin framework (N=2).
 
 from dataclasses import dataclass, field
 
-from md_probe import ProcSample
+from md_probe import JEKYLL_RE, ProcSample
 
 # The human's own tmux sockets. Never a Gas City leak — flagging these trains
 # the reader to ignore the tool.
@@ -15,6 +15,14 @@ USER_SOCKETS = frozenset({"default", "ssh"})
 
 HOT_CPU_PCT = 300.0
 MEM_AVAIL_FAIL_PCT = 10
+# A jekyll preview older than this was started by an agent that moved on:
+# one per blog worktree, 100-250MB each, and nothing ever stops them.
+STALE_JEKYLL_S = 24 * 3600
+# Interactive holders of a deleted cwd are a person's pane, not a leak; and
+# wrappers (just, bash -c) carry the server's argv without being the server.
+SHELL_COMMS = frozenset(
+    {"bash", "sh", "zsh", "dash", "fish", "tmux", "just", "nvim", "vim"}
+)
 
 
 @dataclass(frozen=True)
@@ -33,6 +41,10 @@ class HostFacts:
     orphan_tmux: dict[int, str] = field(default_factory=dict)  # pid -> socket
     stale_sockets: list[str] = field(default_factory=list)
     zombies: list[int] = field(default_factory=list)
+    # pid -> cwd for processes whose cwd was deleted (worktree removed under
+    # a still-running server).
+    deleted_cwds: dict[int, str] = field(default_factory=dict)
+    jekyll_pids: list[int] = field(default_factory=list)
     load1: float = 0.0
     idle_pct: int | None = None
     mem_total_kb: int = 0
@@ -58,14 +70,29 @@ def is_watchdog(cmdline: str) -> bool:
     return "__gc-managed-dolt-scope-watchdog" in cmdline
 
 
+def is_jekyll_server(comm: str, cmdline: str) -> bool:
+    m = JEKYLL_RE.search(cmdline)
+    return comm not in SHELL_COMMS and bool(m) and m.group(2) != "build"
+
+
+def is_deleted_cwd(link: str) -> bool:
+    """The kernel appends ' (deleted)' to a /proc/<pid>/cwd whose dir is gone."""
+    return link.endswith(" (deleted)")
+
+
 def generic_findings(facts: HostFacts) -> list[Finding]:
     out: list[Finding] = []
     for p in facts.procs:
         if (p.cpu_pct or 0.0) > HOT_CPU_PCT:
             out.append(
-                Finding("warn", f"hot process: {p.comm} pid={p.pid} at {p.cpu_pct:.0f}% cpu")
+                Finding(
+                    "warn", f"hot process: {p.comm} pid={p.pid} at {p.cpu_pct:.0f}% cpu"
+                )
             )
-    if facts.mem_total_kb > 0 and facts.mem_avail_kb * 100 < facts.mem_total_kb * MEM_AVAIL_FAIL_PCT:
+    if (
+        facts.mem_total_kb > 0
+        and facts.mem_avail_kb * 100 < facts.mem_total_kb * MEM_AVAIL_FAIL_PCT
+    ):
         out.append(
             Finding(
                 "fail",
@@ -75,8 +102,34 @@ def generic_findings(facts: HostFacts) -> list[Finding]:
         )
     if facts.zombies:
         out.append(
-            Finding("warn", f"{len(facts.zombies)} zombie process(es): {sorted(facts.zombies)}")
+            Finding(
+                "warn",
+                f"{len(facts.zombies)} zombie process(es): {sorted(facts.zombies)}",
+            )
         )
+    by_pid = {p.pid: p for p in facts.procs}
+    for pid, cwd in sorted(facts.deleted_cwds.items()):
+        p = by_pid.get(pid)
+        name = p.comm if p else "?"
+        if name in SHELL_COMMS:
+            continue
+        out.append(
+            Finding(
+                "warn",
+                f"orphaned by a removed dir: {name} pid={pid} cwd={cwd} — "
+                "nothing can reach its worktree any more; strong kill candidate",
+            )
+        )
+    for pid in sorted(facts.jekyll_pids):
+        p = by_pid.get(pid)
+        if p and p.etime_s > STALE_JEKYLL_S:
+            out.append(
+                Finding(
+                    "warn",
+                    f"stale jekyll preview pid={pid} up {p.etime_s // 3600}h, "
+                    f"{p.rss_kb // 1024}MB — stop with SIGINT (it ignores SIGTERM)",
+                )
+            )
     return out
 
 
@@ -95,7 +148,9 @@ def gascity_findings(facts: HostFacts) -> list[Finding]:
         kind = classify_dolt(cwd)
         if kind == "city":
             out.append(
-                Finding("fail", f"city dolt server pid={pid} {cwd} — gc teardown missed it")
+                Finding(
+                    "fail", f"city dolt server pid={pid} {cwd} — gc teardown missed it"
+                )
             )
         elif kind == "unknown":
             out.append(Finding("warn", f"dolt server of unknown scope pid={pid} {cwd}"))
