@@ -1,13 +1,26 @@
 ---
 name: gen-image
-description: "Analyze content and generate illustrations via Gemini image API"
-argument-hint: "<post-or-topic> [--count N] [--aspect W:H] [--style '...'] [--ref path] [--transparent] [--fast/--no-fast] [--api-url url]"
+description: "Analyze content and generate illustrations via OpenRouter — Muse Image by default, GPT Image for new character designs and one-shot pages. Also carries the per-panel comic recipe (comic-panels.md)."
+argument-hint: "<post-or-topic> [--count N] [--aspect W:H] [--style '...'] [--ref path] [--transparent] [--model muse|gpt]"
 allowed-tools: Bash, Read, Write, Glob, Grep, AskUserQuestion, WebFetch
 ---
 
-# Generate Illustrations with Gemini
+# Generate Illustrations
 
-Analyze a blog post or topic, propose illustrations, and generate them via the Gemini image generation API.
+Analyze a blog post or topic, propose illustrations, and generate them through OpenRouter's Image API (`POST /api/v1/images`).
+
+## Models (decided 2026-09-26)
+
+| Model                    | Id                              | Cost         | Use it for                                                                                                                                                                                                                              |
+| ------------------------ | ------------------------------- | ------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Muse Image** (default) | `meta/muse-image`               | ~$0.01/image | Everything by default: cutouts, post illustrations, every comic panel (one panel per call)                                                                                                                                              |
+| GPT Image                | `openai/gpt-image-2.5-sunburst` | ~$0.15/image | Only: (1) rendering a recurring set's style-reference panel **once**, (2) first designs of a new character / anchor sheet, (3) one-shot whole pages (a four-panel grid in one call). Send `size: "2048x2048"`; it ignores `resolution`. |
+
+**Gemini and Imagen are removed.** Both are gone from the scripts and are not a fallback: a style study on the house felt-plush look scored Muse (with the recipe in `comic-panels.md`) 41/42 against the canon checklist, Gemini drifted off-model, and Muse costs a tenth of GPT. Imagen ignores the style block entirely.
+
+Muse snaps `aspect_ratio` to its own supported set (a `3:4` request came back 1280x1920, i.e. 2:3). Crop in `magick` if the exact ratio matters.
+
+**Comic strips** (multi-panel, recurring characters and sets): follow [`comic-panels.md`](comic-panels.md) — one Muse call per panel with named references, then composite the page with `magick`.
 
 ## Arguments
 
@@ -16,11 +29,10 @@ Parse the user's input for:
 - **Target**: A file path (e.g., `_d/four-healths.md`) or a freeform topic (e.g., "meditation benefits")
 - **`--style 'description'`**: Override the default illustration style entirely
 - **`--ref 'path'`**: One or more reference images for character consistency (can be repeated). When using the default raccoon style, **always** pass the canonical reference image (see below) unless the user opts out
-- **`--api-url 'url'`**: Override the Gemini API endpoint (default below)
 - **`--count N`**: Max number of images to generate (default: 3)
 - **`--aspect 'W:H'`**: Aspect ratio via `imageConfig` (default: 3:4, portrait). Valid values: `1:1`, `2:3`, `3:2`, `3:4`, `4:3`, `4:5`, `5:4`, `9:16`, `16:9`, `21:9`
 - **`--transparent`**: Generate on a uniform magenta background, then strip it via Recraft's `removeBackground` API. Soft-mask edges on hair/fur, no flood-fill / corner-seed failure modes, and works on AI outputs with irregular edges. **Cost:** ~$0.01/call. **Latency:** ~7-40s/call. **Requires:** `RECRAFT_API_TOKEN` in env or `~/.env` and a network connection. After the strip, two layered evals auto-run — see **Automatic eval** below.
-- **`--fast` / `--no-fast`**: Pick the Gemini image-generation model. **Default is `--fast`** (`gemini-3.1-flash-image-preview`) — cheaper, lower latency, the historical behavior. `--no-fast` swaps in `gemini-3-pro-image-preview` (Pro), which is more obedient to style directives but slower and more expensive. Use `--no-fast` when Flash is ignoring or mangling specific instructions in the prompt (shirt text, exact framing, character details). The selected model is passed to `gemini-image.sh` via the `GEMINI_IMAGE_MODEL` env var.
+- **`--model muse|gpt|<openrouter-id>`**: Image model. Default `muse` (`meta/muse-image`). `gpt` (`openai/gpt-image-2.5-sunburst`) only for the jobs in the table above.
 - **`--no-eval`**: Skip the alpha-mask eval pass that looks for interior holes and edge fringe (needs numpy/pillow/scipy — the `uv run --script` shebang installs them automatically, but plain `python3` invocations without `uv` may need this flag). The alpha-mean signal still runs.
 - **`--eval-strict`**: Exit nonzero when any alpha-mask eval threshold trips. Useful when a calling agent wants to retry or fail loudly instead of silently shipping a broken alpha mask.
 
@@ -54,11 +66,11 @@ Thresholds for the mask-quality signal are conservative by default (holes > 500,
 
 ## Configuration
 
-- **Auth (Gemini)**: `GOOGLE_API_KEY` — auto-loaded from `~/.env` by `generate.py`
+- **Auth (OpenRouter)**: `OPEN_ROUTER_KEY` (or `OPENROUTER_API_KEY`) — read from the environment, then `~/.env`, then the JSON file named by `$SECRET_BOX`, by `openrouter-image.py`
 - **Auth (Recraft)**: `RECRAFT_API_TOKEN` — auto-loaded from `~/.env` (tolerates `export KEY=val` form) by `recraft_bg_remove.py`. Required for `--transparent` (the only bg-removal path). Check the account balance any time with `./skills/gen-image/recraft_bg_remove.py balance` (no credits consumed). Each strip costs ~$0.01.
 - **Default style**: Read from `raccoon-style.txt` (in this skill's directory) by `generate.py`
 - **Reference image**: Auto-resolved by `generate.py` (searches `~/gits/blog*/images/raccoon-nerd.webp`)
-- **Low-level scripts**: `gemini-image.sh` handles single Gemini API calls; `recraft_bg_remove.py` (Typer + uv-shebang, stdlib-only HTTP layer) handles Recraft `removeBackground` calls. Both used internally by `generate.py`. The Recraft script honors the output extension: `.webp` is converted via `cwebp -q 90` so file sizes and visuals match `gemini-image.sh`'s direct WebP output.
+- **Low-level scripts**: `openrouter-image.py` (uv-shebang, stdlib-only) makes one OpenRouter image call: `openrouter-image.py <prompt|@file> <out.webp> [--model muse|gpt] [--ref PATH]... [--aspect 1:1]`. It takes any number of `--ref`s in order, logs the model id and billed cost to stderr, and retries once on a refusal (refusals are not billed). `recraft_bg_remove.py` (Typer + uv-shebang, stdlib-only HTTP layer) handles Recraft `removeBackground` calls. Both are used by `generate.py`; call `openrouter-image.py` directly when you need more than one reference (comic panels).
 - **Generation wrapper**: `../image-explore/generate.py` handles env loading, style, ref image, and parallel batch execution
 
 When `--style` is provided, it **replaces** the default raccoon style entirely (it is not appended).
@@ -72,7 +84,7 @@ Scene recipes that have been dialed in — pass the scene to `generate.py single
 The raccoon mascot beside a chrome **metal twin of itself** — an "AI" version of the mascot. Used as the blog's default AI-post image (`raccoon-ai-native`; see [`/raccoon-history`](https://idvork.in/raccoon-history)).
 
 - **Reference:** `--ref <blog>/images/raccoon-nerd.webp` (the canonical mascot). A reference locks the _shape_ far better than prose. **Caveat:** a ref also pulls its **shirt text** and incidental details, not just style — so state the shirt explicitly and negate the ref's, e.g. `green t-shirt reading exactly 'YEAR OF WONDER' (NOT 'technologist')`.
-- **Model:** `--no-fast` (Gemini Pro) — Flash mangles multi-word shirt text.
+- **Model:** default Muse. Recipe was dialed in on an earlier model; re-check the shirt text on the first spins.
 - **Aspect:** `--aspect 3:4`.
 - **The twin (scene snippet):** _"a METAL TWIN of the exact same raccoon — identical chibi proportions and silhouette (same head, ears, snout, ringed tail, same scale), NOT a humanoid robot — cast in iridescent anodized chrome (shifting rainbow/oil-slick, not flat grey) with warm glowing eyes and thin glowing energy-seams along the joints and tail."_
 - **Why iridescent + glow:** flat mirror-chrome reads "frozen"; iridescent metal + glowing eyes + energy-seams read "alive." The material does the emotional work.
@@ -193,10 +205,10 @@ If the target was a freeform topic (not a file), skip this phase — just tell t
 
 ## Error Handling
 
-- **Missing API key**: `generate.py` auto-loads from `~/.env`. If still missing, tell the user to set `GOOGLE_API_KEY`
+- **Missing API key**: `openrouter-image.py` checks env, `~/.env` and `$SECRET_BOX`. If still missing, tell the user to set `OPEN_ROUTER_KEY`
 - **API error**: Show the error message, suggest checking the API key or endpoint
-- **No jq**: The helper script (`gemini-image.sh`) requires `jq`
-- **No cwebp**: Images will be saved as PNG instead of WebP — inform the user
+- **Refusal**: Muse's content filter is stochastic; the script retries once identically. If it refuses again, suspect the reference set before the wording (an armed character sheet trips it) — see `comic-panels.md`
+- **No magick**: Images will be saved as PNG instead of WebP — inform the user
 
 ## Safety
 

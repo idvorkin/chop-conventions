@@ -158,7 +158,7 @@ Confirm with user via `AskUserQuestion` before generating. User may add, remove,
 
 ### Phase 3b: Verify & Retry
 
-After generation, **verify each image actually matches its scene description** before showing to the user. This catches cases where Gemini ignores complex scene descriptions (e.g., split-screens, multiple characters, specific compositions).
+After generation, **verify each image actually matches its scene description** before showing to the user. This catches cases where the model ignores complex scene descriptions (e.g., split-screens, multiple characters, specific compositions).
 
 1. **Launch background sub-agents in parallel** (one per image) to verify each result. Each agent should:
    - `Read` the generated image file (Claude has vision)
@@ -188,7 +188,7 @@ After generation, **verify each image actually matches its scene description** b
 
 **What does NOT count as a failure:**
 
-- Shirt text slightly wrong (Gemini often struggles with exact text)
+- Shirt text slightly wrong (image models often struggle with exact text)
 - Style differences from the reference
 - Minor composition differences (angle, lighting)
 

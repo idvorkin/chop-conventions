@@ -89,7 +89,7 @@ Machine-level skills go in `~/.claude/skills/` and are available everywhere. Pro
 | `clock`                  | machine | Schedule recurring session tasks (time checks, reminders)                                                            |
 | `delegate-to-other-repo` | machine | Delegate cross-repo work to a subagent with an isolated context; ends with a PR                                      |
 | `docs`                   | machine | Fetch fresh library/framework docs via Context7 (`ctx7`)                                                             |
-| `gen-image`              | machine | Generate illustrations via Gemini image API                                                                          |
+| `gen-image`              | machine | Generate illustrations via OpenRouter (Muse Image default, GPT Image opt-in) + per-panel comic recipe                |
 | `gist-image`             | machine | Host images on GitHub gists for PRs/issues                                                                           |
 | `herdr`                  | machine | Drive herdr workspaces/agents headlessly; keep claude/codex integrations healthy                                     |
 | `image-explore`          | machine | Brainstorm and compare visual directions                                                                             |

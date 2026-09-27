@@ -8,7 +8,7 @@
 #     "scipy",
 # ]
 # ///
-# ABOUTME: Wrapper around gemini-image.sh for image generation (single or batch).
+# ABOUTME: Wrapper around gen-image/openrouter-image.py (Muse Image by default) for single or batch generation.
 # ABOUTME: Handles env loading, prompt assembly, and ref image resolution safely.
 # ABOUTME: In batch mode, augments the input JSON with _prompt and _duration_s debug fields.
 #
@@ -42,13 +42,12 @@ GREENSCREEN_PROMPT = (
     "uniform flat magenta everywhere behind the character."
 )
 
-# Gemini image-generation models. `fast` is the default (Flash), matching
-# the historical behavior of gemini-image.sh; `pro` swaps in the Pro model
-# (more obedient to style directives, slower and more expensive). The
-# selected id is plumbed to gemini-image.sh via the GEMINI_IMAGE_MODEL
-# env var — the script uses it to derive the default API URL.
-GEMINI_FAST_MODEL = "gemini-3.1-flash-image-preview"
-GEMINI_PRO_MODEL = "gemini-3-pro-image-preview"
+# Image models on OpenRouter. Muse Image is the house default (~$0.01/image);
+# GPT Image (~$0.15/image) is the opt-in for first designs of a new character
+# and for one-shot whole pages. Gemini/Imagen were retired 2026-09-26.
+MUSE_MODEL = "meta/muse-image"
+GPT_MODEL = "openai/gpt-image-2.5-sunburst"
+MODEL_ALIASES = {"muse": MUSE_MODEL, "gpt": GPT_MODEL}
 
 
 @dataclass
@@ -61,7 +60,7 @@ class Direction:
 
 @dataclass
 class GenerateConfig:
-    gemini_script: str
+    image_script: str
     style: str
     ref_image: str | None
     aspect: str
@@ -72,10 +71,8 @@ class GenerateConfig:
     eval_strict: bool = False
     # Path to the Recraft script (skills/gen-image/recraft_bg_remove.py).
     recraft_script: str | None = None
-    # Gemini image-generation model id. Plumbed to gemini-image.sh via
-    # the GEMINI_IMAGE_MODEL env var. Defaults to the Flash ("fast")
-    # model; --no-fast on the CLI swaps in the Pro model.
-    gemini_model: str = GEMINI_FAST_MODEL
+    # OpenRouter image model id, passed to openrouter-image.py --model.
+    model: str = MUSE_MODEL
 
 
 @dataclass
@@ -482,13 +479,19 @@ def generate_one(direction: Direction, config: GenerateConfig) -> GenerationResu
 
     full_prompt = " ".join(prompt_parts)
 
-    cmd = ["bash", config.gemini_script, full_prompt, direction.output, ""]
+    cmd = [
+        config.image_script,
+        full_prompt,
+        direction.output,
+        "--model",
+        config.model,
+        "--aspect",
+        config.aspect,
+    ]
     if config.ref_image:
-        cmd.append(config.ref_image)
+        cmd += ["--ref", config.ref_image]
 
     env = os.environ.copy()
-    env["ASPECT_RATIO"] = config.aspect
-    env["GEMINI_IMAGE_MODEL"] = config.gemini_model
 
     print(f"Generating: {direction.output}", file=sys.stderr)
     t0 = time.monotonic()
@@ -580,7 +583,7 @@ def _build_app():
     import typer
 
     app = typer.Typer(
-        help="Generate raccoon images via Gemini (single or batch).",
+        help="Generate raccoon images via OpenRouter, Muse Image by default (single or batch).",
         add_completion=False,
         no_args_is_help=True,
     )
@@ -599,13 +602,12 @@ def _build_app():
             False,
             help="Generate on a uniform magenta background, then strip it via Recraft's removeBackground API (~$0.01/call, ~7-40s/image, requires RECRAFT_API_TOKEN). Soft-mask edges on hair/fur, no flood-fill failure modes.",
         ),
-        fast: bool = typer.Option(
-            True,
-            "--fast/--no-fast",
+        model: str = typer.Option(
+            "muse",
             help=(
-                f"Pick the Gemini image model. --fast (default) uses {GEMINI_FAST_MODEL} "
-                f"(Flash, cheaper/faster). --no-fast uses {GEMINI_PRO_MODEL} (Pro: more "
-                "obedient to style directives, slower, more expensive)."
+                f"Image model: muse (default, {MUSE_MODEL}, ~$0.01) or gpt "
+                f"({GPT_MODEL}, ~$0.15; new character designs and one-shot pages), "
+                "or any OpenRouter image model id."
             ),
         ),
         no_eval: bool = typer.Option(
@@ -623,15 +625,10 @@ def _build_app():
         chop_root = resolve_chop_root()
         load_env()
 
-        if not os.environ.get("GOOGLE_API_KEY"):
-            print(
-                "Error: GOOGLE_API_KEY not found in environment or ~/.env",
-                file=sys.stderr,
-            )
-            raise typer.Exit(1)
-
         config = GenerateConfig(
-            gemini_script=str(chop_root / "skills" / "gen-image" / "gemini-image.sh"),
+            image_script=str(
+                chop_root / "skills" / "gen-image" / "openrouter-image.py"
+            ),
             style=style or read_default_style(chop_root),
             ref_image=ref or resolve_ref_image(),
             aspect=aspect,
@@ -641,7 +638,7 @@ def _build_app():
             recraft_script=str(
                 chop_root / "skills" / "gen-image" / "recraft_bg_remove.py"
             ),
-            gemini_model=GEMINI_FAST_MODEL if fast else GEMINI_PRO_MODEL,
+            model=MODEL_ALIASES.get(model, model),
         )
 
         direction = Direction(scene=scene, shirt=shirt, output=output)
@@ -670,13 +667,12 @@ def _build_app():
             False,
             help="Generate on a uniform magenta background, then strip it via Recraft's removeBackground API (~$0.01/call, ~7-40s/image, requires RECRAFT_API_TOKEN). Soft-mask edges on hair/fur, no flood-fill failure modes.",
         ),
-        fast: bool = typer.Option(
-            True,
-            "--fast/--no-fast",
+        model: str = typer.Option(
+            "muse",
             help=(
-                f"Pick the Gemini image model. --fast (default) uses {GEMINI_FAST_MODEL} "
-                f"(Flash, cheaper/faster). --no-fast uses {GEMINI_PRO_MODEL} (Pro: more "
-                "obedient to style directives, slower, more expensive)."
+                f"Image model: muse (default, {MUSE_MODEL}, ~$0.01) or gpt "
+                f"({GPT_MODEL}, ~$0.15; new character designs and one-shot pages), "
+                "or any OpenRouter image model id."
             ),
         ),
         no_eval: bool = typer.Option(
@@ -694,15 +690,10 @@ def _build_app():
         chop_root = resolve_chop_root()
         load_env()
 
-        if not os.environ.get("GOOGLE_API_KEY"):
-            print(
-                "Error: GOOGLE_API_KEY not found in environment or ~/.env",
-                file=sys.stderr,
-            )
-            raise typer.Exit(1)
-
         config = GenerateConfig(
-            gemini_script=str(chop_root / "skills" / "gen-image" / "gemini-image.sh"),
+            image_script=str(
+                chop_root / "skills" / "gen-image" / "openrouter-image.py"
+            ),
             style=style or read_default_style(chop_root),
             ref_image=ref or resolve_ref_image(),
             aspect=aspect,
@@ -712,7 +703,7 @@ def _build_app():
             recraft_script=str(
                 chop_root / "skills" / "gen-image" / "recraft_bg_remove.py"
             ),
-            gemini_model=GEMINI_FAST_MODEL if fast else GEMINI_PRO_MODEL,
+            model=MODEL_ALIASES.get(model, model),
         )
 
         batch_path = Path(json_file)

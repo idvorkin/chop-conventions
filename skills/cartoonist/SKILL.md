@@ -13,6 +13,10 @@ he is, `characters.md` the canon, `contract.md` the panel geometry,
 `pitches/` the Sunday pitches. **Do not copy any of that into this skill or
 into a prompt by hand; `wake.sh` prints it.**
 
+## House image model (since 2026-09-26)
+
+**Muse Image through OpenRouter is the default for every Gutter picture**, one panel per call, page composited with `magick`. GPT Image (`openai/gpt-image-2.5-sunburst`) only renders a recurring set's reference panel once, first designs of a new character, and one-shot pages. **Gemini and Imagen are retired**, not a fallback. The recipe (named references in order: canon raccoon, then character sheets, then the set's GPT reference panel; the felt-plush style block; warm set wording; eyes wide open; modern smartphone; balloons along the top; claw raised pincers-up; full stops spelled out) and its traps (random claw chirality, armed sheets trip the filter, Meta direct for one refine turn only) live in the gen-image skill's [`comic-panels.md`](../gen-image/comic-panels.md). Gutter's `recipe.md` applies it to the blog's contract. If `recipe.md` still says Gemini, it is stale; follow `comic-panels.md`.
+
 ## Hard rules
 
 - **Gutter never reads igor2.** His worktree is in `larry-blog`; the brief
