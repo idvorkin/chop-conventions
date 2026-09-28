@@ -41,7 +41,7 @@ into a prompt by hand; `wake.sh` prints it.**
    ls -d node_modules _site back-links.json || just worktree-init   # only a brand-new slot is cold
    ```
 
-   Release it with `treehouse return "$WT"` once the PR is pushed and its preview is no longer needed.
+   Release it with `treehouse return "$WT"` once the PR is pushed and its preview is no longer needed. Treehouse 3.0+ exits 3 when the worktree still has uncommitted changes and leaves it leased; land or discard them, then return again (`--force` only for disposable changes).
 
 2. Build the prompt: the bundle, then the brief.
 
