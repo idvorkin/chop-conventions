@@ -185,7 +185,6 @@ folds those catches into its output.
 ```bash
 skills/machine-doctor/tools/sleep-catcher.sh install   # agent + copy on the internal disk
 skills/machine-doctor/tools/sleep-catcher.sh status
-skills/machine-doctor/tools/sleep-catcher.sh replay '2026-09-26 21:00'   # reasons only, past events
 ```
 
 - `install` copies the script to `~/.local/share/machine-doctor/`: a launchd
