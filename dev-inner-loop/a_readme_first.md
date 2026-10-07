@@ -10,6 +10,8 @@ Do not talk about how you'll use the rules, just use them
 - guardrails.md - Safety rules requiring user approval
 - repo-modes.md - AI-tools vs Human-supervised modes
 - retros.md - Periodic retrospective process
+- device-debug-loop.md - Logs, in-app reports, pull-logs and file-bugs for apps on a device
+- ios-test-ladder.md - Host → simulator → device rungs, simulator hooks and hygiene
 
 ## Covered by Skills/Plugins (use these instead)
 
