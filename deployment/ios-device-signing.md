@@ -70,9 +70,17 @@ rewritten with an empty account list, which had held the account at 06:09.
 Before a signing build:
 
 ```sh
-pgrep -fl xcodebuild    # someone else is building: wait for them to finish
+pgrep -fl '^[^ ]*xcodebuild .*-allowProvisioningUpdates'   # a signing build is running: wait
 herdr workspace list    # which agents are active
 ```
+
+Anchor the pattern on the binary. A bare `pgrep -f xcodebuild` also matches other agents' `zsh -c` wrappers,
+heredocs and wait loops that merely mention the word. It reported 30 "builds" when there were 0–2, and it
+held a build for 20 minutes.
+
+An install via `devicectl` that ends with CoreDeviceError 10002 ("device was not, or could not be, unlocked")
+succeeded. The device was locked, so only the launch failed. Report "installed, launches when unlocked" and
+don't rebuild.
 
 ponytail: the guard is a manual check, so two agents can still race. If this keeps happening, wrap
 `xcodebuild` in every repo's device recipe with a shared lock (`fcntl.flock` on
