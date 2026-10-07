@@ -10,7 +10,7 @@ this file when `classify_machine` returns `"orbstack-dev"`.
 
 ## Shell aliases
 
-- `ps` is aliased to a **pager wrapper** in this shell — invocations with positional args error with `invalid value for '--pager'`. Use `/bin/ps -f` explicitly, or `pgrep -f <pattern>` for PID lookup.
+- `ps` is aliased to a **pager wrapper** in this shell — invocations with positional args error with `invalid value for '--pager'`. Use `/bin/ps -f` explicitly, or `pgrep -x <name>` / an anchored `pgrep -f '^[^ ]*<name> '` for PID lookup (see the pgrep rule in `global.md`).
 
 ## macOS-only tools
 

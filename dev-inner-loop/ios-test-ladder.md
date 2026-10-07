@@ -16,9 +16,11 @@ screenshots or UI automation.
 ## Simulator hooks instead of tapping
 
 - **Launch hooks.** An env var performs the action N seconds after launch and logs an event:
-  `SIMCTL_CHILD_<APP>_<ACTION>=1 xcrun simctl launch …`. A launch argument can feed media (the simulator
+  `SIMCTL_CHILD_<APP>_<ACTION>=1 xcrun simctl launch …`. simctl strips the prefix, so the app reads
+  `<APP>_<ACTION>`. A launch argument can feed media (the simulator
   has no camera).
-- **Pre-answer system prompts:** `xcrun simctl privacy <udid> grant photos|camera|microphone <bundle-id>`.
+- **Pre-answer system prompts:** `xcrun simctl privacy <udid> grant photos|microphone|location <bundle-id>`
+  (there is no `camera` service, and the simulator has no camera anyway).
 - **Pre-answer app prompts:** `xcrun simctl spawn <udid> defaults write <bundle-id> <key> <value>`. The check
   deletes what it set.
 - **The look of a screen:** `xcrun simctl io <udid> screenshot out.png`.
@@ -34,13 +36,14 @@ screenshots or UI automation.
   with `xcrun simctl bootstatus <udid> -b`. Never `open -a Simulator`. Delete throwaway ones when done.
 - **Boot explicitly before `xcodebuild test`** when other agents' simulators are up, or the test dies with
   "Timed out trying to boot simulator after 60 s".
-- **Erase for first-run state.** A test that depends on first-run state needs `simctl erase`. `simctl uninstall`
+- **Erase for first-run state.** A test that depends on first-run state needs
+  `xcrun simctl shutdown <udid> && xcrun simctl erase <udid>` (erase refuses a booted simulator). `simctl uninstall`
   fails on a shut-down simulator and leaves the old settings behind.
 - **Isolate order-sensitive tests.** A test that hands off to another app (Safari) can break the next test in
   the same run. Run it on its own.
 - **Rerun the first run on a fresh simulator** before believing a failure: it can stall ~10 s on cold start.
 - **Waiting for the app to exit:** capture `simctl spawn <udid> launchctl list` into a variable, then grep it.
-  Piping it to `grep -q` under pipefail ends the wait early (see the `curl | grep -q` rule in `global.md`).
+  Piping it to `grep -q` under pipefail ends the wait early (see the `curl | grep -q` rule in `claude-md/global.md`).
 
 ## Long builds and tests
 

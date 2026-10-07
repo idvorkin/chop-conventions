@@ -1,8 +1,8 @@
 # Device debug loop: logs, in-app reports, pull, file
 
 For any app whose bugs show up only on a device the agent can't see (phone, iPad, watch). Build this on day
-one: after that, agents fix bugs from evidence instead of from the user's memory. All three of Igor's iOS
-apps adopted it independently (2026-09/10), and almost every device bug since came in through it.
+one: after that, agents fix bugs from evidence instead of from the user's memory. Two of Igor's iOS apps built it in
+2026-09/10, and in both nearly every device bug since came in through it.
 
 ## The pieces
 

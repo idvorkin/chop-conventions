@@ -142,13 +142,13 @@ During code review:
    gh pr checks
    ```
 
-### When an agent merges its own PR
+### 5a. When an agent merges its own PR
 
 When the agent is allowed to merge without a human review:
 
-1. **Check that CI exists.** Run `ls .github/workflows` and confirm there are workflows. CodeRabbit or Copilot
-   report "pass" even when they were rate-limited or skipped the review, so a green check can mean nothing
-   was checked. With no CI, run the local tests on the final tip and say so in the merge note.
+1. **Check that CI exists.** Run `ls .github/workflows` and confirm there are workflows. CodeRabbit reports "pass" even when its
+   review was rate-limited or skipped, and Copilot can say "unable to review" on quota, so a green or quiet
+   check can mean nothing was checked. With no CI, run the local tests on the final tip and say so in the merge note.
 2. **Run one independent review agent** on the branch diff. Brief it on what must not regress (behaviour on
    the old platform, threading, privacy rules, scripts), and ask for file:line, input → wrong outcome, and
    whether each finding is verified or only suspected. On 2026-10-07 one review pass found three real bugs
@@ -156,11 +156,11 @@ When the agent is allowed to merge without a human review:
 3. Fix the findings, review your own fixes, then merge. For stacks, follow the stacked-PR rule in
    `claude-md/global.md`.
 
-### Closing issues
+### 5b. Closing issues
 
-Close with the evidence. The closing comment names the fixing commit or PR, the rung it was verified on (see
-`ios-test-ladder.md`), and the log line or number that proves it. Put `Fixes #N` in a commit only when that
-rung has already run. Otherwise, close the issue by hand after the device run. An issue with no evidence yet
+Close with the evidence. The closing comment names the fixing commit or PR, the level it was verified at (unit, integration, or on
+the real target; for iOS see `ios-test-ladder.md`), and the log line or number that proves it. Put `Fixes #N` in a commit only when that
+verification has already run. Otherwise, close the issue by hand after it has. An issue with no evidence yet
 stays open.
 
 ### 6. Keeping PR Updated
@@ -186,7 +186,7 @@ stays open.
 - **Use `gh` commands** for all GitHub interactions
 - **Check test output** before and after making changes
 - **Ask before updating review comments** - some teams prefer different approaches
-- **Never merge without passing tests** and approved reviews
+- **Never merge without passing tests** and either an approved human review or the self-merge checklist in 5a
 
 ## Quick Reference
 
