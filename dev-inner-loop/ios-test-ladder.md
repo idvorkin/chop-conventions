@@ -21,8 +21,14 @@ screenshots or UI automation.
   has no camera).
 - **Pre-answer system prompts:** `xcrun simctl privacy <udid> grant photos|microphone|location <bundle-id>`
   (there is no `camera` service, and the simulator has no camera anyway).
-- **Pre-answer app prompts:** `xcrun simctl spawn <udid> defaults write <bundle-id> <key> <value>`. The check
-  deletes what it set.
+- **Pre-answer app prompts:** terminate the app first (`xcrun simctl terminate <udid> <bundle-id>`).
+  - For a key the app has **never** written, `xcrun simctl spawn <udid> defaults write <bundle-id> <key> <value>`
+    works. It writes the simulator-wide preferences, which the app reads.
+  - For a key the app has **already** written, that write is silently ignored, because the app's own
+    container plist wins. Edit that plist instead:
+    `plutil -replace <key> <type-flag> <value> "$(xcrun simctl get_app_container <udid> <bundle-id> data)/Library/Preferences/<bundle-id>.plist"`,
+    where `<type-flag>` is `-bool`, `-date`, `-string` and so on.
+  - The check deletes what it set.
 - **The look of a screen:** `xcrun simctl io <udid> screenshot out.png`.
 - **Services the simulator lacks** (iCloud container, the watch, a server): one env var points the app at a
   plain local stand-in (a folder, a fake id). Two simulators sharing one folder test a two-device feature end
