@@ -43,7 +43,8 @@ error: Provisioning profile "iOS Team Provisioning Profile: <id>" doesn't includ
 ## Checking whether the account is there
 
 - **Don't trust** `defaults read com.apple.dt.Xcode DVTDeveloperAccountManagerAppleIDLists`. It has been
-  populated while builds failed with No Accounts, and empty while builds signed and registered devices.
+  populated while builds failed with No Accounts, and empty while builds signed and registered devices. On 2026-10-09 it was empty, an agent told Igor he had
+  to sign in, and the next `-allowProvisioningUpdates` build added the iCloud capability and succeeded.
 - **Don't** go looking in the keychain. There is no Xcode token item to find, and the permission classifier
   refuses `security` lookups anyway.
 - **The only reliable check** is a build that needs the portal, with its output grepped for `No Accounts`.
@@ -67,11 +68,21 @@ On 2026-10-07, one agent's signing build ran from 06:35 to 06:40 while another a
 the portal started at 06:40:37. The second build failed with No Accounts. At 06:41:18 Xcode's prefs were
 rewritten with an empty account list, which had held the account at 06:09.
 
-Before a signing build:
+Every signing build runs under one shared kernel lock, so builds queue instead of colliding:
+
+```sh
+lockf -k -t 900 ~/tmp/agent/locks/xcode-signing.lock \
+  xcodebuild … -allowProvisioningUpdates -allowProvisioningDeviceRegistration build
+```
+
+`lockf` holds the lock for the whole build and the system drops it when the process ends, so a crashed
+build can't leave a stale lock (a `mkdir` lock can: two waiters both clear a dead owner's lock and both take
+it). `-t 900` gives up after 15 minutes with exit 75. lockf prints nothing while it waits.
+
+Agents that don't take the lock yet are covered only by a manual check before building:
 
 ```sh
 pgrep -fl '^[^ ]*xcodebuild .*-allowProvisioningUpdates'   # a signing build is running: wait
-herdr workspace list    # which agents are active
 ```
 
 Anchor the pattern on the binary. A bare `pgrep -f xcodebuild` also matches other agents' `zsh -c` wrappers,
@@ -82,6 +93,5 @@ An install via `devicectl` that ends with CoreDeviceError 10002 ("device was not
 succeeded. The device was locked, so only the launch failed. Report "installed, launches when unlocked" and
 don't rebuild.
 
-ponytail: the guard is a manual check, so two agents can still race. If this keeps happening, wrap
-`xcodebuild` in every repo's device recipe with a shared lock (`fcntl.flock` on
-`~/.cache/xcode-signing.lock`) so signing builds queue instead of colliding.
+Put the `lockf` wrapper in every repo's device recipe (`just build-device`, `just ipad`), so no agent has to
+remember it. Magic Monitor's recipe does already (mmn-af8).
