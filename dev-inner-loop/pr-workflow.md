@@ -17,6 +17,7 @@
 Before starting any work:
 
 1. **Draft the issue with the user**
+
    - Discuss the problem/feature with the user
    - Create a draft issue description
    - Iterate on the issue until you're confident you understand:
@@ -123,6 +124,7 @@ During code review:
    ```
 
 2. **After fixing review comments**
+
    - Ask the user: "Should I update the review comment to show it's been addressed?"
    - If yes, respond to the comment explaining what was changed
 
@@ -139,6 +141,27 @@ During code review:
    # Check CI status
    gh pr checks
    ```
+
+### 5a. When an agent merges its own PR
+
+When the agent is allowed to merge without a human review:
+
+1. **Check that CI exists.** Run `ls .github/workflows` and confirm there are workflows. CodeRabbit reports "pass" even when its
+   review was rate-limited or skipped, and Copilot can say "unable to review" on quota, so a green or quiet
+   check can mean nothing was checked. With no CI, run the local tests on the final tip and say so in the merge note.
+2. **Run one independent review agent** on the branch diff. Brief it on what must not regress (behaviour on
+   the old platform, threading, privacy rules, scripts), and ask for file:line, input → wrong outcome, and
+   whether each finding is verified or only suspected. On 2026-10-07 one review pass found three real bugs
+   after every test had passed.
+3. Fix the findings, review your own fixes, then merge. For stacks, follow the stacked-PR rule in
+   `claude-md/global.md`.
+
+### 5b. Closing issues
+
+Close with the evidence. The closing comment names the fixing commit or PR, the level it was verified at (unit, integration, or on
+the real target; for iOS see `ios-test-ladder.md`), and the log line or number that proves it. Put `Fixes #N` in a commit only when that
+verification has already run. Otherwise, close the issue by hand after it has. An issue with no evidence yet
+stays open.
 
 ### 6. Keeping PR Updated
 
@@ -163,7 +186,7 @@ During code review:
 - **Use `gh` commands** for all GitHub interactions
 - **Check test output** before and after making changes
 - **Ask before updating review comments** - some teams prefer different approaches
-- **Never merge without passing tests** and approved reviews
+- **Never merge without passing tests** and either an approved human review or the self-merge checklist in 5a
 
 ## Quick Reference
 
