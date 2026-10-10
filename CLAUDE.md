@@ -113,7 +113,7 @@ Before modifying any workflow that uses `anthropics/claude-code-action@v1`, read
 - `dev-inner-loop/` - Development workflow conventions (clean code, commits, PRs, guardrails)
 - `skills/` - Reusable Claude Code skills (each is a directory with a `SKILL.md`)
 - `claude-agents/` - Agent definitions (code-review, conversation-log-publisher, image-content-analyzer, etc.)
-- `deployment/` - Deployment guides (surge.sh)
+- `deployment/` - Deployment guides (surge.sh, iOS device signing)
 - `copied_prompts/` - Reference prompts from other sources
 - `python/` - Python-specific conventions
 - `pwa/` - PWA-specific specifications and patterns
