@@ -35,6 +35,7 @@ column is where the fix lives.
 | Swap                  | not near full; no sustained swap-out                  | memory pressure (swap is the symptom)                  | same as memory                  |
 | Disk                  | data volumes <90%                                     | caches, VM images, build output                        | Tier 1c, `doctor-macos.md` §4   |
 | VMs / containers      | VM memory cap ≤ half of host RAM; no stale servers    | OrbStack/Docker defaults; forgotten dev servers inside | `doctor-macos.md` §2            |
+| Simulators (macOS)    | only the sims a running build uses are booted         | test pipelines leaving `nm-test-*` sims booted         | `doctor-macos.md` §2 (_manual_) |
 | Thermal               | no CPU speed limit                                    | sustained load                                         | find the load                   |
 | Sleep / wake          | no thermal sleeps; forced ones named (often the user) | heat; a script calling `pmset sleepnow`                | `sleeps`, `doctor-macos.md` §5  |
 | Zombies               | none                                                  | a parent not reaping                                   | Tier 1d                         |
