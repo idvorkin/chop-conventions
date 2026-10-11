@@ -2,7 +2,7 @@
 
 Recommended libraries for Igor's iOS, iPadOS and watchOS apps: SwiftUI apps written mostly by agents, with log-first debugging, host tests before simulators, one simulator at a time, and device deploys through `xcodebuild` and `devicectl`.
 
-Picked by Igor on 2026-10-11 in a Lavish review, with a second opinion from Codex (GPT-6 Astra). Stars are GitHub counts from 2026-10-11. Savings are estimates, not measurements: to measure, take a one-week baseline (time from bug report to evidence, deploy cycles per fix, simulator minutes, signing failures by cause, Igor's minutes).
+Picked by Igor on 2026-10-11 in a Lavish review, with a second opinion from Codex (GPT-6 Astra): [libraries-review-astra.md](libraries-review-astra.md). This file is canonical; `libraries.html` is the Lavish review page it came from, kept as a snapshot. Stars are GitHub counts from 2026-10-11. Savings are estimates, not measurements: to measure, take a one-week baseline (time from bug report to evidence, deploy cycles per fix, simulator minutes, signing failures by cause, Igor's minutes).
 
 ## Rules
 
@@ -37,11 +37,11 @@ Picked by Igor on 2026-10-11 in a Lavish review, with a second opinion from Code
 
 ## Build & release
 
-| Verdict | Repo                                                              |   Stars | Value prop                                                                                             | Savings for Igor                                                                                                                                                                                  |
-| ------- | ----------------------------------------------------------------- | ------: | ------------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Adopt   | [fastlane/fastlane](https://github.com/fastlane/fastlane)         | ★ 42.2k | Automate signing, builds, TestFlight and screenshots; match keeps certificates and profiles in a repo. | May make signing reproducible when missing or inconsistent signing assets are the cause. It won't fix account login or device-registration failures. Classify a real failed deploy first (Astra). |
-| Adopt   | [yonaskolb/XcodeGen](https://github.com/yonaskolb/XcodeGen)       |  ★ 8.8k | Generate .xcodeproj from YAML.                                                                         | Already in use: fewer project-file conflicts, though agents can still collide in the YAML (Astra).                                                                                                |
-| Adopt   | [cpisciotta/xcbeautify](https://github.com/cpisciotta/xcbeautify) |  ★ 1.5k | Formats xcodebuild output and can write JUnit reports.                                                 | Agents find the first real build error faster. Keep raw output with tee and pipefail (Astra: adopt as a CLI tool).                                                                                |
+| Verdict  | Repo                                                              |   Stars | Value prop                                                                                             | Savings for Igor                                                                                                                                                                                  |
+| -------- | ----------------------------------------------------------------- | ------: | ------------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Consider | [fastlane/fastlane](https://github.com/fastlane/fastlane)         | ★ 42.2k | Automate signing, builds, TestFlight and screenshots; match keeps certificates and profiles in a repo. | May make signing reproducible when missing or inconsistent signing assets are the cause. It won't fix account login or device-registration failures. Classify a real failed deploy first (Astra). |
+| Adopt    | [yonaskolb/XcodeGen](https://github.com/yonaskolb/XcodeGen)       |  ★ 8.8k | Generate .xcodeproj from YAML.                                                                         | Already in use: fewer project-file conflicts, though agents can still collide in the YAML (Astra).                                                                                                |
+| Adopt    | [cpisciotta/xcbeautify](https://github.com/cpisciotta/xcbeautify) |  ★ 1.5k | Formats xcodebuild output and can write JUnit reports.                                                 | Agents find the first real build error faster. Keep raw output with tee and pipefail (Astra: adopt as a CLI tool).                                                                                |
 
 ## Swift building blocks
 
