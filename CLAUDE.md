@@ -117,6 +117,7 @@ Before modifying any workflow that uses `anthropics/claude-code-action@v1`, read
 - `copied_prompts/` - Reference prompts from other sources
 - `python/` - Python-specific conventions
 - `pwa/` - PWA-specific specifications and patterns
+- `ios-app/` - iOS app conventions: `libraries.md` (recommended libraries, tools and agent skills; the rendered page is `libraries.html`)
 - `useful-snippets/` - Reusable patterns for cross-project tasks
 - `docs/` - Design specs and documentation
 - `zz-chop-logs/` - Session logs

@@ -1,0 +1,909 @@
+<!doctype html>
+<html lang="en" data-theme="light">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <title>iOS Libraries</title>
+    <link
+      rel="stylesheet"
+      href="https://cdn.jsdelivr.net/npm/daisyui@5.5.19/daisyui.css"
+    />
+    <link
+      rel="stylesheet"
+      href="https://cdn.jsdelivr.net/npm/daisyui@5.5.19/themes.css"
+    />
+    <script src="https://cdn.jsdelivr.net/npm/@tailwindcss/browser@4.2.4/dist/index.global.js"></script>
+    <style>
+      *,
+      *::before,
+      *::after {
+        box-sizing: border-box;
+      }
+      td,
+      th {
+        overflow-wrap: anywhere;
+        vertical-align: top;
+      }
+      body {
+        background: var(--color-base-100);
+      }
+    </style>
+  </head>
+  <body class="p-4 md:p-8 max-w-6xl mx-auto">
+    <h1 class="text-3xl font-bold">iOS libraries worth knowing</h1>
+    <p class="mt-2 opacity-80">
+      18 libraries and tools, grouped by what they're for and ranked for Igor's
+      setup: SwiftUI apps built by agents, log-first debugging, device deploys
+      and one simulator at a time. Stars and last push are live from GitHub
+      (2026-10-11). <b>Savings are estimates</b> against today's workflow, not
+      measurements. Skips are dropped, and duplicates are cut to one per job:
+      one SwiftUI skill (twostraws), one style guide (Airbnb, which matches
+      swift-format), one general index (awesome-ios). Each section is sorted
+      Adopt, then Consider; GitHub repos under 1,000 stars are left out (Apple's
+      own docs have no stars and stay).
+    </p>
+    <div class="alert alert-info mt-4">
+      <span
+        ><b>Igor's picks:</b> adopt SwiftLint, swift-format, Maestro, swift-log,
+        swift-collections, swift-algorithms, swift-async-algorithms,
+        swift-argument-parser and Kingfisher. TCA: an optional spike to measure
+        conversion cost against its value. Then (2026-10-11) also
+        swift-dependencies, xcbeautify, fastlane (as a signing experiment),
+        XcodeGen and SwiftUIX, with the rule
+        <b>no custom controls unless really required</b>.</span
+      >
+    </div>
+    <div class="card bg-base-200 mt-4">
+      <div class="card-body p-4 text-sm">
+        <h3 class="card-title text-base">
+          Second opinion: Codex (GPT-6 Astra)
+        </h3>
+        <ul class="list-disc ml-5 space-y-1">
+          <li>
+            <b>Adds:</b> xcbeautify (adopt as a CLI tool) and Pulse (only if
+            HTTP debugging hurts); rows are marked
+            <span class="badge badge-secondary badge-outline badge-sm"
+              >Astra adds</span
+            >. Its top pick, <b>swift-clocks</b> (★343, a test clock for async
+            code), falls under the 1,000-star cut, but it already comes in with
+            swift-dependencies.
+          </li>
+          <li>
+            <b>Demotes fastlane</b> from top pick to a targeted signing
+            experiment: first find out what actually broke a deploy.
+          </li>
+          <li>
+            <b>Corrections, now applied:</b> Maestro drives iOS simulators, not
+            physical devices; Kingfisher handles local images too; SwiftLint's
+            force-unwrap rule is opt-in; swift-log needs a backend; XcodeGen
+            gives fewer conflicts, not none.
+          </li>
+          <li>
+            <b>Savings:</b> replace guesses with a one-week baseline (bug report
+            to evidence, deploy cycles per fix, simulator minutes, signing
+            failures by cause, Igor's minutes).
+          </li>
+          <li>
+            <b>TCA spike:</b> 4 hours plus 45 minutes of review, on one Context
+            Grabber feature with async loading, debounce and cancellation, built
+            both ways from the same baseline. Go only if it passes, stays in the
+            timebox and the next change is cheaper; a tie keeps the current
+            design.
+          </li>
+        </ul>
+        <p class="opacity-70">Full review: review-astra.md</p>
+      </div>
+    </div>
+    <h2 class="text-xl font-semibold mt-8 mb-2">Logging &amp; debugging</h2>
+    <div class="overflow-x-auto">
+      <table class="table table-zebra table-sm">
+        <thead>
+          <tr>
+            <th class="w-32">Verdict</th>
+            <th class="w-64">Library</th>
+            <th class="text-right w-20">Stars</th>
+            <th>Value prop</th>
+            <th>Savings for you</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr data-repo="apple/swift-log">
+            <td><span class="badge badge-primary">Adopt (Igor)</span></td>
+            <td>
+              <a
+                class="link link-primary font-semibold"
+                href="https://github.com/apple/swift-log"
+                >apple/swift-log</a
+              >
+              <div class="text-xs opacity-60">pushed 2026-10-07</div>
+            </td>
+            <td class="text-right font-mono whitespace-nowrap">★ 4.1k</td>
+            <td>
+              A logging API; it needs a backend such as OSLog or bug-kit&#x27;s
+              JSON Lines.
+            </td>
+            <td>
+              Live logs only once a backend is set up and tested on the phone.
+              Keep bug-kit&#x27;s JSONL for crashes and disconnected devices
+              (Astra).
+            </td>
+          </tr>
+          <tr data-repo="kean/Pulse">
+            <td>
+              <span class="badge badge-secondary badge-outline"
+                >Astra adds</span
+              >
+            </td>
+            <td>
+              <a
+                class="link link-primary font-semibold"
+                href="https://github.com/kean/Pulse"
+                >kean/Pulse</a
+              >
+              <div class="text-xs opacity-60">pushed 2026-10-11</div>
+            </td>
+            <td class="text-right font-mono whitespace-nowrap">★ 7.2k</td>
+            <td>
+              Local inspector for logs and URLSession traffic, with swift-log
+              integration.
+            </td>
+            <td>
+              Only worth it if HTTP failures cost debugging time. It
+              doesn&#x27;t see CloudKit, HealthKit or AVFoundation. Keep bug-kit
+              JSONL canonical (Astra).
+            </td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+    <h2 class="text-xl font-semibold mt-8 mb-2">Testing</h2>
+    <div class="overflow-x-auto">
+      <table class="table table-zebra table-sm">
+        <thead>
+          <tr>
+            <th class="w-32">Verdict</th>
+            <th class="w-64">Library</th>
+            <th class="text-right w-20">Stars</th>
+            <th>Value prop</th>
+            <th>Savings for you</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr data-repo="mobile-dev-inc/Maestro">
+            <td><span class="badge badge-primary">Adopt (Igor)</span></td>
+            <td>
+              <a
+                class="link link-primary font-semibold"
+                href="https://github.com/mobile-dev-inc/Maestro"
+                >mobile-dev-inc/Maestro</a
+              >
+              <div class="text-xs opacity-60">pushed 2026-10-08</div>
+            </td>
+            <td class="text-right font-mono whitespace-nowrap">★ 16.0k</td>
+            <td>
+              UI flows in YAML on iOS simulators (not physical iPhones or
+              iPads).
+            </td>
+            <td>
+              Simpler smoke flows than XCUITest, if stable accessibility IDs are
+              in place. &#x27;Less flaky&#x27; is a hypothesis to measure
+              (Astra).
+            </td>
+          </tr>
+          <tr data-repo="pointfreeco/swift-dependencies">
+            <td><span class="badge badge-primary">Adopt (Igor)</span></td>
+            <td>
+              <a
+                class="link link-primary font-semibold"
+                href="https://github.com/pointfreeco/swift-dependencies"
+                >pointfreeco/swift-dependencies</a
+              >
+              <div class="text-xs opacity-60">pushed 2026-10-09</div>
+            </td>
+            <td class="text-right font-mono whitespace-nowrap">★ 2.2k</td>
+            <td>
+              Inject clock, Health, files and network so logic runs on the host.
+            </td>
+            <td>
+              Moves checks from the simulator rung to the host rung: seconds
+              instead of minutes, and no simulator load spikes.
+            </td>
+          </tr>
+          <tr data-repo="pointfreeco/swift-snapshot-testing">
+            <td><span class="badge badge-success">Top pick</span></td>
+            <td>
+              <a
+                class="link link-primary font-semibold"
+                href="https://github.com/pointfreeco/swift-snapshot-testing"
+                >pointfreeco/swift-snapshot-testing</a
+              >
+              <div class="text-xs opacity-60">pushed 2026-09-21</div>
+            </td>
+            <td class="text-right font-mono whitespace-nowrap">★ 4.4k</td>
+            <td>Snapshot a view or value; a diff fails the test.</td>
+            <td>
+              Start small: value snapshots on the Mac, plus a few reviewed UI
+              states. Agents must never re-record baselines just to make a test
+              pass (Astra).
+            </td>
+          </tr>
+          <tr data-repo="swiftlang/swift-testing">
+            <td>
+              <span class="badge badge-info badge-outline">Consider</span>
+            </td>
+            <td>
+              <a
+                class="link link-primary font-semibold"
+                href="https://github.com/swiftlang/swift-testing"
+                >swiftlang/swift-testing</a
+              >
+              <div class="text-xs opacity-60">pushed 2026-10-10</div>
+            </td>
+            <td class="text-right font-mono whitespace-nowrap">★ 2.2k</td>
+            <td>@Test and #expect: parameterized, parallel, readable tests.</td>
+            <td>
+              Already in use. One fixture table instead of many copy-pasted test
+              functions.
+            </td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+    <h2 class="text-xl font-semibold mt-8 mb-2">Code quality</h2>
+    <div class="overflow-x-auto">
+      <table class="table table-zebra table-sm">
+        <thead>
+          <tr>
+            <th class="w-32">Verdict</th>
+            <th class="w-64">Library</th>
+            <th class="text-right w-20">Stars</th>
+            <th>Value prop</th>
+            <th>Savings for you</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr data-repo="realm/SwiftLint">
+            <td><span class="badge badge-primary">Adopt (Igor)</span></td>
+            <td>
+              <a
+                class="link link-primary font-semibold"
+                href="https://github.com/realm/SwiftLint"
+                >realm/SwiftLint</a
+              >
+              <div class="text-xs opacity-60">pushed 2026-10-10</div>
+            </td>
+            <td class="text-right font-mono whitespace-nowrap">★ 19.8k</td>
+            <td>Enforce Swift style and catch smells.</td>
+            <td>
+              Consistent code across agents. Turn on the opt-in force_unwrapping
+              rule explicitly, the kind of bug behind the HeadCalibrate crash
+              (Astra).
+            </td>
+          </tr>
+          <tr data-repo="swiftlang/swift-format">
+            <td><span class="badge badge-primary">Adopt (Igor)</span></td>
+            <td>
+              <a
+                class="link link-primary font-semibold"
+                href="https://github.com/swiftlang/swift-format"
+                >swiftlang/swift-format</a
+              >
+              <div class="text-xs opacity-60">pushed 2026-10-10</div>
+            </td>
+            <td class="text-right font-mono whitespace-nowrap">★ 3.0k</td>
+            <td>Official formatter.</td>
+            <td>
+              Zero formatting debates in reviews; pair it with SwiftLint or pick
+              one.
+            </td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+    <h2 class="text-xl font-semibold mt-8 mb-2">Build &amp; release</h2>
+    <div class="overflow-x-auto">
+      <table class="table table-zebra table-sm">
+        <thead>
+          <tr>
+            <th class="w-32">Verdict</th>
+            <th class="w-64">Library</th>
+            <th class="text-right w-20">Stars</th>
+            <th>Value prop</th>
+            <th>Savings for you</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr data-repo="fastlane/fastlane">
+            <td><span class="badge badge-primary">Adopt (Igor)</span></td>
+            <td>
+              <a
+                class="link link-primary font-semibold"
+                href="https://github.com/fastlane/fastlane"
+                >fastlane/fastlane</a
+              >
+              <div class="text-xs opacity-60">pushed 2026-10-10</div>
+            </td>
+            <td class="text-right font-mono whitespace-nowrap">★ 42.2k</td>
+            <td>
+              Automate signing, builds, TestFlight and screenshots; match keeps
+              certificates and profiles in a repo.
+            </td>
+            <td>
+              May make signing reproducible when missing or inconsistent signing
+              assets are the cause. It won&#x27;t fix account login or
+              device-registration failures. Classify a real failed deploy first
+              (Astra).
+            </td>
+          </tr>
+          <tr data-repo="yonaskolb/XcodeGen">
+            <td><span class="badge badge-primary">Adopt (Igor)</span></td>
+            <td>
+              <a
+                class="link link-primary font-semibold"
+                href="https://github.com/yonaskolb/XcodeGen"
+                >yonaskolb/XcodeGen</a
+              >
+              <div class="text-xs opacity-60">pushed 2026-09-13</div>
+            </td>
+            <td class="text-right font-mono whitespace-nowrap">★ 8.8k</td>
+            <td>Generate .xcodeproj from YAML.</td>
+            <td>
+              Already in use: fewer project-file conflicts, though agents can
+              still collide in the YAML (Astra).
+            </td>
+          </tr>
+          <tr data-repo="cpisciotta/xcbeautify">
+            <td><span class="badge badge-primary">Adopt (Igor)</span></td>
+            <td>
+              <a
+                class="link link-primary font-semibold"
+                href="https://github.com/cpisciotta/xcbeautify"
+                >cpisciotta/xcbeautify</a
+              >
+              <div class="text-xs opacity-60">pushed 2026-08-10</div>
+            </td>
+            <td class="text-right font-mono whitespace-nowrap">★ 1.5k</td>
+            <td>Formats xcodebuild output and can write JUnit reports.</td>
+            <td>
+              Agents find the first real build error faster. Keep raw output
+              with tee and pipefail (Astra: adopt as a CLI tool).
+            </td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+    <h2 class="text-xl font-semibold mt-8 mb-2">Swift building blocks</h2>
+    <div class="overflow-x-auto">
+      <table class="table table-zebra table-sm">
+        <thead>
+          <tr>
+            <th class="w-32">Verdict</th>
+            <th class="w-64">Library</th>
+            <th class="text-right w-20">Stars</th>
+            <th>Value prop</th>
+            <th>Savings for you</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr data-repo="apple/swift-algorithms">
+            <td><span class="badge badge-primary">Adopt (Igor)</span></td>
+            <td>
+              <a
+                class="link link-primary font-semibold"
+                href="https://github.com/apple/swift-algorithms"
+                >apple/swift-algorithms</a
+              >
+              <div class="text-xs opacity-60">pushed 2026-09-25</div>
+            </td>
+            <td class="text-right font-mono whitespace-nowrap">★ 6.3k</td>
+            <td>
+              chunks, windows, uniqued, combinations: sequence algorithms done
+              right.
+            </td>
+            <td>Shorter, tested rep and set grouping code in ExerciseCore.</td>
+          </tr>
+          <tr data-repo="apple/swift-collections">
+            <td><span class="badge badge-primary">Adopt (Igor)</span></td>
+            <td>
+              <a
+                class="link link-primary font-semibold"
+                href="https://github.com/apple/swift-collections"
+                >apple/swift-collections</a
+              >
+              <div class="text-xs opacity-60">pushed 2026-10-09</div>
+            </td>
+            <td class="text-right font-mono whitespace-nowrap">★ 4.5k</td>
+            <td>
+              Deque, OrderedDictionary, Heap, BitSet: tested data structures
+              Swift lacks.
+            </td>
+            <td>
+              Stops agents hand-rolling ring buffers (replay, breadcrumbs) and
+              their off-by-one bugs.
+            </td>
+          </tr>
+          <tr data-repo="apple/swift-argument-parser">
+            <td><span class="badge badge-primary">Adopt (Igor)</span></td>
+            <td>
+              <a
+                class="link link-primary font-semibold"
+                href="https://github.com/apple/swift-argument-parser"
+                >apple/swift-argument-parser</a
+              >
+              <div class="text-xs opacity-60">pushed 2026-10-05</div>
+            </td>
+            <td class="text-right font-mono whitespace-nowrap">★ 3.8k</td>
+            <td>Typed CLIs with help text for free.</td>
+            <td>
+              Mac tools like posetrack get --help and validation with no hand
+              parsing.
+            </td>
+          </tr>
+          <tr data-repo="apple/swift-async-algorithms">
+            <td><span class="badge badge-primary">Adopt (Igor)</span></td>
+            <td>
+              <a
+                class="link link-primary font-semibold"
+                href="https://github.com/apple/swift-async-algorithms"
+                >apple/swift-async-algorithms</a
+              >
+              <div class="text-xs opacity-60">pushed 2026-10-05</div>
+            </td>
+            <td class="text-right font-mono whitespace-nowrap">★ 3.7k</td>
+            <td>debounce, throttle, merge, combineLatest for AsyncSequence.</td>
+            <td>
+              Replaces timer-plus-flag code for sensor, location and query
+              streams; fewer race bugs.
+            </td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+    <h2 class="text-xl font-semibold mt-8 mb-2">Architecture</h2>
+    <div class="overflow-x-auto">
+      <table class="table table-zebra table-sm">
+        <thead>
+          <tr>
+            <th class="w-32">Verdict</th>
+            <th class="w-64">Library</th>
+            <th class="text-right w-20">Stars</th>
+            <th>Value prop</th>
+            <th>Savings for you</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr data-repo="pointfreeco/swift-composable-architecture">
+            <td>
+              <span class="badge badge-warning">Spike: conversion cost</span>
+            </td>
+            <td>
+              <a
+                class="link link-primary font-semibold"
+                href="https://github.com/pointfreeco/swift-composable-architecture"
+                >pointfreeco/swift-composable-architecture</a
+              >
+              <div class="text-xs opacity-60">pushed 2026-10-06</div>
+            </td>
+            <td class="text-right font-mono whitespace-nowrap">★ 15.0k</td>
+            <td>
+              Opinionated architecture: state, actions, reducers, exhaustive
+              tests.
+            </td>
+            <td>
+              High upfront cost. Worth it only for a new large app; don&#x27;t
+              retrofit.
+            </td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+    <h2 class="text-xl font-semibold mt-8 mb-2">Data &amp; storage</h2>
+    <div class="overflow-x-auto">
+      <table class="table table-zebra table-sm">
+        <thead>
+          <tr>
+            <th class="w-32">Verdict</th>
+            <th class="w-64">Library</th>
+            <th class="text-right w-20">Stars</th>
+            <th>Value prop</th>
+            <th>Savings for you</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr data-repo="groue/GRDB.swift">
+            <td>
+              <span class="badge badge-info badge-outline">Consider</span>
+            </td>
+            <td>
+              <a
+                class="link link-primary font-semibold"
+                href="https://github.com/groue/GRDB.swift"
+                >groue/GRDB.swift</a
+              >
+              <div class="text-xs opacity-60">pushed 2026-09-29</div>
+            </td>
+            <td class="text-right font-mono whitespace-nowrap">★ 8.7k</td>
+            <td>SQLite with migrations, observation and real SQL.</td>
+            <td>
+              A fallback if SwiftData fights you; replaces JSON-index files with
+              queries.
+            </td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+    <h2 class="text-xl font-semibold mt-8 mb-2">Images</h2>
+    <div class="overflow-x-auto">
+      <table class="table table-zebra table-sm">
+        <thead>
+          <tr>
+            <th class="w-32">Verdict</th>
+            <th class="w-64">Library</th>
+            <th class="text-right w-20">Stars</th>
+            <th>Value prop</th>
+            <th>Savings for you</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr data-repo="onevcat/Kingfisher">
+            <td><span class="badge badge-primary">Adopt (Igor)</span></td>
+            <td>
+              <a
+                class="link link-primary font-semibold"
+                href="https://github.com/onevcat/Kingfisher"
+                >onevcat/Kingfisher</a
+              >
+              <div class="text-xs opacity-60">pushed 2026-10-10</div>
+            </td>
+            <td class="text-right font-mono whitespace-nowrap">★ 24.4k</td>
+            <td>
+              Image loading, cache and processing, including local files and
+              video-frame thumbnails.
+            </td>
+            <td>
+              Thumbnails for workout clips and replays, with cache budgets.
+              Astra corrected me: it isn&#x27;t only for remote images.
+            </td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+    <h2 class="text-xl font-semibold mt-10 mb-2">
+      UI design guidelines and components
+    </h2>
+    <p class="text-sm opacity-80 mb-2">
+      Apple's own guidance comes first; it is free and authoritative. The GitHub
+      rows are UI helpers and curated indexes.
+    </p>
+    <div class="overflow-x-auto">
+      <table class="table table-zebra table-sm">
+        <thead>
+          <tr>
+            <th class="w-32">Verdict</th>
+            <th class="w-64">Resource</th>
+            <th class="text-right w-20">Stars</th>
+            <th>Value prop</th>
+            <th>Savings for you</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td><span class="badge badge-primary">Adopt</span></td>
+            <td>
+              <a
+                class="link link-primary font-semibold"
+                href="https://developer.apple.com/design/human-interface-guidelines"
+                >Human Interface Guidelines</a
+              >
+              <div class="text-xs opacity-60">Apple</div>
+            </td>
+            <td class="text-right font-mono">Apple</td>
+            <td>
+              The rulebook: layout, navigation, typography, controls, per
+              platform (iOS, iPadOS, watchOS, macOS).
+            </td>
+            <td>
+              Gives agents a citable standard (&#x27;follow the HIG for
+              sheets&#x27;), so fewer rounds of &#x27;this looks wrong&#x27;.
+            </td>
+          </tr>
+          <tr>
+            <td><span class="badge badge-primary">Adopt</span></td>
+            <td>
+              <a
+                class="link link-primary font-semibold"
+                href="https://developer.apple.com/sf-symbols/"
+                >SF Symbols</a
+              >
+              <div class="text-xs opacity-60">Apple</div>
+            </td>
+            <td class="text-right font-mono">Apple</td>
+            <td>
+              5,000+ system icons that match the system font, weights and
+              accessibility sizes.
+            </td>
+            <td>
+              Icons like the Kettlebility kettlebell without custom art; free
+              dark mode and Dynamic Type.
+            </td>
+          </tr>
+          <tr>
+            <td><span class="badge badge-primary">Adopt</span></td>
+            <td>
+              <a
+                class="link link-primary font-semibold"
+                href="https://developer.apple.com/design/human-interface-guidelines/accessibility"
+                >Accessibility (HIG)</a
+              >
+              <div class="text-xs opacity-60">Apple</div>
+            </td>
+            <td class="text-right font-mono">Apple</td>
+            <td>Dynamic Type, VoiceOver, contrast and 44 pt hit targets.</td>
+            <td>
+              Explains your iPad &#x27;bigger tap targets&#x27; report
+              (#233/#234) as a rule rather than a one-off fix.
+            </td>
+          </tr>
+          <tr>
+            <td>
+              <span class="badge badge-info badge-outline">Consider</span>
+            </td>
+            <td>
+              <a
+                class="link link-primary font-semibold"
+                href="https://developer.apple.com/design/resources/"
+                >Apple Design Resources</a
+              >
+              <div class="text-xs opacity-60">Apple</div>
+            </td>
+            <td class="text-right font-mono">Apple</td>
+            <td>Official Figma and Sketch kits of every system component.</td>
+            <td>
+              Mock a screen before an agent builds it, and settle the design in
+              one pass.
+            </td>
+          </tr>
+          <tr>
+            <td>
+              <span class="badge badge-info badge-outline">Consider</span>
+            </td>
+            <td>
+              <a
+                class="link link-primary font-semibold"
+                href="https://developer.apple.com/videos/design/"
+                >WWDC design sessions</a
+              >
+              <div class="text-xs opacity-60">Apple</div>
+            </td>
+            <td class="text-right font-mono">Apple</td>
+            <td>
+              Apple&#x27;s own talks on why the system looks the way it does.
+            </td>
+            <td>Background reading; skim one per new screen type.</td>
+          </tr>
+          <tr>
+            <td><span class="badge badge-primary">Adopt</span></td>
+            <td>
+              <a
+                class="link link-primary font-semibold"
+                href="https://github.com/SwiftUIX/SwiftUIX"
+                >SwiftUIX/SwiftUIX</a
+              >
+              <div class="text-xs opacity-60">pushed 2026-09-18</div>
+            </td>
+            <td class="text-right font-mono whitespace-nowrap">★ 8.2k</td>
+            <td>
+              Fills SwiftUI&#x27;s gaps: missing controls and UIKit bridges.
+            </td>
+            <td>
+              Fewer hand-built UIViewRepresentable wrappers. Igor&#x27;s rule:
+              no custom controls unless really required. Use system controls
+              first, then SwiftUIX, and only then build your own.
+            </td>
+          </tr>
+          <tr>
+            <td><span class="badge badge-primary">Adopt</span></td>
+            <td>
+              <a
+                class="link link-primary font-semibold"
+                href="https://github.com/siteline/swiftui-introspect"
+                >siteline/swiftui-introspect</a
+              >
+              <div class="text-xs opacity-60">pushed 2026-10-07</div>
+            </td>
+            <td class="text-right font-mono whitespace-nowrap">★ 6.6k</td>
+            <td>Reach the UIKit view behind a SwiftUI view.</td>
+            <td>
+              A surgical escape hatch for scroll or text field quirks: tweak the
+              system control rather than build a custom one (no custom controls
+              unless really required).
+            </td>
+          </tr>
+          <tr>
+            <td>
+              <span class="badge badge-accent badge-outline">As required</span>
+            </td>
+            <td>
+              <a
+                class="link link-primary font-semibold"
+                href="https://github.com/airbnb/lottie-ios"
+                >airbnb/lottie-ios</a
+              >
+              <div class="text-xs opacity-60">pushed 2026-10-06</div>
+            </td>
+            <td class="text-right font-mono whitespace-nowrap">★ 26.9k</td>
+            <td>Render After Effects animations natively.</td>
+            <td>
+              Polished animations (celebrations, empty states) without custom
+              drawing code. Igor: as required.
+            </td>
+          </tr>
+          <tr>
+            <td>
+              <span class="badge badge-neutral badge-outline">Reference</span>
+            </td>
+            <td>
+              <a
+                class="link link-primary font-semibold"
+                href="https://github.com/onmyway133/awesome-swiftui"
+                >onmyway133/awesome-swiftui</a
+              >
+              <div class="text-xs opacity-60">pushed 2026-10-09</div>
+            </td>
+            <td class="text-right font-mono whitespace-nowrap">★ 1.1k</td>
+            <td>
+              A maintained index of SwiftUI articles, libraries and examples.
+            </td>
+            <td>Where to look before writing a custom component.</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+    <h2 class="text-xl font-semibold mt-10 mb-2">
+      Agent skills for iOS/Swift (Claude Code, Codex)
+    </h2>
+    <p class="text-sm opacity-80 mb-2">
+      Drop-in SKILL.md packs that teach agents current Swift and Apple APIs.
+      They target the mistakes agents make: deprecated APIs, wrong concurrency,
+      old-style tests.
+    </p>
+    <div class="overflow-x-auto">
+      <table class="table table-zebra table-sm">
+        <thead>
+          <tr>
+            <th class="w-32">Verdict</th>
+            <th class="w-64">Repo</th>
+            <th class="text-right w-20">Stars</th>
+            <th>Value prop</th>
+            <th>Savings for you</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td><span class="badge badge-primary">Adopt</span></td>
+            <td>
+              <a
+                class="link link-primary font-semibold"
+                href="https://github.com/twostraws/SwiftUI-Agent-Skill"
+                >twostraws/SwiftUI-Agent-Skill</a
+              >
+              <div class="text-xs opacity-60">pushed 2026-10-07</div>
+            </td>
+            <td class="text-right font-mono whitespace-nowrap">★ 5.7k</td>
+            <td>
+              Paul Hudson&#x27;s SwiftUI rules for agents: modern APIs, state,
+              navigation, accessibility.
+            </td>
+            <td>
+              Fewer deprecated-API and bad-state bugs in SwiftUI code agents
+              write; fewer review rounds.
+            </td>
+          </tr>
+          <tr>
+            <td><span class="badge badge-primary">Adopt</span></td>
+            <td>
+              <a
+                class="link link-primary font-semibold"
+                href="https://github.com/AvdLee/Swift-Concurrency-Agent-Skill"
+                >AvdLee/Swift-Concurrency-Agent-Skill</a
+              >
+              <div class="text-xs opacity-60">pushed 2026-09-14</div>
+            </td>
+            <td class="text-right font-mono whitespace-nowrap">★ 1.7k</td>
+            <td>
+              Expert Swift 6 concurrency guidance: actors, Sendable, MainActor.
+            </td>
+            <td>
+              Targets bugs like the iPad sync watchdog crash (FileProvider XPC
+              calls on the main thread).
+            </td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+    <h2 class="text-xl font-semibold mt-10 mb-2">
+      Best-practice and style guides
+    </h2>
+    <p class="text-sm opacity-80 mb-2">
+      Written conventions to point agents at, or to fold into chop-conventions.
+    </p>
+    <div class="overflow-x-auto">
+      <table class="table table-zebra table-sm">
+        <thead>
+          <tr>
+            <th class="w-32">Verdict</th>
+            <th class="w-64">Repo</th>
+            <th class="text-right w-20">Stars</th>
+            <th>Value prop</th>
+            <th>Savings for you</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>
+              <span class="badge badge-info badge-outline">Consider</span>
+            </td>
+            <td>
+              <a
+                class="link link-primary font-semibold"
+                href="https://github.com/airbnb/swift"
+                >airbnb/swift</a
+              >
+              <div class="text-xs opacity-60">pushed 2026-10-06</div>
+            </td>
+            <td class="text-right font-mono whitespace-nowrap">★ 2.8k</td>
+            <td>
+              Airbnb&#x27;s Swift style guide, actively maintained, with
+              swift-format rules.
+            </td>
+            <td>
+              Enforceable through its SwiftFormat config, so style is checked
+              rather than argued.
+            </td>
+          </tr>
+          <tr>
+            <td>
+              <span class="badge badge-neutral badge-outline">Reference</span>
+            </td>
+            <td>
+              <a
+                class="link link-primary font-semibold"
+                href="https://github.com/vsouza/awesome-ios"
+                >vsouza/awesome-ios</a
+              >
+              <div class="text-xs opacity-60">pushed 2026-08-27</div>
+            </td>
+            <td class="text-right font-mono whitespace-nowrap">★ 53.6k</td>
+            <td>The largest index of iOS libraries and tools.</td>
+            <td>Look here before an agent writes a component from scratch.</td>
+          </tr>
+          <tr>
+            <td>
+              <span class="badge badge-neutral badge-outline">Reference</span>
+            </td>
+            <td>
+              <a
+                class="link link-primary font-semibold"
+                href="https://github.com/futurice/ios-good-practices"
+                >futurice/ios-good-practices</a
+              >
+              <div class="text-xs opacity-60">pushed 2024-04-30</div>
+            </td>
+            <td class="text-right font-mono whitespace-nowrap">★ 11.0k</td>
+            <td>
+              Broad iOS team practices: setup, architecture, testing, release.
+            </td>
+            <td>
+              A checklist to compare chop-conventions against. Older (2024), so
+              verify each item.
+            </td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+    <p class="text-xs opacity-60 mt-6">
+      Design: the Lavish CDN default (Tailwind + DaisyUI), since this research
+      list has no app design system to match.
+    </p>
+  </body>
+</html>
