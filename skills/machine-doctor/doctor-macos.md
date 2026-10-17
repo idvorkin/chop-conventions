@@ -92,6 +92,25 @@ follow-ups, in order of permanence:
    This **restarts the VM and every container in it** — ask first, and name what
    is running there (agents, servers, test runs) that will be interrupted.
 
+### Booted iOS/watchOS simulators
+
+Each booted simulator is a whole OS — its own `launchd_sim` and a copy of every
+daemon (healthd, assistantd, siriactionsd…). Eight booted sims meant 2,400
+processes, 665 runnable, load ~980 and swap full; no single row in `ps -r` looks
+guilty. Signature: dozens of `xpcproxy_sim` / `SimMetalHost` in a count by name.
+`snapshot` warns at 3 or more booted simulators and names them.
+
+```bash
+/bin/ps -Ao comm | awk -F/ '{print $NF}' | sort | uniq -c | sort -rn | head
+xcrun simctl list devices booted
+/bin/ps -Ao args | grep -E 'xcodebuild|XCTest' | grep -v grep   # which sim a build is using (-destination id=)
+xcrun simctl shutdown <udid>     # each one not in use; `shutdown all` once builds finish
+```
+
+Test pipelines that create a throwaway device per run and never shut it down
+are the usual source; the devices pile up across runs. Shutting them down dropped the box to
+~1,000 processes and normal pressure within two minutes.
+
 ---
 
 ## 3. Freeing memory on the host
@@ -121,13 +140,34 @@ Usually safe to clear (re-downloaded or rebuilt on demand) — still list sizes
 and ask:
 
 ```bash
-du -sh ~/Library/Caches/* ~/.cache/* ~/.npm ~/.Trash 2>/dev/null | sort -hr | head -20
+du -sh ~/Library/Caches/* 2>/dev/null | sort -hr | head -10
+du -sh ~/.cache/* 2>/dev/null | sort -hr | head -10
+du -sh ~/.npm
 brew cleanup -s            # Homebrew downloads
 uv cache prune             # uv
 npm cache clean --force    # npm
 ```
 
 Ask about anything whose owner you cannot name from its path.
+
+**`~/.cache/uv` is often the single biggest item** (44 GB seen); `uv cache clean`
+empties it, `prune` only drops unreferenced entries. `~/.cache/huggingface/hub`
+holds multi-GB models — list them, let the user pick.
+
+**Xcode is the other big one** (~70 GB seen). Everything but the last row is re-downloaded or rebuilt on demand:
+
+| Path under `~/Library/Developer/`        | Clear                                                                                                                                                                 |
+| ---------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `Xcode/iOS DeviceSupport/*` (~6 GB each) | every OS version except the one the user's device runs                                                                                                                |
+| `Xcode/DerivedData/*`                    | all; next build is a full rebuild                                                                                                                                     |
+| `CoreSimulator` runtimes                 | `xcrun simctl runtime list`, `xcrun simctl runtime delete <id>` for old ones; deletion is async                                                                       |
+| sim devices                              | `xcrun simctl delete <udid>` / `delete unavailable` — **deletes the device's installed apps and their data for good**; confirm each is a disposable test device first |
+
+**Don't `du` all of `~/Library/Developer`** — `CoreDevice/DeviceFS` is a connected
+iPhone's filesystem; walking it hangs for many minutes. Size the subfolders and
+skip `CoreDevice`. Likewise `du` of `~/.Trash` and some `~/Library` folders fails or hangs on TCC
+(privacy protection); scan targets one per command rather than one big `du` list,
+and leave `~/.Trash` to Finder.
 
 ---
 
