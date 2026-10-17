@@ -31,6 +31,9 @@ DISK_FAIL_PCT = 95
 VM_MEM_WARN_PCT = 50
 # WindowServer footprint past this is the long-uptime leak; logout resets it.
 WINDOWSERVER_WARN_KB = 2 * 1024 * 1024
+# Each booted iOS/watchOS simulator runs a whole OS worth of daemons; eight
+# booted at once meant 2,400 processes and load ~980 on a 16GB laptop.
+BOOTED_SIMS_WARN = 3
 
 
 @dataclass(frozen=True)
@@ -65,6 +68,7 @@ class HostFacts:
     speed_limit: int | None = None  # macOS thermal CPU_Speed_Limit %
     vm_mem_mib: dict[str, int] = field(default_factory=dict)  # VM name -> memory cap
     sleeps: list[SleepEvent] = field(default_factory=list)  # macOS, recent window
+    booted_sims: list[str] = field(default_factory=list)  # macOS simulator names
 
 
 def classify_dolt(cwd: str) -> str:
@@ -150,6 +154,7 @@ def generic_findings(facts: HostFacts) -> list[Finding]:
     out += disk_findings(facts)
     out += vm_findings(facts)
     out += power_findings(facts)
+    out += sim_findings(facts)
     return out
 
 
@@ -219,6 +224,23 @@ def vm_findings(facts: HostFacts) -> list[Finding]:
                 )
             )
     return out
+
+
+def sim_findings(facts: HostFacts) -> list[Finding]:
+    """No single simulator process looks guilty in a CPU sort; the cost is the
+    count. Test pipelines that boot a fresh device per run and never shut it
+    down are the usual source."""
+    n = len(facts.booted_sims)
+    if n < BOOTED_SIMS_WARN:
+        return []
+    names = ", ".join(facts.booted_sims)
+    return [
+        Finding(
+            "warn",
+            f"{n} simulators booted ({names}) — each is a whole OS; "
+            "`xcrun simctl shutdown <udid>` the ones no build is using",
+        )
+    ]
 
 
 def power_findings(facts: HostFacts) -> list[Finding]:
