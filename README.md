@@ -100,6 +100,7 @@ Machine-level skills go in `~/.claude/skills/` and are available everywhere. Pro
 | `machine-doctor`         | machine | Diagnose system health, kill rogue processes                                                                         |
 | `muse-herdr`             | machine | Drive Muse in a Herdr pane as a sub-agent (brief file, worktree, approval watcher); headless `muse exec` for grading |
 | `pr-hygiene`             | machine | Surface open PRs with unaddressed review feedback (filters CodeRabbit/CI noise)                                      |
+| `repo-doctor`            | machine | Audit a repo against the house layout (AGENTS.md, beads, just, VISION.md, no-mistakes, stories, bug-kit) and convert |
 | `showboat`               | machine | Create executable demo documents with screenshots                                                                    |
 | `up-to-date`             | machine | Sync git repo with upstream                                                                                          |
 
