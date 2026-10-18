@@ -1,0 +1,178 @@
+{
+	"title": "Example: restructure a houseplant guide",
+	"subtitle": "Drag sections into the order and pages you want, then send the outline.",
+	"storage_key": "outline-editor:example-restructure-a-houseplant-guide",
+	"statuses": [
+		{
+			"key": "keep",
+			"label": "keep",
+			"note": "stays as it is",
+			"color": "#2e7d4f"
+		},
+		{
+			"key": "rewrite",
+			"label": "rewrite",
+			"note": "keep, but rewrite",
+			"color": "#b4572e"
+		},
+		{
+			"key": "new",
+			"label": "new",
+			"note": "not written yet",
+			"color": "#2f5d8a"
+		},
+		{
+			"key": "cut",
+			"label": "cut",
+			"note": "drop",
+			"color": "#8a8a85"
+		}
+	],
+	"default_status": "keep",
+	"pages": [
+		{
+			"key": "old-guide",
+			"title": "Getting Started With Houseplants",
+			"sub": "example/old-guide.md"
+		},
+		{
+			"key": "watering",
+			"title": "Watering Deep Dive",
+			"sub": "example/watering.md"
+		},
+		{
+			"key": "cut",
+			"title": "Cut",
+			"sub": "dropped",
+			"status": "cut"
+		},
+		{
+			"key": "tray",
+			"title": "Not placed",
+			"sub": "new topics waiting for a home",
+			"tray": true
+		}
+	],
+	"origins": [
+		{
+			"key": "old-guide",
+			"title": "Getting Started With Houseplants, as written"
+		},
+		{
+			"key": "watering",
+			"title": "Watering Deep Dive, as written"
+		},
+		{
+			"key": "new",
+			"title": "New topics"
+		}
+	],
+	"items": [
+		{
+			"id": "A01",
+			"title": "Why keep plants",
+			"page": "old-guide",
+			"origin": "old-guide",
+			"status": "keep",
+			"depth": 0,
+			"why": "Plants make a room calmer and teach patience.",
+			"src": "example/old-guide.md:9"
+		},
+		{
+			"id": "A02",
+			"title": "Picking a plant",
+			"page": "old-guide",
+			"origin": "old-guide",
+			"status": "keep",
+			"depth": 0,
+			"why": "",
+			"src": "example/old-guide.md:13"
+		},
+		{
+			"id": "A03",
+			"title": "Light",
+			"page": "old-guide",
+			"origin": "old-guide",
+			"status": "keep",
+			"depth": 1,
+			"why": "Match the plant to the window, not the other way round.",
+			"src": "example/old-guide.md:15"
+		},
+		{
+			"id": "A04",
+			"title": "Size",
+			"page": "old-guide",
+			"origin": "old-guide",
+			"status": "keep",
+			"depth": 1,
+			"why": "Start small; repotting is half the fun.",
+			"src": "example/old-guide.md:19"
+		},
+		{
+			"id": "A05",
+			"title": "Watering",
+			"page": "old-guide",
+			"origin": "old-guide",
+			"status": "keep",
+			"depth": 0,
+			"why": "Water when the top inch of soil is dry.",
+			"src": "example/old-guide.md:23"
+		},
+		{
+			"id": "A06",
+			"title": "Tools I used in 2019",
+			"page": "old-guide",
+			"origin": "old-guide",
+			"status": "keep",
+			"depth": 0,
+			"why": "A long list of gadgets, most of them now gone.",
+			"src": "example/old-guide.md:31"
+		},
+		{
+			"id": "A07",
+			"title": "Predictions",
+			"page": "old-guide",
+			"origin": "old-guide",
+			"status": "keep",
+			"depth": 0,
+			"why": "In five years every pot will have a sensor.",
+			"src": "example/old-guide.md:35"
+		},
+		{
+			"id": "B01",
+			"title": "Bottom watering",
+			"page": "watering",
+			"origin": "watering",
+			"status": "keep",
+			"depth": 0,
+			"why": "Set the pot in a tray for twenty minutes.",
+			"src": "example/watering.md:5"
+		},
+		{
+			"id": "B02",
+			"title": "Signs of overwatering",
+			"page": "watering",
+			"origin": "watering",
+			"status": "keep",
+			"depth": 0,
+			"why": "Yellow leaves, soft stems, a sour smell.",
+			"src": "example/watering.md:9"
+		},
+		{
+			"id": "N01",
+			"title": "Pests and what to do about them",
+			"page": "tray",
+			"origin": "new",
+			"status": "new",
+			"depth": 0,
+			"why": "Not in either post yet; readers ask about it most.",
+			"src": "reader questions"
+		}
+	],
+	"seed_headings": {
+		"page": "old-guide",
+		"label": "Add suggested headings",
+		"titles": ["Choosing", "Caring", "Looking back"]
+	},
+	"extra_html": "<h2>Open question</h2>\n<form class=\"q\" data-lavish-question=\"one-post-or-two\"><b>One post or two?</b><label><input type=\"radio\" name=\"q1\" value=\"merge into one guide\"> Merge into one guide</label><label><input type=\"radio\" name=\"q1\" value=\"keep the deep dive separate\"> Keep the deep dive separate</label><button type=\"submit\" class=\"ghost\">Queue answer</button><span class=\"status\"></span></form>"
+}
