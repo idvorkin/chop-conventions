@@ -99,6 +99,7 @@ Machine-level skills go in `~/.claude/skills/` and are available everywhere. Pro
 | `learn-from-session`     | machine | Extract durable lessons from a session into the right CLAUDE.md files                                                |
 | `machine-doctor`         | machine | Diagnose system health, kill rogue processes                                                                         |
 | `muse-herdr`             | machine | Drive Muse in a Herdr pane as a sub-agent (brief file, worktree, approval watcher); headless `muse exec` for grading |
+| `outline-editor`         | machine | Drag-and-drop outline page for restructuring posts/docs (contents tree + cards, sends the arrangement back)          |
 | `pr-hygiene`             | machine | Surface open PRs with unaddressed review feedback (filters CodeRabbit/CI noise)                                      |
 | `showboat`               | machine | Create executable demo documents with screenshots                                                                    |
 | `up-to-date`             | machine | Sync git repo with upstream                                                                                          |
