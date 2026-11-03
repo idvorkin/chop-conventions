@@ -30,6 +30,7 @@ into a prompt by hand; `wake.sh` prints it.**
   (pitches as `pitches/<year>-Www.md`) and commits it there. The entry
   never goes into the blog repo. A job with no entry did not happen.
 - Sheets carry no recommendation; Igor picks on the Cockpit.
+- **Before drawing any pitch, run the pre-flight checklist in [`references/what-makes-it-funny.md`](references/what-makes-it-funny.md)** — one line per check in the pitch; a "no" on checks 1–5 means rewrite before drawing.
 
 ## Wake him
 
