@@ -28,20 +28,21 @@ Always start with **Step 0: Platform Detection**, then run the requested tier.
 Every row is checked by `machine_doctor.py snapshot` unless marked. The runbook
 column is where the fix lives.
 
-| Area                  | Healthy                                               | Usual culprit                                          | Fix in                          |
-| --------------------- | ----------------------------------------------------- | ------------------------------------------------------ | ------------------------------- |
-| CPU                   | idle ≥25%; no process >300% for long                  | agent swarms, builds, a VM's host process              | Tier 1, `doctor-deep.md` 3f     |
-| Memory                | Linux MemAvailable ≥10%; macOS pressure `normal`      | a VM allowed most of host RAM; browsers; leaks         | Tier 1b, `doctor-macos.md` §1–3 |
-| Swap                  | not near full; no sustained swap-out                  | memory pressure (swap is the symptom)                  | same as memory                  |
-| Disk                  | data volumes <90%                                     | caches, VM images, build output                        | Tier 1c, `doctor-macos.md` §4   |
-| VMs / containers      | VM memory cap ≤ half of host RAM; no stale servers    | OrbStack/Docker defaults; forgotten dev servers inside | `doctor-macos.md` §2            |
-| Thermal               | no CPU speed limit                                    | sustained load                                         | find the load                   |
-| Sleep / wake          | no thermal sleeps; forced ones named (often the user) | heat; a script calling `pmset sleepnow`                | `sleeps`, `doctor-macos.md` §5  |
-| Zombies               | none                                                  | a parent not reaping                                   | Tier 1d                         |
-| Agent orchestrators   | none running unless intended                          | Gas Town / Gas City leftovers                          | Tier 2, `doctor-gascity.md`     |
-| CPU guards            | watchdog running, VM CPU cap set (_manual_)           | shell never opened since boot                          | Tier 1e, `doctor-guards.md`     |
-| Dev servers, MCP, npm | responsive or gone (_manual, deep_)                   | days-old servers                                       | `doctor-deep.md` 3c–3e          |
-| Git state             | no stale locks or orphaned worktrees (_manual, deep_) | crashed git processes                                  | `doctor-deep.md` 3a–3b          |
+| Area                  | Healthy                                               | Usual culprit                                            | Fix in                          |
+| --------------------- | ----------------------------------------------------- | -------------------------------------------------------- | ------------------------------- |
+| CPU                   | idle ≥25%; no process >300% for long                  | agent swarms, builds, a VM's host process                | Tier 1, `doctor-deep.md` 3f     |
+| Memory                | Linux MemAvailable ≥10%; macOS pressure `normal`      | a VM allowed most of host RAM; browsers; leaks           | Tier 1b, `doctor-macos.md` §1–3 |
+| Swap                  | not near full; no sustained swap-out                  | memory pressure (swap is the symptom)                    | same as memory                  |
+| Disk                  | data volumes <90%                                     | caches, VM images, build output                          | Tier 1c, `doctor-macos.md` §4   |
+| VMs / containers      | VM memory cap ≤ half of host RAM; no stale servers    | OrbStack/Docker defaults; forgotten dev servers inside   | `doctor-macos.md` §2            |
+| Simulators (macOS)    | only the sims a running build uses are booted         | test pipelines that boot a device per run, never shut it | `doctor-macos.md` §2            |
+| Thermal               | no CPU speed limit                                    | sustained load                                           | find the load                   |
+| Sleep / wake          | no thermal sleeps; forced ones named (often the user) | heat; a script calling `pmset sleepnow`                  | `sleeps`, `doctor-macos.md` §5  |
+| Zombies               | none                                                  | a parent not reaping                                     | Tier 1d                         |
+| Agent orchestrators   | none running unless intended                          | Gas Town / Gas City leftovers                            | Tier 2, `doctor-gascity.md`     |
+| CPU guards            | watchdog running, VM CPU cap set (_manual_)           | shell never opened since boot                            | Tier 1e, `doctor-guards.md`     |
+| Dev servers, MCP, npm | responsive or gone (_manual, deep_)                   | days-old servers                                         | `doctor-deep.md` 3c–3e          |
+| Git state             | no stale locks or orphaned worktrees (_manual, deep_) | crashed git processes                                    | `doctor-deep.md` 3a–3b          |
 
 ---
 

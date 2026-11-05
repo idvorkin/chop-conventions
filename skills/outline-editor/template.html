@@ -1,0 +1,1809 @@
+<!doctype html>
+<html lang="en" data-lavish-annotate="off">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>__TITLE__</title>
+    <style>
+      :root {
+        --bg: #fbfaf7;
+        --ink: #1d1d1b;
+        --mute: #6b6a65;
+        --line: #e4e1d8;
+        --card: #fff;
+        --acc: #2f5d8a;
+        --warm: #b4572e;
+        --chip: #eef2f6;
+        --done: #9b9a93;
+        --hl: #fff4d6;
+        --ind: 18px;
+        --barh: 96px;
+      }
+      @media (prefers-color-scheme: dark) {
+        :root {
+          --bg: #16171a;
+          --ink: #ecebe6;
+          --mute: #9b9a93;
+          --line: #2c2e33;
+          --card: #1e2024;
+          --acc: #7fb0de;
+          --warm: #e08a5f;
+          --chip: #252a31;
+          --done: #6b6a65;
+          --hl: #3a3320;
+        }
+      }
+      * {
+        box-sizing: border-box;
+      }
+      body {
+        margin: 0;
+        background: var(--bg);
+        color: var(--ink);
+        font:
+          16px/1.5 system-ui,
+          -apple-system,
+          sans-serif;
+      }
+      main {
+        max-width: 1500px;
+        margin: 0 auto;
+        padding: 24px 16px 64px;
+      }
+      .prose {
+        max-width: 900px;
+      }
+      h1 {
+        font-size: 28px;
+        margin: 0;
+      }
+      .date {
+        color: var(--mute);
+        margin: 2px 0 18px;
+      }
+      h2 {
+        font-size: 18px;
+        margin: 34px 0 10px;
+        border-bottom: 1px solid var(--line);
+        padding-bottom: 5px;
+      }
+      p,
+      li {
+        overflow-wrap: anywhere;
+      }
+      a {
+        color: var(--acc);
+      }
+      .note {
+        font-size: 14px;
+        color: var(--mute);
+      }
+      .card {
+        background: var(--card);
+        border: 1px solid var(--line);
+        border-radius: 8px;
+        padding: 10px 14px;
+        margin: 8px 0;
+      }
+      .stats {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 8px;
+        margin: 10px 0;
+      }
+      .stat {
+        background: var(--card);
+        border: 1px solid var(--line);
+        border-radius: 8px;
+        padding: 6px 12px;
+        font-size: 14px;
+      }
+      .stat b {
+        font-size: 18px;
+        margin-right: 6px;
+      }
+      .k {
+        display: inline-block;
+        padding: 1px 8px;
+        border-radius: 99px;
+        font-size: 12px;
+        font-weight: 600;
+        color: #fff;
+        vertical-align: middle;
+        white-space: nowrap;
+        background: var(--cut, #8a8a85);
+      }
+      .pg {
+        display: inline-block;
+        padding: 1px 7px;
+        border-radius: 5px;
+        background: var(--chip);
+        font:
+          600 11px ui-monospace,
+          monospace;
+        color: var(--mute);
+        white-space: nowrap;
+      }
+      select {
+        font: inherit;
+        font-size: 14px;
+        padding: 4px 6px;
+        border-radius: 6px;
+        border: 1px solid var(--line);
+        background: var(--bg);
+        color: var(--ink);
+        max-width: 100%;
+      }
+      button {
+        font: inherit;
+        padding: 8px 16px;
+        border-radius: 6px;
+        border: 1px solid var(--acc);
+        background: var(--acc);
+        color: #fff;
+        cursor: pointer;
+      }
+      button.ghost {
+        background: transparent;
+        color: var(--acc);
+      }
+      .legend {
+        font-size: 13px;
+        color: var(--mute);
+        margin: 6px 0 10px;
+      }
+      /* toolbar */
+      .bar {
+        position: sticky;
+        top: 0;
+        z-index: 5;
+        background: var(--bg);
+        border-bottom: 1px solid var(--line);
+        padding: 8px 0;
+        margin: 0 0 8px;
+      }
+      .bar .row1 {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 8px;
+        align-items: center;
+      }
+      .seg {
+        display: inline-flex;
+        border: 1px solid var(--acc);
+        border-radius: 6px;
+        overflow: hidden;
+      }
+      .seg button {
+        border: 0;
+        border-radius: 0;
+        background: transparent;
+        color: var(--acc);
+        padding: 6px 10px;
+        font-size: 14px;
+      }
+      .seg button[aria-pressed="true"] {
+        background: var(--acc);
+        color: #fff;
+      }
+      .bar .send,
+      .bar .small {
+        padding: 6px 12px;
+        font-size: 14px;
+      }
+      #send-status {
+        font-size: 13px;
+        color: var(--mute);
+      }
+      .toc {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 6px;
+        margin-top: 6px;
+      }
+      .toc a {
+        font-size: 13px;
+        text-decoration: none;
+        background: var(--chip);
+        color: var(--ink);
+        border-radius: 99px;
+        padding: 2px 10px;
+      }
+      .toc a b {
+        color: var(--acc);
+        margin-left: 4px;
+      }
+      /* workspace: tree on the left, cards on the right (wide); one at a time (narrow) */
+      .work[data-view="outline"][data-pane="toc"] .cards {
+        display: none;
+      }
+      .work[data-view="outline"][data-pane="cards"] .tree {
+        display: none;
+      }
+      .work:not([data-view="outline"]) .tree {
+        display: none;
+      }
+      #panes {
+        display: none;
+      }
+      .work-outline #panes {
+        display: inline-flex;
+      }
+      @media (min-width: 1100px) {
+        .work {
+          display: grid;
+          grid-template-columns: minmax(380px, 36%) minmax(0, 1fr);
+          gap: 20px;
+          align-items: start;
+        }
+        .work .tree,
+        .work .cards {
+          display: block !important;
+        }
+        .tree {
+          position: sticky;
+          top: calc(var(--barh) + 8px);
+          max-height: calc(100vh - var(--barh) - 16px);
+          overflow: auto;
+        }
+        .work-outline #panes {
+          display: none;
+        }
+      }
+      /* tree (table of contents) */
+      .tree {
+        background: var(--card);
+        border: 1px solid var(--line);
+        border-radius: 8px;
+        padding: 6px 8px 10px;
+      }
+      .tree .tp {
+        display: flex;
+        gap: 8px;
+        align-items: baseline;
+        font-weight: 700;
+        font-size: 14px;
+        margin: 10px 0 2px;
+        padding: 2px 4px;
+        border-bottom: 1px solid var(--line);
+      }
+      .tree .tp a {
+        color: var(--ink);
+        text-decoration: none;
+      }
+      .tree .tp span {
+        font-weight: 400;
+        color: var(--mute);
+        font-size: 12px;
+      }
+      .tlist {
+        min-height: 26px;
+      }
+      .tr {
+        display: flex;
+        align-items: center;
+        gap: 4px;
+        min-height: 30px;
+        border-radius: 5px;
+        padding: 0 2px;
+        border-left: 2px solid transparent;
+      }
+      .tr:hover {
+        background: var(--chip);
+      }
+      .tr.indented {
+        border-left-color: var(--line);
+      }
+      .tr .handle {
+        min-height: 28px;
+        width: 20px;
+        font-size: 16px;
+      }
+      .tr .num {
+        font:
+          600 12px ui-monospace,
+          monospace;
+        color: var(--acc);
+        white-space: nowrap;
+      }
+      .tr .tt {
+        flex: 1;
+        min-width: 0;
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        font-size: 14px;
+        background: transparent;
+        border: 0;
+        color: var(--ink);
+        padding: 3px 2px;
+        text-align: left;
+      }
+      .tr.head .tt {
+        font-weight: 700;
+      }
+      .tr .k {
+        font-size: 10px;
+        padding: 0 6px;
+      }
+      .tr.moved .tt {
+        color: var(--warm);
+      }
+      .tb {
+        display: flex;
+        gap: 2px;
+      }
+      .tb button {
+        width: 26px;
+        height: 26px;
+        padding: 0;
+        font-size: 11px;
+        background: transparent;
+        color: var(--acc);
+        border: 1px solid var(--line);
+        border-radius: 5px;
+      }
+      .tb button:disabled,
+      .arrows button:disabled {
+        opacity: 0.3;
+        cursor: default;
+      }
+      @media (pointer: coarse) {
+        .tb button {
+          width: 34px;
+          height: 34px;
+          font-size: 13px;
+        }
+        .tr {
+          min-height: 38px;
+        }
+      }
+      .tr .num {
+        min-width: 1.7em;
+      }
+      @media (max-width: 600px) {
+        .tr .tt {
+          white-space: normal;
+          display: -webkit-box;
+          -webkit-line-clamp: 2;
+          -webkit-box-orient: vertical;
+          line-height: 1.25;
+          padding: 0 2px;
+          max-height: 2.5em;
+        }
+        .bar .toc {
+          display: none;
+        }
+        .tr .k {
+          font-size: 0;
+          width: 10px;
+          height: 10px;
+          padding: 0;
+          flex: none;
+        }
+        .tb {
+          gap: 1px;
+        }
+      }
+      /* cards */
+      .group {
+        margin: 18px 0 6px;
+        scroll-margin-top: calc(var(--barh) + 8px);
+      }
+      .cards .group:first-child {
+        margin-top: 0;
+      }
+      .ghead {
+        display: flex;
+        flex-wrap: wrap;
+        align-items: baseline;
+        gap: 4px 10px;
+        margin-bottom: 4px;
+      }
+      .ghead h3 {
+        margin: 0;
+        font-size: 17px;
+      }
+      .ghead .sub {
+        font-size: 13px;
+        color: var(--mute);
+      }
+      .ghead .gadd {
+        margin-left: auto;
+        padding: 3px 10px;
+        font-size: 13px;
+      }
+      .list {
+        min-height: 40px;
+        border: 1px dashed transparent;
+        border-radius: 8px;
+        padding: 2px 0;
+      }
+      .list:empty::after {
+        content: "Empty. Drag something here.";
+        display: block;
+        padding: 8px;
+        font-size: 13px;
+        color: var(--mute);
+      }
+      .dragging-on .list[data-drop="yes"] {
+        border-color: var(--line);
+      }
+      .item {
+        display: grid;
+        grid-template-columns: 32px minmax(0, 1fr) auto;
+        gap: 0 6px;
+        align-items: start;
+        background: var(--card);
+        border: 1px solid var(--line);
+        border-radius: 8px;
+        padding: 6px 6px 6px 0;
+        margin: 5px 0;
+      }
+      .item.nodrag {
+        grid-template-columns: 10px minmax(0, 1fr) auto;
+      }
+      .item.moved {
+        border-color: var(--warm);
+      }
+      .node.flash {
+        background: var(--hl) !important;
+        transition: background 0.1s;
+      }
+      .item.head {
+        background: var(--chip);
+        border-color: var(--chip);
+      }
+      .handle {
+        touch-action: none;
+        cursor: grab;
+        user-select: none;
+        -webkit-user-select: none;
+        color: var(--done);
+        font-size: 20px;
+        line-height: 1;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        min-height: 36px;
+      }
+      .node.dragging {
+        position: fixed;
+        z-index: 20;
+        pointer-events: none;
+        box-shadow: 0 8px 24px rgba(0, 0, 0, 0.25);
+        opacity: 0.95;
+        margin: 0 !important;
+        background: var(--card);
+      }
+      .node.carried {
+        display: none;
+      }
+      .ph {
+        border: 2px dashed var(--acc);
+        border-radius: 8px;
+        margin: 4px 0;
+        background: transparent;
+      }
+      .body {
+        min-width: 0;
+      }
+      .t {
+        display: block;
+        width: 100%;
+        text-align: left;
+        background: transparent;
+        border: 0;
+        color: var(--ink);
+        padding: 6px 0;
+        font-size: 15px;
+        line-height: 1.35;
+      }
+      .num {
+        font:
+          600 12px ui-monospace,
+          monospace;
+        color: var(--acc);
+        margin-right: 6px;
+      }
+      .iid {
+        font:
+          600 12px ui-monospace,
+          monospace;
+        color: var(--mute);
+        margin-right: 6px;
+      }
+      .t .k,
+      .t .pg {
+        margin-left: 6px;
+      }
+      .more {
+        font-size: 14px;
+        color: var(--mute);
+        padding: 2px 0 6px;
+      }
+      .more .ctl {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 8px;
+        margin-top: 6px;
+        align-items: center;
+        color: var(--ink);
+      }
+      .more .ctl button {
+        padding: 4px 10px;
+        font-size: 13px;
+      }
+      .more .orig {
+        font-size: 12px;
+        color: var(--done);
+      }
+      .arrows {
+        display: flex;
+        gap: 4px;
+      }
+      .arrows button,
+      .del {
+        width: 36px;
+        height: 36px;
+        padding: 0;
+        font-size: 14px;
+        background: transparent;
+        color: var(--acc);
+        border: 1px solid var(--line);
+        border-radius: 6px;
+      }
+      .head input {
+        font:
+          600 15px system-ui,
+          sans-serif;
+        width: 100%;
+        border: 1px solid transparent;
+        border-radius: 6px;
+        background: transparent;
+        color: var(--ink);
+        padding: 6px 4px;
+      }
+      .head input:focus {
+        border-color: var(--acc);
+        background: var(--bg);
+      }
+      .head .hrow {
+        display: flex;
+        gap: 6px;
+        align-items: center;
+      }
+      .head .num {
+        padding-left: 4px;
+      }
+      form.q {
+        margin: 10px 0 18px;
+      }
+      form.q label {
+        display: block;
+        padding: 6px 0;
+        cursor: pointer;
+      }
+      form.q input {
+        margin-right: 8px;
+      }
+      form.q button {
+        margin-top: 10px;
+      }
+      form.q .status {
+        display: inline-block;
+        margin-left: 10px;
+        font-size: 13px;
+        color: var(--mute);
+      }
+      details > summary {
+        cursor: pointer;
+        font-weight: 600;
+        padding: 6px 0;
+      }
+      @media (max-width: 520px) {
+        .stat {
+          font-size: 13px;
+        }
+        .bar .seg button {
+          padding: 6px 8px;
+          font-size: 13px;
+        }
+        .arrows {
+          flex-direction: column;
+        }
+        .arrows button {
+          height: 30px;
+        }
+        :root {
+          --ind: 12px;
+        }
+      }
+    </style>
+    <style id="status-colors"></style>
+  </head>
+  <body>
+    <main>
+      <div class="prose">
+        <h1 id="title"></h1>
+        <p class="date" id="subtitle"></p>
+        __INTRO_HTML__
+        <h2>The outline</h2>
+        <p class="legend" id="legend"></p>
+        <p class="note">
+          Drag the ⠿ handle, or use ▲ ▼ to move a row (a heading takes the rows
+          nested under it along). ◀ ▶ change how deep a row sits; in the
+          contents tree, dragging sideways does the same. Dropping on another
+          page moves it there, and pages with a fixed status (like Cut) set it.
+          Tap a card's title for its notes, a status picker and a "move to"
+          picker.
+        </p>
+        <div class="stats" id="stats"></div>
+      </div>
+
+      <div class="bar" id="bar">
+        <div class="row1">
+          <div class="seg" role="group" aria-label="View">
+            <button type="button" data-view="outline" aria-pressed="true">
+              Outline
+            </button>
+            <button type="button" data-view="status" aria-pressed="false">
+              By status
+            </button>
+            <button type="button" data-view="orig" aria-pressed="false">
+              Original order
+            </button>
+          </div>
+          <div class="seg" id="panes" role="group" aria-label="Show">
+            <button type="button" data-pane="toc" aria-pressed="true">
+              Contents
+            </button>
+            <button type="button" data-pane="cards" aria-pressed="false">
+              Cards
+            </button>
+          </div>
+          <button type="button" class="send" id="send">Send outline</button>
+          <button type="button" class="ghost small" id="seed" hidden></button>
+          <button type="button" class="ghost small" id="reset">Reset</button>
+          <span id="send-status" role="status" aria-live="polite"></span>
+        </div>
+        <nav class="toc" id="toc" aria-label="Jump to"></nav>
+      </div>
+
+      <div class="work" id="work">
+        <aside class="tree" id="tree" aria-label="Table of contents"></aside>
+        <div class="cards" id="board"></div>
+      </div>
+
+      <div class="prose">__EXTRA_HTML__</div>
+    </main>
+    <script id="outline-data" type="application/json">
+      __OUTLINE_DATA__
+    </script>
+    <script>
+      // Outline editor. Data comes from the JSON block above (see SKILL.md for its shape).
+      var D;
+      try {
+        D = JSON.parse(document.getElementById("outline-data").textContent);
+      } catch (e) {
+        document.getElementById("title").textContent =
+          "No outline data: render this template with outline.py";
+        throw e;
+      }
+      document.title = D.title;
+      document.getElementById("title").textContent = D.title;
+      document.getElementById("subtitle").textContent = D.subtitle || "";
+      var PAGES = D.pages,
+        STATUSES = D.statuses.map(function (s) {
+          return s.key;
+        });
+      var PAGE = {},
+        STAT = {};
+      PAGES.forEach(function (p) {
+        PAGE[p.key] = p;
+      });
+      D.statuses.forEach(function (s) {
+        STAT[s.key] = s;
+      });
+      var ITEMS = {},
+        ORIGINAL = {};
+      D.items.forEach(function (it) {
+        ITEMS[it.id] = it;
+      });
+      var FIRST_PLAIN = (
+        PAGES.filter(function (p) {
+          return !p.status && !p.tray;
+        })[0] || PAGES[0]
+      ).key;
+      var DEFAULT_STATUS = D.default_status || STATUSES[0];
+      var KEY = D.storage_key || "outline-editor:" + D.title;
+      function cls(s) {
+        return "s-" + String(s).replace(/[^a-z0-9-]/gi, "_");
+      }
+      document.getElementById("status-colors").textContent = D.statuses
+        .map(function (s) {
+          return (
+            "." + cls(s.key) + "{background:" + (s.color || "#8a8a85") + "}"
+          );
+        })
+        .join("");
+
+      function defaults() {
+        var s = {
+          order: {},
+          depth: {},
+          status: {},
+          heads: {},
+          seq: 0,
+          view: "outline",
+          pane: "toc",
+        };
+        PAGES.forEach(function (p) {
+          s.order[p.key] = [];
+        });
+        D.items.forEach(function (it) {
+          var pg = PAGE[it.page] ? it.page : FIRST_PLAIN;
+          s.order[pg].push(it.id);
+          s.status[it.id] = it.status || DEFAULT_STATUS;
+          s.depth[it.id] = it.depth || 0;
+        });
+        (D.headings || []).forEach(function (h) {
+          var id = "~h" + ++s.seq;
+          s.heads[id] = h.title;
+          s.depth[id] = h.depth || 0;
+          var l = s.order[h.page || FIRST_PLAIN];
+          var at = h.before ? l.indexOf(h.before) : -1;
+          if (at < 0) l.push(id);
+          else l.splice(at, 0, id);
+        });
+        PAGES.forEach(function (p) {
+          normalize(s, p.key);
+        });
+        return s;
+      }
+      function load() {
+        var d = defaults();
+        try {
+          var raw = localStorage.getItem(KEY);
+          if (!raw) return d;
+          var s = JSON.parse(raw),
+            seen = {};
+          s.depth = s.depth || {};
+          s.heads = s.heads || {};
+          s.status = s.status || {};
+          PAGES.forEach(function (p) {
+            s.order[p.key] = (s.order[p.key] || []).filter(function (id) {
+              var ok = (ITEMS[id] || s.heads[id] !== undefined) && !seen[id];
+              seen[id] = 1;
+              return ok;
+            });
+          });
+          D.items.forEach(function (it) {
+            if (!seen[it.id]) {
+              s.order[pageIn(d, it.id)].push(it.id);
+              s.status[it.id] = d.status[it.id];
+              s.depth[it.id] = 0;
+            }
+            if (STATUSES.indexOf(s.status[it.id]) < 0)
+              s.status[it.id] = d.status[it.id];
+          });
+          PAGES.forEach(function (p) {
+            normalize(s, p.key);
+          });
+          if (["outline", "status", "orig"].indexOf(s.view) < 0)
+            s.view = "outline";
+          return s;
+        } catch (e) {
+          return d;
+        }
+      }
+      function save() {
+        try {
+          localStorage.setItem(KEY, JSON.stringify(S));
+        } catch (e) {}
+      }
+      function isHead(id) {
+        return id.slice(0, 2) === "~h";
+      }
+      function pageIn(s, id) {
+        for (var k in s.order) {
+          if (s.order[k].indexOf(id) >= 0) return k;
+        }
+        return null;
+      }
+      // every row sits at most one level deeper than the row above it
+      function normalize(s, page) {
+        var prev = -1;
+        s.order[page].forEach(function (id) {
+          var d = Math.max(0, Math.min(s.depth[id] || 0, prev + 1));
+          s.depth[id] = d;
+          prev = d;
+        });
+      }
+      var S = load(),
+        open = {};
+      function pageOf(id) {
+        return pageIn(S, id);
+      }
+      function home(id) {
+        var it = ITEMS[id];
+        var h = it.home || it.page;
+        return PAGE[h] && !PAGE[h].status && !PAGE[h].tray ? h : FIRST_PLAIN;
+      }
+      function lockedStatus(st) {
+        return PAGES.some(function (p) {
+          return p.status === st;
+        });
+      }
+      function statusFor(id, page) {
+        var p = PAGE[page];
+        if (p.status) return p.status;
+        var cur = S.status[id];
+        if (!lockedStatus(cur)) return cur;
+        var orig = ITEMS[id].status || DEFAULT_STATUS;
+        return lockedStatus(orig) ? DEFAULT_STATUS : orig;
+      }
+      function block(id) {
+        var l = S.order[pageOf(id)],
+          i = l.indexOf(id),
+          d = S.depth[id],
+          e = i + 1;
+        while (e < l.length && S.depth[l[e]] > d) e++;
+        return l.slice(i, e);
+      }
+      function moveBlock(id, page, idx, depth) {
+        var from = pageOf(id),
+          b = block(id),
+          l = S.order[from],
+          i = l.indexOf(id);
+        l.splice(i, b.length);
+        var t = S.order[page];
+        if (idx == null || idx > t.length) idx = t.length;
+        t.splice.apply(t, [idx, 0].concat(b));
+        var delta = (depth == null ? S.depth[id] : depth) - S.depth[id];
+        b.forEach(function (x) {
+          S.depth[x] = Math.max(0, S.depth[x] + delta);
+          if (!isHead(x)) S.status[x] = statusFor(x, page);
+        });
+        normalize(S, from);
+        normalize(S, page);
+      }
+      function setStatus(id, st) {
+        S.status[id] = st;
+        var p = pageOf(id),
+          target = p;
+        PAGES.forEach(function (x) {
+          if (x.status === st) target = x.key;
+        });
+        if (
+          target === p &&
+          (PAGE[p].status || PAGE[p].tray) &&
+          PAGE[p].status !== st
+        )
+          target = home(id);
+        if (target !== p) moveBlock(id, target, null, 0);
+      }
+      function moved(id) {
+        var it = ITEMS[id];
+        return (
+          pageOf(id) !== it.page ||
+          S.status[id] !== (it.status || DEFAULT_STATUS)
+        );
+      }
+      function esc(t) {
+        return String(t)
+          .replace(/&/g, "&amp;")
+          .replace(/</g, "&lt;")
+          .replace(/>/g, "&gt;")
+          .replace(/"/g, "&quot;");
+      }
+      function title(id) {
+        return isHead(id) ? S.heads[id] : ITEMS[id].title;
+      }
+      function numbers(page) {
+        var c = [],
+          out = {};
+        S.order[page].forEach(function (id) {
+          var d = S.depth[id];
+          c.length = d + 1;
+          c[d] = (c[d] || 0) + 1;
+          for (var i = 0; i < d; i++) if (!c[i]) c[i] = 1;
+          out[id] = c.slice(0, d + 1).join(".");
+        });
+        return out;
+      }
+      function flat() {
+        var f = [];
+        PAGES.forEach(function (p) {
+          S.order[p.key].forEach(function (id) {
+            f.push(id);
+          });
+        });
+        return f;
+      }
+      function canIn(id) {
+        var l = S.order[pageOf(id)],
+          i = l.indexOf(id);
+        return i > 0 && S.depth[id] <= S.depth[l[i - 1]];
+      }
+
+      // ---- rendering ----
+      var board = document.getElementById("board"),
+        tree = document.getElementById("tree"),
+        work = document.getElementById("work");
+      function chip(st) {
+        return (
+          '<span class="k ' +
+          cls(st) +
+          '">' +
+          esc((STAT[st] || {}).label || st) +
+          "</span>"
+        );
+      }
+      function arrows(f, id, small) {
+        var i = f.indexOf(id),
+          h =
+            '<button type="button" data-act="up" aria-label="Move up"' +
+            (i <= 0 ? " disabled" : "") +
+            '>▲</button><button type="button" data-act="down" aria-label="Move down"' +
+            (i >= f.length - 1 ? " disabled" : "") +
+            ">▼</button>";
+        if (small)
+          h +=
+            '<button type="button" data-act="out" aria-label="Outdent"' +
+            (S.depth[id] ? "" : " disabled") +
+            '>◀</button><button type="button" data-act="in" aria-label="Indent"' +
+            (canIn(id) ? "" : " disabled") +
+            ">▶</button>";
+        return h;
+      }
+      function cardHTML(id, o) {
+        var ind = o.depth
+          ? ' style="margin-left:calc(var(--ind) * ' + S.depth[id] + ')"'
+          : "";
+        if (isHead(id)) {
+          return (
+            '<div class="node item head" data-id="' +
+            id +
+            '" data-depth="' +
+            S.depth[id] +
+            '"' +
+            ind +
+            '><span class="handle" title="Drag">⠿</span><div class="body"><div class="hrow"><span class="num">' +
+            (o.num || "") +
+            '</span><input type="text" value="' +
+            esc(S.heads[id]) +
+            '" aria-label="Heading title" data-head="' +
+            id +
+            '"><button type="button" class="del" data-act="del" aria-label="Remove heading">✕</button></div></div>' +
+            (o.f
+              ? '<div class="arrows">' + arrows(o.f, id) + "</div>"
+              : "<span></span>") +
+            "</div>"
+          );
+        }
+        var it = ITEMS[id],
+          st = S.status[id],
+          isOpen = !!open[id];
+        var h =
+          '<div class="node item' +
+          (o.drag ? "" : " nodrag") +
+          (moved(id) ? " moved" : "") +
+          '" data-id="' +
+          id +
+          '" data-depth="' +
+          S.depth[id] +
+          '"' +
+          ind +
+          ">";
+        h += o.drag
+          ? '<span class="handle" title="Drag">⠿</span>'
+          : "<span></span>";
+        h +=
+          '<div class="body"><button type="button" class="t" data-act="toggle" aria-expanded="' +
+          isOpen +
+          '">' +
+          (o.num ? '<span class="num">' + o.num + "</span>" : "") +
+          '<span class="iid">' +
+          esc(id) +
+          "</span>" +
+          esc(it.title) +
+          chip(st) +
+          (o.showPage
+            ? '<span class="pg">' + esc(PAGE[pageOf(id)].title) + "</span>"
+            : "") +
+          "</button>";
+        h +=
+          '<div class="more"' +
+          (isOpen ? "" : " hidden") +
+          ">" +
+          (it.why ? "<div>" + esc(it.why) + "</div>" : "") +
+          (it.src ? '<div class="orig">Source: ' + esc(it.src) + "</div>" : "");
+        h +=
+          '<div class="orig">Started on ' +
+          esc(PAGE[it.page] ? PAGE[it.page].title : it.page) +
+          " as " +
+          esc(it.status || DEFAULT_STATUS) +
+          "</div>";
+        h +=
+          '<div class="ctl"><label>Status <select data-act="status">' +
+          STATUSES.map(function (s) {
+            return (
+              '<option value="' +
+              esc(s) +
+              '"' +
+              (s === st ? " selected" : "") +
+              ">" +
+              esc(STAT[s].label || s) +
+              "</option>"
+            );
+          }).join("") +
+          "</select></label>";
+        h +=
+          '<label>Move to <select data-act="moveto">' +
+          PAGES.map(function (p) {
+            return (
+              '<option value="' +
+              esc(p.key) +
+              '"' +
+              (p.key === pageOf(id) ? " selected" : "") +
+              ">" +
+              esc(p.title) +
+              "</option>"
+            );
+          }).join("") +
+          "</select></label>";
+        if (o.f)
+          h +=
+            '<button type="button" class="ghost" data-act="out"' +
+            (S.depth[id] ? "" : " disabled") +
+            '>◀ Outdent</button><button type="button" class="ghost" data-act="in"' +
+            (canIn(id) ? "" : " disabled") +
+            ">Indent ▶</button>";
+        h +=
+          "</div></div></div>" +
+          (o.f
+            ? '<div class="arrows">' + arrows(o.f, id) + "</div>"
+            : "<span></span>") +
+          "</div>";
+        return h;
+      }
+      function groupHTML(gid, ttl, sub, inner, extra, drop) {
+        return (
+          '<section class="group" id="g-' +
+          esc(gid) +
+          '"><div class="ghead"><h3>' +
+          esc(ttl) +
+          '</h3><span class="sub">' +
+          esc(sub) +
+          "</span>" +
+          (extra || "") +
+          '</div><div class="list" data-group="' +
+          esc(gid) +
+          '" data-drop="' +
+          (drop ? "yes" : "no") +
+          '">' +
+          inner +
+          "</div></section>"
+        );
+      }
+      function count(page) {
+        return S.order[page].filter(function (id) {
+          return !isHead(id);
+        }).length;
+      }
+      function renderTree() {
+        var f = flat(),
+          h = "";
+        PAGES.forEach(function (p) {
+          var nums = numbers(p.key);
+          h +=
+            '<div class="tp"><a href="#g-' +
+            esc(p.key) +
+            '">' +
+            esc(p.title) +
+            "</a><span>" +
+            count(p.key) +
+            '</span></div><div class="list tlist" data-group="' +
+            esc(p.key) +
+            '" data-drop="yes">';
+          S.order[p.key].forEach(function (id) {
+            var d = S.depth[id];
+            h +=
+              '<div class="node tr' +
+              (isHead(id) ? " head" : "") +
+              (d ? " indented" : "") +
+              (!isHead(id) && moved(id) ? " moved" : "") +
+              '" data-id="' +
+              id +
+              '" data-depth="' +
+              d +
+              '" style="margin-left:calc(var(--ind) * ' +
+              d +
+              ')"><span class="handle" title="Drag">⠿</span><span class="num">' +
+              nums[id] +
+              '</span><button type="button" class="tt" data-act="goto" title="' +
+              esc(title(id)) +
+              '">' +
+              esc(title(id)) +
+              "</button>" +
+              (isHead(id) ? "" : chip(S.status[id])) +
+              '<span class="tb">' +
+              arrows(f, id, true) +
+              "</span></div>";
+          });
+          h += "</div>";
+        });
+        tree.innerHTML = h;
+      }
+      function render() {
+        var h = "",
+          toc = [];
+        work.dataset.view = S.view;
+        work.dataset.pane = S.pane || "toc";
+        document.body.classList.toggle("work-outline", S.view === "outline");
+        if (S.view === "outline") {
+          var f = flat();
+          PAGES.forEach(function (p) {
+            var nums = numbers(p.key),
+              inner = S.order[p.key]
+                .map(function (id) {
+                  return cardHTML(id, {
+                    drag: true,
+                    f: f,
+                    num: nums[id],
+                    depth: true,
+                  });
+                })
+                .join("");
+            var add =
+              p.status || p.tray
+                ? ""
+                : '<button type="button" class="ghost gadd" data-act="addhead" data-page="' +
+                  esc(p.key) +
+                  '">+ Heading</button>';
+            h += groupHTML(
+              p.key,
+              p.title,
+              (p.sub ? p.sub + " · " : "") + count(p.key),
+              inner,
+              add,
+              true,
+            );
+            toc.push(["g-" + p.key, p.title, count(p.key)]);
+          });
+        } else if (S.view === "status") {
+          var by = {};
+          STATUSES.forEach(function (s) {
+            by[s] = [];
+          });
+          flat().forEach(function (id) {
+            if (!isHead(id)) by[S.status[id]].push(id);
+          });
+          STATUSES.forEach(function (s) {
+            h += groupHTML(
+              "s-" + s,
+              STAT[s].label || s,
+              (STAT[s].note ? STAT[s].note + " · " : "") + by[s].length,
+              by[s]
+                .map(function (id) {
+                  return cardHTML(id, { drag: true, showPage: true });
+                })
+                .join(""),
+              "",
+              true,
+            );
+            toc.push(["g-s-" + s, STAT[s].label || s, by[s].length]);
+          });
+        } else {
+          (D.origins || [{ key: "", title: "As written" }]).forEach(
+            function (o) {
+              var ids = D.items
+                .filter(function (it) {
+                  return (it.origin || "") === o.key;
+                })
+                .map(function (it) {
+                  return it.id;
+                });
+              h += groupHTML(
+                "o-" + o.key,
+                o.title,
+                "read-only · shows where each is now · " + ids.length,
+                ids
+                  .map(function (id) {
+                    return cardHTML(id, { drag: false, showPage: true });
+                  })
+                  .join(""),
+                "",
+                false,
+              );
+              toc.push(["g-o-" + o.key, o.title, ids.length]);
+            },
+          );
+        }
+        board.innerHTML = h;
+        renderTree();
+        document.getElementById("toc").innerHTML = toc
+          .map(function (t) {
+            return (
+              '<a href="#' +
+              esc(t[0]) +
+              '">' +
+              esc(t[1]) +
+              "<b>" +
+              t[2] +
+              "</b></a>"
+            );
+          })
+          .join("");
+        [].forEach.call(document.querySelectorAll("[data-view]"), function (b) {
+          if (b.tagName === "BUTTON")
+            b.setAttribute("aria-pressed", String(b.dataset.view === S.view));
+        });
+        [].forEach.call(document.querySelectorAll("[data-pane]"), function (b) {
+          if (b.tagName === "BUTTON")
+            b.setAttribute(
+              "aria-pressed",
+              String(b.dataset.pane === (S.pane || "toc")),
+            );
+        });
+        stats();
+        barh();
+      }
+      function stats() {
+        var c = {};
+        STATUSES.forEach(function (s) {
+          c[s] = 0;
+        });
+        D.items.forEach(function (it) {
+          c[S.status[it.id]]++;
+        });
+        var n = D.items.filter(function (it) {
+          return moved(it.id);
+        }).length;
+        document.getElementById("stats").innerHTML =
+          STATUSES.map(function (s) {
+            return '<div class="stat"><b>' + c[s] + "</b>" + chip(s) + "</div>";
+          }).join("") +
+          '<div class="stat"><b>' +
+          n +
+          "</b>moved or changed by you</div>";
+      }
+      document.getElementById("legend").innerHTML = D.statuses
+        .map(function (s) {
+          return chip(s.key) + " " + esc(s.note || "");
+        })
+        .join(" &nbsp; ");
+      function barh() {
+        document.documentElement.style.setProperty(
+          "--barh",
+          document.getElementById("bar").offsetHeight + "px",
+        );
+      }
+      window.addEventListener("resize", barh);
+      function flash(id, act, where) {
+        [].forEach.call(
+          document.querySelectorAll('.node[data-id="' + id + '"]'),
+          function (el) {
+            el.classList.add("flash");
+            setTimeout(function () {
+              el.classList.remove("flash");
+            }, 500);
+          },
+        );
+        var el =
+          (where && where.querySelector('.node[data-id="' + id + '"]')) ||
+          board.querySelector('.node[data-id="' + id + '"]');
+        if (!el || !el.offsetParent) return;
+        var r = el.getBoundingClientRect(),
+          pr =
+            where === tree && tree.scrollHeight > tree.clientHeight
+              ? tree.getBoundingClientRect()
+              : { top: 0, bottom: innerHeight };
+        if (
+          r.top <
+            Math.max(
+              pr.top,
+              parseInt(
+                getComputedStyle(document.documentElement).getPropertyValue(
+                  "--barh",
+                ),
+              ),
+            ) ||
+          r.bottom > pr.bottom
+        )
+          el.scrollIntoView({ block: "center" });
+        if (act) {
+          var b = el.querySelector('[data-act="' + act + '"]');
+          if (b && !b.disabled) b.focus();
+        }
+      }
+      function commit(id, act, where) {
+        save();
+        render();
+        if (id) flash(id, act, where);
+      }
+
+      // ---- buttons and pickers (shared by tree and cards) ----
+      function step(id, dir) {
+        var p = pageOf(id),
+          l = S.order[p],
+          i = l.indexOf(id),
+          d = S.depth[id],
+          b = block(id),
+          pi = PAGES.indexOf(PAGE[p]);
+        if (dir < 0) {
+          var q = i - 1;
+          while (q >= 0 && S.depth[l[q]] > d) q--;
+          if (q >= 0) moveBlock(id, p, q, null);
+          else if (pi > 0) moveBlock(id, PAGES[pi - 1].key, null, null);
+        } else {
+          var n = i + b.length;
+          if (n >= l.length) {
+            if (pi < PAGES.length - 1) moveBlock(id, PAGES[pi + 1].key, 0, 0);
+            return;
+          }
+          var at;
+          if (S.depth[l[n]] === d) {
+            var e = n + 1;
+            while (e < l.length && S.depth[l[e]] > d) e++;
+            at = e;
+          } else at = n + 1;
+          moveBlock(id, p, at - b.length, null);
+        }
+      }
+      function indent(id, dir) {
+        var b = block(id);
+        if (dir < 0 && !S.depth[id]) return;
+        if (dir > 0 && !canIn(id)) return;
+        b.forEach(function (x) {
+          S.depth[x] += dir;
+        });
+        normalize(S, pageOf(id));
+      }
+      work.addEventListener("click", function (e) {
+        var b = e.target.closest("[data-act]");
+        if (!b || b.tagName === "SELECT") return;
+        var act = b.dataset.act,
+          node = b.closest(".node"),
+          id = node && node.dataset.id,
+          where = b.closest(".tree") ? tree : board;
+        if (act === "toggle") {
+          open[id] = !open[id];
+          render();
+          var t = board.querySelector('.node[data-id="' + id + '"] .t');
+          if (t) t.focus();
+        } else if (act === "up" || act === "down") {
+          step(id, act === "up" ? -1 : 1);
+          commit(id, act, where);
+        } else if (act === "in" || act === "out") {
+          indent(id, act === "in" ? 1 : -1);
+          commit(id, act, where);
+        } else if (act === "goto") {
+          if (
+            S.view === "outline" &&
+            getComputedStyle(board).display === "none"
+          ) {
+            S.pane = "cards";
+            render();
+          }
+          var c = board.querySelector('.node[data-id="' + id + '"]');
+          if (c) {
+            c.scrollIntoView({ block: "center" });
+            flash(id);
+          }
+        } else if (act === "del") {
+          var p = pageOf(id);
+          block(id)
+            .slice(1)
+            .forEach(function (x) {
+              S.depth[x]--;
+            });
+          S.order[p].splice(S.order[p].indexOf(id), 1);
+          delete S.heads[id];
+          normalize(S, p);
+          commit();
+        } else if (act === "addhead") {
+          var g = "~h" + ++S.seq;
+          S.heads[g] = "New heading";
+          S.depth[g] = 0;
+          S.order[b.dataset.page].unshift(g);
+          commit();
+          var inp = board.querySelector('[data-head="' + g + '"]');
+          if (inp) {
+            inp.focus();
+            inp.select();
+          }
+        }
+      });
+      work.addEventListener("change", function (e) {
+        var s = e.target;
+        if (s.tagName !== "SELECT") return;
+        var id = s.closest(".node").dataset.id;
+        open[id] = true;
+        if (s.dataset.act === "status") setStatus(id, s.value);
+        else if (s.dataset.act === "moveto") moveBlock(id, s.value, null, 0);
+        commit(id);
+      });
+      work.addEventListener("input", function (e) {
+        var g = e.target.dataset.head;
+        if (g) {
+          S.heads[g] = e.target.value;
+          save();
+          var t = tree.querySelector('.node[data-id="' + g + '"] .tt');
+          if (t) t.textContent = e.target.value;
+        }
+      });
+      [].forEach.call(
+        document.querySelectorAll("button[data-view]"),
+        function (b) {
+          b.addEventListener("click", function () {
+            S.view = b.dataset.view;
+            save();
+            render();
+          });
+        },
+      );
+      [].forEach.call(
+        document.querySelectorAll("button[data-pane]"),
+        function (b) {
+          b.addEventListener("click", function () {
+            S.pane = b.dataset.pane;
+            save();
+            render();
+          });
+        },
+      );
+      document.getElementById("reset").addEventListener("click", function () {
+        if (
+          !confirm(
+            "Put everything back where it started? Added headings go too.",
+          )
+        )
+          return;
+        var v = S.view,
+          pn = S.pane;
+        S = defaults();
+        S.view = v;
+        S.pane = pn;
+        open = {};
+        commit();
+      });
+      var seed = document.getElementById("seed");
+      if (
+        D.seed_headings &&
+        D.seed_headings.titles &&
+        D.seed_headings.titles.length
+      ) {
+        seed.hidden = false;
+        seed.textContent = D.seed_headings.label || "Add suggested headings";
+        seed.addEventListener("click", function () {
+          var pg = D.seed_headings.page || FIRST_PLAIN;
+          var ids = D.seed_headings.titles.map(function (t) {
+            var g = "~h" + ++S.seq;
+            S.heads[g] = t;
+            S.depth[g] = 0;
+            return g;
+          });
+          S.order[pg] = ids.concat(S.order[pg]);
+          S.view = "outline";
+          normalize(S, pg);
+          commit();
+        });
+      }
+
+      // ---- drag with pointer events: mouse, pen and touch (iPad) ----
+      var G = null;
+      work.addEventListener("pointerdown", function (e) {
+        var h = e.target.closest(".handle");
+        if (!h || (e.pointerType === "mouse" && e.button !== 0)) return;
+        var node = h.closest(".node");
+        if (!node) return;
+        e.preventDefault();
+        var r = node.getBoundingClientRect(),
+          list = node.parentNode,
+          lr = list.getBoundingClientRect();
+        var ph = document.createElement("div");
+        ph.className = "ph";
+        ph.style.height = r.height + "px";
+        list.insertBefore(ph, node);
+        // hide the rows nested under this one: they travel with it
+        var d = +node.dataset.depth;
+        for (
+          var c = node.nextElementSibling;
+          c && c.classList.contains("node") && +c.dataset.depth > d;
+          c = c.nextElementSibling
+        )
+          c.classList.add("carried");
+        node.classList.add("dragging");
+        node.style.width = r.width + "px";
+        node.style.left = r.left + "px";
+        node.style.top = r.top + "px";
+        document.body.classList.add("dragging-on");
+        G = {
+          id: node.dataset.id,
+          node: node,
+          ph: ph,
+          dx: e.clientX - r.left,
+          dy: e.clientY - r.top,
+          pid: e.pointerId,
+          x: e.clientX,
+          y: e.clientY,
+          raf: 0,
+          tree: !!node.closest(".tree"),
+          depth: d,
+          newDepth: d,
+          startX: r.left - lr.left - d * indPx(),
+        };
+        try {
+          h.setPointerCapture(e.pointerId);
+        } catch (err) {}
+        G.raf = requestAnimationFrame(tick);
+      });
+      function indPx() {
+        return (
+          parseFloat(
+            getComputedStyle(document.documentElement).getPropertyValue(
+              "--ind",
+            ),
+          ) || 18
+        );
+      }
+      function liveKids(list) {
+        return [].filter.call(list.children, function (c) {
+          return (
+            c.classList.contains("node") &&
+            c !== G.node &&
+            !c.classList.contains("carried")
+          );
+        });
+      }
+      function place() {
+        G.node.style.left = G.x - G.dx + "px";
+        G.node.style.top = G.y - G.dy + "px";
+        var el = document.elementFromPoint(G.x, G.y);
+        var list = el && el.closest(".list[data-drop=yes]");
+        if (list && !!list.closest(".tree") !== G.tree) list = null;
+        if (list) {
+          var kids = liveKids(list),
+            before = null;
+          for (var i = 0; i < kids.length; i++) {
+            var kr = kids[i].getBoundingClientRect();
+            if (G.y < kr.top + kr.height / 2) {
+              before = kids[i];
+              break;
+            }
+          }
+          if (before) {
+            if (G.ph.nextElementSibling !== before)
+              list.insertBefore(G.ph, before);
+          } else {
+            var last = kids[kids.length - 1];
+            if (
+              G.ph.parentNode !== list ||
+              (last &&
+                G.ph.compareDocumentPosition(last) &
+                  Node.DOCUMENT_POSITION_FOLLOWING)
+            )
+              list.appendChild(G.ph);
+          }
+        }
+        // depth: in the tree, the horizontal position picks it; in cards, keep the current depth
+        var prev = G.ph.previousElementSibling;
+        while (
+          prev &&
+          (!prev.classList.contains("node") ||
+            prev === G.node ||
+            prev.classList.contains("carried"))
+        )
+          prev = prev.previousElementSibling;
+        var max = prev ? +prev.dataset.depth + 1 : 0;
+        var want = G.tree
+          ? Math.round(
+              (G.x -
+                G.dx -
+                G.ph.parentNode.getBoundingClientRect().left -
+                G.startX) /
+                indPx(),
+            )
+          : G.depth;
+        G.newDepth = Math.max(0, Math.min(max, want));
+        G.ph.style.marginLeft = G.newDepth * indPx() + "px";
+      }
+      function tick() {
+        if (!G) return;
+        var edge = 70,
+          v = 0,
+          sc = G.tree && tree.scrollHeight > tree.clientHeight ? tree : null;
+        var top = sc ? sc.getBoundingClientRect().top : 0,
+          bot = sc ? sc.getBoundingClientRect().bottom : innerHeight;
+        if (G.y < top + edge) v = -Math.ceil((top + edge - G.y) / 5);
+        else if (G.y > bot - edge) v = Math.ceil((G.y - (bot - edge)) / 5);
+        if (v) {
+          if (sc) sc.scrollTop += v;
+          else window.scrollBy(0, v);
+          place();
+        }
+        G.raf = requestAnimationFrame(tick);
+      }
+      window.addEventListener(
+        "pointermove",
+        function (e) {
+          if (!G || e.pointerId !== G.pid) return;
+          e.preventDefault();
+          G.x = e.clientX;
+          G.y = e.clientY;
+          place();
+        },
+        { passive: false },
+      );
+      function end(e, ok) {
+        if (!G || e.pointerId !== G.pid) return;
+        cancelAnimationFrame(G.raf);
+        document.body.classList.remove("dragging-on");
+        var g = G;
+        G = null;
+        var list = g.ph.parentNode,
+          group = list && list.dataset.group;
+        var idx = 0;
+        for (
+          var c = list.firstElementChild;
+          c && c !== g.ph;
+          c = c.nextElementSibling
+        ) {
+          if (
+            c.classList.contains("node") &&
+            c !== g.node &&
+            !c.classList.contains("carried")
+          )
+            idx++;
+        }
+        if (ok && group) {
+          if (S.view === "outline" || g.tree)
+            moveBlock(g.id, group, idx, g.newDepth);
+          else if (group.indexOf("s-") === 0 && !isHead(g.id)) {
+            var st = group.slice(2);
+            if (st !== S.status[g.id]) setStatus(g.id, st);
+          }
+        }
+        commit(g.id, null, g.tree ? tree : board);
+      }
+      window.addEventListener("pointerup", function (e) {
+        end(e, true);
+      });
+      window.addEventListener("pointercancel", function (e) {
+        end(e, false);
+      });
+
+      // ---- send ----
+      function lav() {
+        return window.lavish && typeof window.lavish.queuePrompt === "function";
+      }
+      function outline() {
+        var pages = PAGES.map(function (p) {
+          var nums = numbers(p.key),
+            stack = [];
+          return {
+            page: p.title,
+            key: p.key,
+            items: S.order[p.key].map(function (id) {
+              var d = S.depth[id];
+              stack.length = d;
+              var parent = d ? stack[d - 1] : null;
+              stack[d] = id;
+              var o = {
+                kind: isHead(id) ? "heading" : "section",
+                num: nums[id],
+                depth: d,
+                parent: parent
+                  ? isHead(parent)
+                    ? S.heads[parent]
+                    : parent
+                  : null,
+                title: title(id),
+              };
+              if (!isHead(id)) {
+                o.id = id;
+                o.status = S.status[id];
+                o.started =
+                  ITEMS[id].page + " " + (ITEMS[id].status || DEFAULT_STATUS);
+              }
+              return o;
+            }),
+          };
+        });
+        var text = pages
+          .map(function (p) {
+            return (
+              p.page +
+              " (" +
+              p.items.filter(function (i) {
+                return i.kind === "section";
+              }).length +
+              ")\n" +
+              p.items
+                .map(function (i) {
+                  var pad = new Array(i.depth + 2).join("  ");
+                  return (
+                    pad +
+                    i.num +
+                    " " +
+                    (i.kind === "heading"
+                      ? "# " + i.title
+                      : i.id + " " + i.title + " [" + i.status + "]")
+                  );
+                })
+                .join("\n")
+            );
+          })
+          .join("\n\n");
+        return { pages: pages, text: text };
+      }
+      document.getElementById("send").addEventListener("click", function () {
+        var st = document.getElementById("send-status");
+        var o = outline(),
+          n = D.items.length,
+          m = D.items.filter(function (it) {
+            return moved(it.id);
+          }).length;
+        if (!lav()) {
+          st.textContent = "Open this page in Lavish to send.";
+          return;
+        }
+        window.lavish.queuePrompt(
+          (D.prompt ||
+            "Here is my working outline: each page with its rows in order, numbered by nesting (headings start with #), each section with its status. Use it as the plan and account for every section ID.") +
+            " " +
+            m +
+            " of " +
+            n +
+            " sections were moved or re-statused.\n\n" +
+            o.text,
+          {
+            tag: "outline",
+            text: "Outline: " + n + " sections, " + m + " moved",
+            element: this,
+            queueKey: "outline",
+            data: { outline: o.pages },
+          },
+        );
+        st.textContent =
+          "Queued (" + m + " moved). Press Send to Agent in Lavish.";
+      });
+
+      // ---- optional single-choice questions in the extra HTML: <form class="q" data-lavish-question="..."> ----
+      [].forEach.call(
+        document.querySelectorAll("form.q[data-lavish-question]"),
+        function (f) {
+          f.addEventListener("submit", function (e) {
+            e.preventDefault();
+            var q = f.dataset.lavishQuestion,
+              inp = f.querySelector("input[type=radio]"),
+              v = inp && new FormData(f).get(inp.name),
+              st = f.querySelector(".status");
+            if (!v) {
+              if (st) st.textContent = "Pick one first.";
+              return;
+            }
+            if (!lav()) {
+              if (st) st.textContent = "Open this page in Lavish to send.";
+              return;
+            }
+            window.lavish.queuePrompt(
+              (D.question_prefix || "") + q + ": " + v + ".",
+              {
+                tag: "choice",
+                text: q + ": " + v,
+                element: f,
+                queueKey: q,
+                data: { question: q, answer: v },
+              },
+            );
+            if (st) st.textContent = "Queued.";
+          });
+        },
+      );
+      render();
+    </script>
+  </body>
+</html>

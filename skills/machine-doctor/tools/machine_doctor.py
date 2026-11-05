@@ -399,6 +399,21 @@ def unified_log_process(pid: int, when: str) -> str:
     return ""
 
 
+def read_booted_sims() -> list[str]:
+    """Names of booted iOS/watchOS simulators. `simctl list` only reads device
+    state; it never boots one."""
+    if not IS_DARWIN or not shutil.which("xcrun"):
+        return []
+    out = _run(["xcrun", "simctl", "list", "devices", "booted", "-j"], timeout=20)
+    try:
+        devices = json.loads(out).get("devices", {})
+    except ValueError:
+        return []
+    return [
+        d["name"] for ds in devices.values() for d in ds if d.get("state") == "Booted"
+    ]
+
+
 def read_containers() -> list[str]:
     """One line per running container (name cpu mem). A VM's host process only
     says the VM is busy; this says which container inside it."""
@@ -446,6 +461,7 @@ def collect_facts(
         facts.compressor_kb = parse_vm_stat(_run(["vm_stat"])).get("compressor_kb")
         facts.speed_limit = parse_speed_limit(_run(["pmset", "-g", "therm"]))
         facts.sleeps = read_sleeps(datetime.now() - SLEEP_LOOKBACK)
+        facts.booted_sims = read_booted_sims()
 
     facts.cmdlines = {pid: _cmdline(pid) for pid in _pids_named("gc")}
     for p in procs:

@@ -165,6 +165,11 @@ class TestHostHealth(unittest.TestCase):
         self.assertIn("orb config set memory_mib 8192", _msgs(got))
         self.assertEqual(self._find(vm_mem_mib={"OrbStack VM": 8192}), [])
 
+    def test_booted_simulators(self):
+        self.assertEqual(self._find(booted_sims=["iPhone 17", "iPad mini"]), [])
+        got = self._find(booted_sims=["iPhone 17", "test-a", "test-b"])
+        self.assertIn("3 simulators booted (iPhone 17, test-a, test-b)", _msgs(got))
+
     def test_windowserver_leak(self):
         got = self._find(procs=[_proc(436, rss=3 * 1024 * 1024, comm="WindowServer")])
         self.assertIn("WindowServer footprint 3072MB", _msgs(got))
