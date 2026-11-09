@@ -116,7 +116,7 @@ gh pr view --json url,number 2>/dev/null
 
 If that returns nothing — no PR for the current branch, `gh` not installed, `gh` not authenticated, not in a git repo — skip this step entirely. The architect review is still successful; the PR comment is a bonus, not a requirement.
 
-If a PR is found, build the comment body (a temp file is easiest):
+If a PR is found, build the comment body (a temp file is easiest). Shape it per the details-summary rule in `claude-md/global.md`: the header and **Result** line stay on top, the pass table and assessment go inside the fold.
 
 ```markdown
 ## Architect Review — <YYYY-MM-DD HH:MM>

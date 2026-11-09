@@ -76,6 +76,22 @@ Just do it - including obvious follow-up actions. Only pause when:
 - **Check PR state before pushing follow-up commits.** Run `gh pr list --head <branch> --state all --json state` — if `state == MERGED`, open a new PR for the follow-up work. (Use `gh pr list --head`, not `gh pr view <N>`: `gh pr view` misses cross-fork PRs — head in a fork, base in the canonical repo — which is exactly the orphan scenario this rule warns about.) Pushing to a merged PR's branch succeeds but leaves commits orphaned: the merge already happened at the PR's former tip, and new commits never reach main unless cherry-picked or re-PR'd. Non-obvious because `git push` succeeds regardless. `~/.local/bin/git-safe-push` automates this — it checks the branch's PR state and refuses (exit nonzero) to push to a MERGED PR's branch.
 - **Non-interactive `git rebase -i` via scripted editors.** For programmatic squashes in sessions without a human editor, write todo to `/tmp/rebase-todo.txt` and message to `/tmp/rebase-msg.txt`, then `GIT_SEQUENCE_EDITOR="cp /tmp/rebase-todo.txt" GIT_EDITOR="cp /tmp/rebase-msg.txt" git rebase -i <base>`. Supports `pick`/`fixup`/`reword`/`squash` in one pass. Always `git tag backup HEAD` first — reflog expires.
 - **Session token / context usage** — when asked "how many tokens am I using" or "how much context is left," read `~/.claude/statusline_last_input.json` with `jq`. The statusline script dumps the harness JSON there every turn; grab `.context_window.used_percentage`, `.context_window.context_window_size`, `.cost.total_cost_usd`. Don't guess from transcript length.
+- **PR descriptions and PR comments: human summary first, agent write-up folded.** Open with the shortest text that tells a reviewer what the PR is for and whether it deserves their attention: one to three sentences, plus a screenshot when the change is visual. Put the full agent write-up (changes, design notes, test plan) inside `<details><summary>MODEL NAME</summary>`, naming the model that wrote it and the effort level if known. A comment that is already that short (`Fixed in <sha>`) needs no fold. Any sign-off line stays outside the fold, at the end. Source: [Simon Willison, "Hide your slop PR descriptions behind details-summary"](https://simonwillison.net/2026/Nov/9/details-summary/).
+
+  ```markdown
+  The row page showed one row as a one-row table, so wide tables scrolled far off to the right. It now lists the fields vertically.
+
+  ![row page](https://…/row-page.png)
+
+  <details><summary>Claude Opus 5.5 (high effort)</summary>
+
+  ## Changes
+
+  …the full agent write-up…
+
+  </details>
+  ```
+
 - **Signing GitHub issues and comments on external repos.** When filing issues, PRs, or comments on repos _outside_ `idvorkin/*` and `idvorkin-ai-tools/*` (e.g., upstream projects, third-party libraries), end the body with this sign-off so Igor gets tagged and notified without relying on watch settings he doesn't have:
 
   ```

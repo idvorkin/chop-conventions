@@ -119,6 +119,12 @@ Run these checks in order:
      set up the fork first with
      `gh repo fork --remote --remote-name=fork`".
 
+# PR description
+
+Follow the details-summary rule in chop-conventions `claude-md/global.md`:
+a one-to-three sentence human summary on top, the full write-up inside
+`<details><summary>MODEL NAME</summary>`.
+
 # Commit messages
 
 Commit messages must end with a standard trailer. Use:

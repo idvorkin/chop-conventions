@@ -61,6 +61,8 @@ One `gh gist delete` removes them all. One `rm -rf .tmp/pr-135-row-selection` cl
 
 ## Updating PR Descriptions
 
+A screenshot that shows the change belongs in the human summary at the top, above the folded agent write-up (the details-summary rule in `claude-md/global.md`).
+
 ```bash
 gh api repos/OWNER/REPO/pulls/NUMBER -X PATCH -f body="
 ## Screenshots

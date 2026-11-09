@@ -40,7 +40,7 @@ Your primary objectives:
    - **State Diagrams**: For state machines, lifecycle changes, or status transitions
    - **Data Flow Diagrams**: For data transformation, ETL processes, or pipeline changes
 
-4. **Structure the Description**:
+4. **Structure the Description** (the details-summary rule in chop-conventions `claude-md/global.md` applies: a short human summary on top, and everything below inside `<details><summary>MODEL NAME</summary>`):
 
    ```markdown
    ## Summary
