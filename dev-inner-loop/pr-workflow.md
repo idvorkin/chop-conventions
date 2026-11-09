@@ -89,7 +89,8 @@ When ready to create the PR:
 # Push branch to remote
 git push -u origin feature/issue-NUMBER-brief-description
 
-# Create PR linking to issue
+# Create PR linking to issue. Shape the body per the details-summary rule in
+# claude-md/global.md: a short human summary on top, this template inside the fold.
 gh pr create --title "Brief description" --body "$(cat <<'EOF'
 ## Summary
 [1-3 bullet points summarizing the changes]
