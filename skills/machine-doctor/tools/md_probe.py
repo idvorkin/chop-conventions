@@ -150,6 +150,9 @@ class ProcSample:
     cpu_pct: float | None  # None on the first sample: no previous read exists
     rss_kb: int
     etime_s: int
+    app: str = (
+        ""  # app label (macOS: from the .app bundle path); "" -> derive from comm
+    )
 
 
 def interval_cpu_pct(
@@ -254,6 +257,47 @@ def mem_by_app(
     ranked = sorted(rss, key=lambda n: -rss[n])[:top]
     rows = [AppMem(n, rss[n], count[n]) for n in ranked]
     return rows, total - sum(r.rss_kb for r in rows), total
+
+
+_APP_RE = re.compile(r"/([^/]+)\.app/")
+
+
+def mac_app_name(path: str, comm: str) -> str:
+    """Group a macOS process under the app a human would name: the OUTERMOST
+    .app bundle in its path, so `Microsoft Edge Helper (Renderer)` and
+    `CapCut Helper (GPU)` count toward their app. Everything a simulator runs
+    is one `iOS Simulator` row; it is the fan-out that hides otherwise."""
+    if "CoreSimulator" in path:
+        return "iOS Simulator"
+    if comm.startswith("claude"):
+        return "claude"
+    m = _APP_RE.search(path)
+    return m.group(1) if m else comm
+
+
+def app_totals(procs: list[ProcSample], top: int = 15) -> list[tuple[str, int, int]]:
+    """[(app, mem KB, process count)] for the top apps by memory, then an
+    `(everything else)` row, so the rows sum to the whole box. Per-process
+    top-N misses an app split across many processes (8 claude sessions at
+    200 MB each never rank; together they are 1.6 GB)."""
+    mem: dict[str, int] = {}
+    count: dict[str, int] = {}
+    for p in procs:
+        name = p.app or app_name(p.comm, "")
+        mem[name] = mem.get(name, 0) + p.rss_kb
+        count[name] = count.get(name, 0) + 1
+    ranked = sorted(mem, key=lambda n: -mem[n])
+    rows = [(n, mem[n], count[n]) for n in ranked[:top]]
+    rest = ranked[top:]
+    if rest:
+        rows.append(
+            (
+                "(everything else)",
+                sum(mem[n] for n in rest),
+                sum(count[n] for n in rest),
+            )
+        )
+    return rows
 
 
 @dataclass(frozen=True)
@@ -471,6 +515,7 @@ class PsRow:
     etime_s: int
     rss_kb: int
     comm: str
+    path: str = ""  # full executable path, for grouping by .app bundle
 
 
 def parse_ps_rows(text: str) -> list[PsRow]:
@@ -492,6 +537,7 @@ def parse_ps_rows(text: str) -> list[PsRow]:
                     etime_s=int(parse_ps_duration(f[4])),
                     rss_kb=int(f[5]),
                     comm=f[6].rstrip("/").rsplit("/", 1)[-1],
+                    path=f[6],
                 )
             )
         except ValueError:

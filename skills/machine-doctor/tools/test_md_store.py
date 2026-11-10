@@ -10,6 +10,8 @@ from md_store import (
     connect,
     dump_path_for,
     insert_sample,
+    app_report,
+    apps_at,
     nearest_sample,
     procs_at,
     prune,
@@ -171,6 +173,44 @@ class TestThermalColumn(unittest.TestCase):
 
             self.assertIsNone(nearest_sample(conn, 5, tolerance_s=0).thermal)
             self.assertEqual(nearest_sample(conn, 1000).thermal, 1)
+
+
+class TestAppSamples(unittest.TestCase):
+    def test_round_trip_report_and_prune(self):
+        conn = connect(":memory:")
+        _insert(
+            conn,
+            1000,
+            apps=[("sim", 9_000_000, 200), ("claude", 1_600_000, 8)],
+            pressure="warn",
+        )
+        _insert(conn, 1030, apps=[("sim", 3_000_000, 50)])
+        self.assertEqual(nearest_sample(conn, 1000).pressure, "warn")
+        self.assertEqual(apps_at(conn, 1000)[0], ("sim", 9_000_000, 200))
+        top = app_report(conn, 0)
+        self.assertEqual(
+            (top[0].app, top[0].peak_kb, top[0].avg_kb, top[0].peak_ts),
+            ("sim", 9_000_000, 6_000_000, 1000),
+        )
+        self.assertEqual(top[1].avg_kb, 800_000)  # absent from a sample counts as 0
+        prune(conn, 1030 + 7 * 86400 + 1)
+        self.assertEqual(apps_at(conn, 1030), [])
+
+    def test_old_database_gains_pressure(self):
+        with tempfile.TemporaryDirectory() as d:
+            db = Path(d) / "old.db"
+            old = sqlite3.connect(db)
+            old.execute(
+                "CREATE TABLE sample (ts INTEGER PRIMARY KEY, load1 REAL, "
+                "idle_pct INTEGER, mem_avail_kb INTEGER, swap_used_kb INTEGER, "
+                "swap_out INTEGER, nproc INTEGER, is_spike INTEGER NOT NULL DEFAULT 0, "
+                "thermal INTEGER)"
+            )
+            old.commit()
+            old.close()
+            conn = connect(db)
+            _insert(conn, 1000, pressure="critical")
+            self.assertEqual(nearest_sample(conn, 1000).pressure, "critical")
 
 
 if __name__ == "__main__":
