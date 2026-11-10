@@ -7,7 +7,7 @@ a dict, not a plugin framework (N=2).
 
 from dataclasses import dataclass, field
 
-from md_probe import JEKYLL_RE, ProcSample, SleepEvent
+from md_probe import JEKYLL_RE, ProcSample, SleepEvent, thermal_name
 
 # The human's own tmux sockets. Never a Gas City leak — flagging these trains
 # the reader to ignore the tool.
@@ -66,6 +66,7 @@ class HostFacts:
     compressor_kb: int | None = None  # macOS
     disks: dict[str, int] = field(default_factory=dict)  # mount -> used %
     speed_limit: int | None = None  # macOS thermal CPU_Speed_Limit %
+    thermal: int | None = None  # macOS thermal pressure 0 nominal .. 4 sleeping
     vm_mem_mib: dict[str, int] = field(default_factory=dict)  # VM name -> memory cap
     sleeps: list[SleepEvent] = field(default_factory=list)  # macOS, recent window
     booted_sims: list[str] = field(default_factory=list)  # macOS simulator names
@@ -250,6 +251,10 @@ def power_findings(facts: HostFacts) -> list[Finding]:
             Finding(
                 "warn", f"thermal throttling: CPU speed limited to {facts.speed_limit}%"
             )
+        )
+    if facts.thermal:
+        out.append(
+            Finding("warn", f"thermal pressure is {thermal_name(facts.thermal)}")
         )
     hot = [e for e in facts.sleeps if e.thermal]
     if hot:

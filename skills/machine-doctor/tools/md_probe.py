@@ -262,6 +262,8 @@ class SpikeConfig:
     idle_pct: int = 25
     mem_avail_pct: int = 10
     consecutive: int = 2  # a single sample is an artifact, not an event
+    thermal_level: int = 1  # macOS thermal pressure: 1 moderate already clamps clocks
+    disk_free_gb: float = 20.0  # below this, builds start failing within the hour
 
 
 @dataclass
@@ -278,6 +280,8 @@ def detect_spike(
     mem: MemInfo,
     swap_out: int,
     procs: list[ProcSample],
+    thermal: int | None = None,
+    disk_free_gb: float | None = None,
 ) -> tuple[SpikeState, list[str]]:
     """Returns (next_state, reasons). Empty reasons -> not a spike.
 
@@ -312,8 +316,20 @@ def detect_spike(
         )
     if mem.pressure == "critical":
         reasons.append("macOS memory pressure is critical")
+    if thermal is not None and thermal >= cfg.thermal_level:
+        reasons.append(f"thermal pressure is {thermal_name(thermal)}")
+    if disk_free_gb is not None and disk_free_gb < cfg.disk_free_gb:
+        reasons.append(f"disk has only {disk_free_gb:.1f} GB free")
 
     return nxt, reasons
+
+
+def is_alert(reason: str) -> bool:
+    """Reasons worth interrupting a human for. CPU and swap spikes are routine
+    during builds; heat and critical memory precede forced sleeps and kills."""
+    return reason.startswith(("thermal pressure", "disk ")) or reason.endswith(
+        "is critical"
+    )
 
 
 DURATION_RE = re.compile(r"^(\d+)([smhd])$")
@@ -507,6 +523,22 @@ def pressure_name(level: int | None) -> str | None:
         if level is not None
         else None
     )
+
+
+THERMAL_NAMES = {0: "nominal", 1: "moderate", 2: "heavy", 3: "trapping", 4: "sleeping"}
+
+
+def thermal_name(level: int | None) -> str:
+    return "-" if level is None else THERMAL_NAMES.get(level, str(level))
+
+
+def parse_thermal_pressure(text: str) -> int | None:
+    """`notifyutil -g com.apple.system.thermalpressurelevel` -> 0..4.
+
+    The leading indicator: it rises well before pmset's CPU_Speed_Limit is
+    ever recorded, and 4 is the thermal emergency sleep itself."""
+    m = re.search(r"thermalpressurelevel\s+(\d+)", text)
+    return int(m.group(1)) if m else None
 
 
 def parse_speed_limit(text: str) -> int | None:

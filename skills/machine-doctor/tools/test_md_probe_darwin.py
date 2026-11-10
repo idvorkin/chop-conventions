@@ -13,6 +13,7 @@ from md_probe import (
     cpu_totals_from_ticks,
     detect_spike,
     idle_pct_between,
+    is_alert,
     parse_catcher_log,
     parse_df,
     parse_pmset_sleeps,
@@ -20,6 +21,7 @@ from md_probe import (
     parse_ps_rows,
     parse_speed_limit,
     parse_swapusage,
+    parse_thermal_pressure,
     parse_top_mem,
     parse_top_size,
     parse_vm_stat,
@@ -175,6 +177,61 @@ class TestThermal(unittest.TestCase):
         self.assertEqual(
             parse_speed_limit("CPU_Scheduler_Limit \t= 100\nCPU_Speed_Limit \t= 70"), 70
         )
+
+    def test_thermal_pressure_parsed(self):
+        out = "com.apple.system.thermalpressurelevel 2\n"
+        self.assertEqual(parse_thermal_pressure(out), 2)
+        self.assertIsNone(parse_thermal_pressure(""))
+
+    def _reasons(self, thermal):
+        mem = MemInfo(16 << 20, 8 << 20, 0, 0, pressure="normal")
+        _, reasons = detect_spike(
+            SpikeState(),
+            SpikeConfig(),
+            idle_pct=80,
+            mem=mem,
+            swap_out=0,
+            procs=[],
+            thermal=thermal,
+        )
+        return reasons
+
+    def test_nominal_is_quiet(self):
+        self.assertEqual(self._reasons(0), [])
+        self.assertEqual(self._reasons(None), [])
+
+    def test_moderate_spikes_and_alerts(self):
+        reasons = self._reasons(1)
+        self.assertEqual(reasons, ["thermal pressure is moderate"])
+        self.assertTrue(is_alert(reasons[0]))
+
+    def test_low_disk_alerts(self):
+        mem = MemInfo(16 << 20, 8 << 20, 0, 0, pressure="normal")
+        _, reasons = detect_spike(
+            SpikeState(),
+            SpikeConfig(),
+            idle_pct=80,
+            mem=mem,
+            swap_out=0,
+            procs=[],
+            disk_free_gb=0.9,
+        )
+        self.assertEqual(reasons, ["disk has only 0.9 GB free"])
+        self.assertTrue(is_alert(reasons[0]))
+        _, reasons = detect_spike(
+            SpikeState(),
+            SpikeConfig(),
+            idle_pct=80,
+            mem=mem,
+            swap_out=0,
+            procs=[],
+            disk_free_gb=45.0,
+        )
+        self.assertEqual(reasons, [])
+
+    def test_cpu_spike_does_not_alert(self):
+        self.assertFalse(is_alert("proc cc pid=1 at 900% cpu"))
+        self.assertTrue(is_alert("macOS memory pressure is critical"))
 
 
 class TestSleeps(unittest.TestCase):
