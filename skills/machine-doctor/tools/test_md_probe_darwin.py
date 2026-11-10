@@ -309,6 +309,20 @@ class TestAppMemory(unittest.TestCase):
         self.assertEqual(sum(kb for _, kb, _ in rows), sum(p.rss_kb for p in procs))
 
 
+class TestAppTotalsForHistory(unittest.TestCase):
+    def test_min_kb_keeps_every_big_app_and_folds_the_rest(self):
+        procs = [ProcSample(i, 1, f"app{i}", 0.0, 30_000 + i, 1) for i in range(20)]
+        procs.append(ProcSample(99, 1, "tiny", 0.0, 500, 1))
+        rows = app_totals(procs, top=None, min_kb=20 * 1024)
+        self.assertEqual(len(rows), 21)  # all 20 big apps, then everything else
+        self.assertEqual(rows[-1], ("(everything else)", 500, 1))
+
+    def test_claude_prefix_does_not_swallow_other_tools(self):
+        self.assertEqual(
+            mac_app_name("/usr/local/bin/claudette", "claudette"), "claudette"
+        )
+
+
 class TestSleeps(unittest.TestCase):
     def setUp(self):
         self.events = parse_pmset_sleeps(PMSET_LOG)

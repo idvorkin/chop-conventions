@@ -269,26 +269,30 @@ def mac_app_name(path: str, comm: str) -> str:
     is one `iOS Simulator` row; it is the fan-out that hides otherwise."""
     if "CoreSimulator" in path:
         return "iOS Simulator"
-    if comm.startswith("claude"):
+    if comm == "claude":
         return "claude"
     m = _APP_RE.search(path)
     return m.group(1) if m else comm
 
 
-def app_totals(procs: list[ProcSample], top: int = 15) -> list[tuple[str, int, int]]:
-    """[(app, mem KB, process count)] for the top apps by memory, then an
-    `(everything else)` row, so the rows sum to the whole box. Per-process
-    top-N misses an app split across many processes (8 claude sessions at
-    200 MB each never rank; together they are 1.6 GB)."""
+def app_totals(
+    procs: list[ProcSample], top: int | None = 15, min_kb: int = 0
+) -> list[tuple[str, int, int]]:
+    """[(app, mem KB, process count)] for the top apps by memory (all of them
+    when top is None) at or above min_kb, then an `(everything else)` row, so
+    the rows sum to the whole box. Per-process top-N misses an app split across
+    many processes (8 claude sessions at 200 MB each never rank; together they
+    are 1.6 GB)."""
     mem: dict[str, int] = {}
     count: dict[str, int] = {}
     for p in procs:
         name = p.app or app_name(p.comm, "")
         mem[name] = mem.get(name, 0) + p.rss_kb
         count[name] = count.get(name, 0) + 1
-    ranked = sorted(mem, key=lambda n: -mem[n])
-    rows = [(n, mem[n], count[n]) for n in ranked[:top]]
-    rest = ranked[top:]
+    ranked = [n for n in sorted(mem, key=lambda n: -mem[n]) if mem[n] >= min_kb]
+    kept = ranked if top is None else ranked[:top]
+    rows = [(n, mem[n], count[n]) for n in kept]
+    rest = [n for n in mem if n not in set(kept)]
     if rest:
         rows.append(
             (

@@ -5,6 +5,7 @@ tests run against :memory: and tmp dirs, never the real state directory.
 """
 
 import sqlite3
+from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -79,7 +80,7 @@ def insert_sample(
     procs: list[ProcSample],
     thermal: int | None = None,
     pressure: str | None = None,
-    apps: list[tuple[str, int, int]] = (),
+    apps: Sequence[tuple[str, int, int]] = (),
 ) -> None:
     conn.execute(
         "INSERT INTO sample (ts, load1, idle_pct, mem_avail_kb, swap_used_kb, "
@@ -127,12 +128,18 @@ class AppRank:
 
 def app_report(conn: sqlite3.Connection, since_ts: int, top: int = 10) -> list[AppRank]:
     """Apps ranked by peak memory over the window, with the average and when
-    the peak was. An app absent from a sample counts as 0 toward its average."""
-    n = sample_count(conn, since_ts) or 1
+    the peak was. The average is over samples that recorded apps (not older,
+    pre-app_sample ones); an app absent from such a sample counts as 0."""
+    n = (
+        conn.execute(
+            "SELECT COUNT(DISTINCT ts) FROM app_sample WHERE ts >= ?", (since_ts,)
+        ).fetchone()[0]
+        or 1
+    )
     rows = conn.execute(
         """SELECT app, MAX(mem_kb), SUM(mem_kb),
                   (SELECT ts FROM app_sample b WHERE b.app = a.app AND b.ts >= ?
-                   ORDER BY mem_kb DESC LIMIT 1)
+                   ORDER BY mem_kb DESC, ts LIMIT 1)
            FROM app_sample a WHERE ts >= ? AND app != '(everything else)'
            GROUP BY app ORDER BY MAX(mem_kb) DESC LIMIT ?""",
         (since_ts, since_ts, top),

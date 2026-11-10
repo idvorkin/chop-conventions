@@ -34,6 +34,7 @@ Exit codes: 0 ok; 1 findings/no-data; 2 bad arguments (or `sleeps` off macOS).
 """
 
 import ctypes
+import dataclasses
 import ctypes.util
 import json
 import os
@@ -61,6 +62,7 @@ from md_probe import (
     etime_s,
     idle_pct_between,
     alert_due,
+    app_name,
     app_totals,
     ease_told,
     hazards,
@@ -108,6 +110,10 @@ MEM_LABEL = "MEM" if IS_DARWIN else "RSS"
 # While a spike persists, at most one full dump per this many seconds — a
 # one-hour build must not flush all 50 retained dumps.
 DUMP_THROTTLE_S = 600
+# watch keeps every app at or above this, so averages stay exact for any app
+# big enough to matter; the rest fold into "(everything else)".
+APP_MIN_KB = 50 * 1024  # ~40 apps per sample on a busy Mac: ~1M rows a week
+
 # While an alert condition persists, re-alert at most this often.
 ALERT_THROTTLE_S = 1800
 
@@ -382,6 +388,17 @@ def _walk_procs_darwin(
             )
         )
     return samples, tmap, zombies, t_read
+
+
+def _with_app_labels(procs: list[ProcSample]) -> list[ProcSample]:
+    """Linux has no .app path: label by command line, as `mem` does, so
+    python3:serve.py, pytest, jekyll and dolt stay distinct apps in history."""
+    if IS_DARWIN:
+        return procs
+    cmd = _cmdlines([p.pid for p in procs])
+    return [
+        dataclasses.replace(p, app=app_name(p.comm, cmd.get(p.pid, ""))) for p in procs
+    ]
 
 
 def walk_procs(
@@ -690,7 +707,11 @@ def _build_app():
                         procs=stored,
                         thermal=thermal,
                         pressure=mem.pressure,
-                        apps=app_totals([p for p in procs if p.pid != SELF_PID]),
+                        apps=app_totals(
+                            _with_app_labels([p for p in procs if p.pid != SELF_PID]),
+                            top=None,
+                            min_kb=APP_MIN_KB,
+                        ),
                     )
                 except sqlite3.IntegrityError:
                     print(
@@ -919,7 +940,7 @@ def _build_app():
             total = sum(kb for _, kb, _ in rows)
             print(f"{'TOTAL':<28} {total // 1024:>7}MB")
             return
-        procs, _, _ = walk_procs({}, 0.0, _uptime_s())
+        procs, _, _, _ = walk_procs({}, None)
         procs = [p for p in procs if p.pid != SELF_PID]
         cmdlines = {p.pid: _cmdline(p.pid) for p in procs}
         rows, rest_kb, total_kb = mem_by_app(procs, cmdlines, top)

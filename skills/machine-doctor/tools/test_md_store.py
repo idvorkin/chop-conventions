@@ -193,6 +193,12 @@ class TestAppSamples(unittest.TestCase):
             ("sim", 9_000_000, 6_000_000, 1000),
         )
         self.assertEqual(top[1].avg_kb, 800_000)  # absent from a sample counts as 0
+
+    def test_average_ignores_samples_from_before_app_history(self):
+        conn = connect(":memory:")
+        _insert(conn, 900)  # recorded before app_sample existed: no app rows
+        _insert(conn, 1000, apps=[("sim", 4_000_000, 1)])
+        self.assertEqual(app_report(conn, 0)[0].avg_kb, 4_000_000)
         prune(conn, 1030 + 7 * 86400 + 1)
         self.assertEqual(apps_at(conn, 1030), [])
 
