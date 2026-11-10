@@ -5,6 +5,7 @@ tests run against :memory: and tmp dirs, never the real state directory.
 """
 
 import sqlite3
+from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -35,6 +36,14 @@ CREATE TABLE IF NOT EXISTS proc_sample (
     etime_s   INTEGER,
     PRIMARY KEY (ts, pid)
 );
+CREATE TABLE IF NOT EXISTS app_sample (
+    ts        INTEGER NOT NULL,
+    app       TEXT NOT NULL,
+    mem_kb    INTEGER,                   -- summed footprint (macOS) / RSS (Linux)
+    nprocs    INTEGER,
+    PRIMARY KEY (ts, app)
+);
+CREATE INDEX IF NOT EXISTS idx_app_peak  ON app_sample(app, mem_kb);
 CREATE INDEX IF NOT EXISTS idx_proc_ts   ON proc_sample(ts);
 CREATE INDEX IF NOT EXISTS idx_proc_comm ON proc_sample(comm);
 """
@@ -46,9 +55,12 @@ def connect(db_path: str | Path) -> sqlite3.Connection:
     conn = sqlite3.connect(db_path)
     conn.executescript(_SCHEMA)
     cols = {r[1] for r in conn.execute("PRAGMA table_info(sample)")}
-    if "thermal" not in cols:  # databases recorded before thermal existed
+    # Columns added after the first release; old databases gain them in place.
+    for col, typ in (("thermal", "INTEGER"), ("pressure", "TEXT")):
+        if col in cols:
+            continue
         try:
-            conn.execute("ALTER TABLE sample ADD COLUMN thermal INTEGER")
+            conn.execute(f"ALTER TABLE sample ADD COLUMN {col} {typ}")
         except sqlite3.OperationalError as e:  # a concurrent connect() won the race
             if "duplicate column" not in str(e):
                 raise
@@ -68,10 +80,12 @@ def insert_sample(
     is_spike: bool,
     procs: list[ProcSample],
     thermal: int | None = None,
+    pressure: str | None = None,
+    apps: Sequence[tuple[str, int, int]] = (),
 ) -> None:
     conn.execute(
         "INSERT INTO sample (ts, load1, idle_pct, mem_avail_kb, swap_used_kb, "
-        "swap_out, nproc, is_spike, thermal) VALUES (?,?,?,?,?,?,?,?,?)",
+        "swap_out, nproc, is_spike, thermal, pressure) VALUES (?,?,?,?,?,?,?,?,?,?)",
         (
             ts,
             load1,
@@ -82,7 +96,12 @@ def insert_sample(
             nproc,
             int(is_spike),
             thermal,
+            pressure,
         ),
+    )
+    conn.executemany(
+        "INSERT INTO app_sample VALUES (?,?,?,?)",
+        [(ts, app, kb, n) for app, kb, n in apps],
     )
     conn.executemany(
         "INSERT INTO proc_sample VALUES (?,?,?,?,?,?,?)",
@@ -95,8 +114,46 @@ def prune(conn: sqlite3.Connection, now_ts: int, keep_days: int = 7) -> int:
     cutoff = now_ts - keep_days * 86400
     dropped = conn.execute("DELETE FROM sample WHERE ts < ?", (cutoff,)).rowcount
     conn.execute("DELETE FROM proc_sample WHERE ts < ?", (cutoff,))
+    conn.execute("DELETE FROM app_sample WHERE ts < ?", (cutoff,))
     conn.commit()
     return dropped
+
+
+@dataclass(frozen=True)
+class AppRank:
+    app: str
+    peak_kb: int
+    avg_kb: int
+    peak_ts: int
+
+
+def app_report(conn: sqlite3.Connection, since_ts: int, top: int = 10) -> list[AppRank]:
+    """Apps ranked by peak memory over the window, with the average and when
+    the peak was. The average is over samples that recorded apps (not older,
+    pre-app_sample ones); an app absent from such a sample counts as 0."""
+    n = (
+        conn.execute(
+            "SELECT COUNT(DISTINCT ts) FROM app_sample WHERE ts >= ?", (since_ts,)
+        ).fetchone()[0]
+        or 1
+    )
+    rows = conn.execute(
+        """SELECT app, MAX(mem_kb), SUM(mem_kb),
+                  (SELECT ts FROM app_sample b WHERE b.app = a.app AND b.ts >= ?
+                   ORDER BY mem_kb DESC, ts LIMIT 1)
+           FROM app_sample a WHERE ts >= ? AND app != '(everything else)'
+           GROUP BY app ORDER BY MAX(mem_kb) DESC LIMIT ?""",
+        (since_ts, since_ts, top),
+    ).fetchall()
+    return [AppRank(r[0], r[1], r[2] // n, r[3]) for r in rows]
+
+
+def apps_at(conn: sqlite3.Connection, ts: int) -> list[tuple[str, int, int]]:
+    return conn.execute(
+        "SELECT app, mem_kb, nprocs FROM app_sample WHERE ts = ? "
+        "ORDER BY app = '(everything else)', mem_kb DESC",
+        (ts,),
+    ).fetchall()
 
 
 def dump_path_for(state_dir: Path, ts: int) -> Path:
@@ -176,6 +233,7 @@ class SampleRow:
     nproc: int
     is_spike: bool
     thermal: int | None = None
+    pressure: str | None = None
 
 
 def nearest_sample(
@@ -184,13 +242,13 @@ def nearest_sample(
     """Nearest sample within tolerance, else None. The record-time interval is
     not stored, so the tolerance is fixed rather than interval-derived."""
     row = conn.execute(
-        "SELECT ts, load1, idle_pct, mem_avail_kb, swap_used_kb, swap_out, nproc, is_spike, thermal "
+        "SELECT ts, load1, idle_pct, mem_avail_kb, swap_used_kb, swap_out, nproc, is_spike, thermal, pressure "
         "FROM sample ORDER BY ABS(ts - ?) LIMIT 1",
         (ts,),
     ).fetchone()
     if row is None or abs(row[0] - ts) > tolerance_s:
         return None
-    return SampleRow(*row[:7], bool(row[7]), row[8])
+    return SampleRow(*row[:7], bool(row[7]), row[8], row[9])
 
 
 def procs_at(conn: sqlite3.Connection, ts: int) -> list[ProcSample]:

@@ -34,6 +34,7 @@ Exit codes: 0 ok; 1 findings/no-data; 2 bad arguments (or `sleeps` off macOS).
 """
 
 import ctypes
+import dataclasses
 import ctypes.util
 import json
 import os
@@ -61,9 +62,12 @@ from md_probe import (
     etime_s,
     idle_pct_between,
     alert_due,
+    app_name,
+    app_totals,
     ease_told,
     hazards,
     interval_cpu_pct,
+    mac_app_name,
     parse_cpu_totals,
     parse_catcher_log,
     parse_df,
@@ -106,6 +110,10 @@ MEM_LABEL = "MEM" if IS_DARWIN else "RSS"
 # While a spike persists, at most one full dump per this many seconds — a
 # one-hour build must not flush all 50 retained dumps.
 DUMP_THROTTLE_S = 600
+# watch keeps every app at or above this, so averages stay exact for any app
+# big enough to matter; the rest fold into "(everything else)".
+APP_MIN_KB = 50 * 1024  # ~40 apps per sample on a busy Mac: ~1M rows a week
+
 # While an alert condition persists, re-alert at most this often.
 ALERT_THROTTLE_S = 1800
 
@@ -376,9 +384,21 @@ def _walk_procs_darwin(
                 cpu_pct=interval_cpu_pct(prev_ticks.get(r.pid), ticks, dt_s, 100),
                 rss_kb=footprint.get(r.pid, r.rss_kb),
                 etime_s=r.etime_s,
+                app=mac_app_name(r.path, r.comm),
             )
         )
     return samples, tmap, zombies, t_read
+
+
+def _with_app_labels(procs: list[ProcSample]) -> list[ProcSample]:
+    """Linux has no .app path: label by command line, as `mem` does, so
+    python3:serve.py, pytest, jekyll and dolt stay distinct apps in history."""
+    if IS_DARWIN:
+        return procs
+    cmd = _cmdlines([p.pid for p in procs])
+    return [
+        dataclasses.replace(p, app=app_name(p.comm, cmd.get(p.pid, ""))) for p in procs
+    ]
 
 
 def walk_procs(
@@ -686,6 +706,12 @@ def _build_app():
                         is_spike=spiking,
                         procs=stored,
                         thermal=thermal,
+                        pressure=mem.pressure,
+                        apps=app_totals(
+                            _with_app_labels([p for p in procs if p.pid != SELF_PID]),
+                            top=None,
+                            min_kb=APP_MIN_KB,
+                        ),
                     )
                 except sqlite3.IntegrityError:
                     print(
@@ -774,10 +800,14 @@ def _build_app():
             "6h", "--since", help="Window: <int><s|m|h|d>, e.g. 30m, 6h, 2d."
         ),
         top: int = typer.Option(10, "--top"),
+        by_mem: bool = typer.Option(
+            False, "--mem", help="Rank apps by memory (peak, average) instead of CPU."
+        ),
         db: str = typer.Option(DEFAULT_DB, "--db"),
         state_dir: str = typer.Option(DEFAULT_STATE, "--state-dir"),
     ) -> None:
-        """Who has been hot over the window — grouped by comm, ranked by ΣCPU%."""
+        """Who has been hot over the window — grouped by comm, ranked by ΣCPU%;
+        with --mem, apps ranked by peak memory."""
         import typer as t
 
         try:
@@ -795,6 +825,15 @@ def _build_app():
             )
             raise t.Exit(1)
 
+        if by_mem:
+            print(f"{n} samples in the last {since}; memory summed per app\n")
+            print(f"{'APP':<28} {'PEAK':>9} {'AVG':>9}  PEAK AT")
+            for r in store.app_report(conn, since_ts, top=top):
+                print(
+                    f"{r.app[:28]:<28} {r.peak_kb // 1024:>7}MB {r.avg_kb // 1024:>7}MB  "
+                    f"{_ts_label(r.peak_ts)[11:]}"
+                )
+            return
         print(
             f"{n} samples in the last {since} (ΣCPU% ∝ CPU-seconds at a fixed interval)\n"
         )
@@ -844,8 +883,15 @@ def _build_app():
         print(
             f"{_ts_label(row.ts)}  load1={row.load1} idle={idle} "
             f"mem_avail={row.mem_avail_kb // 1024}MB swap_out={row.swap_out}KB/s "
-            f"nproc={row.nproc} thermal={thermal_name(row.thermal)}{spike}\n"
+            f"nproc={row.nproc} thermal={thermal_name(row.thermal)} "
+            f"pressure={row.pressure or '-'}{spike}\n"
         )
+        apps = store.apps_at(conn, row.ts)
+        if apps:
+            print(f"{'APP':<28} {MEM_LABEL:>9} {'PROCS':>6}")
+            for app, kb, n in apps:
+                print(f"{app[:28]:<28} {kb // 1024:>7}MB {n:>6}")
+            print()
         print(f"{'PID':>8} {'CPU%':>6} {MEM_LABEL:>8} {'ETIME':>8}  COMM")
         for p in store.procs_at(conn, row.ts):
             cpu = "-" if p.cpu_pct is None else f"{p.cpu_pct:.0f}"
@@ -863,7 +909,39 @@ def _build_app():
         as_json: bool = typer.Option(False, "--json"),
     ) -> None:
         """Memory by app (not by PID), with everything-else and TOTAL rows."""
-        procs, _, _ = walk_procs({}, 0.0, _uptime_s())
+        if IS_DARWIN:
+            procs, _, _, _ = walk_procs({}, None)
+            rows = app_totals([p for p in procs if p.pid != SELF_PID], top)
+            mi = read_mem()
+            if as_json:
+                print(
+                    json.dumps(
+                        {
+                            "apps": [
+                                {"app": a, "mem_kb": kb, "procs": n}
+                                for a, kb, n in rows
+                            ],
+                            "total_kb": sum(kb for _, kb, _ in rows),
+                            "pressure": mi.pressure,
+                            "swap_used_kb": mi.swap_total_kb - mi.swap_free_kb,
+                        },
+                        indent=2,
+                    )
+                )
+                return
+            print(
+                f"pressure={mi.pressure or '-'}  "
+                f"swap={(mi.swap_total_kb - mi.swap_free_kb) // 1024}MB used of "
+                f"{mi.swap_total_kb // 1024}MB  (footprint: compressed pages included, "
+                "shared pages counted per process — a ranking, not a ledger)\n"
+            )
+            print(f"{'APP':<28} {'MEM':>9} {'PROCS':>6}")
+            for app, kb, n in rows:
+                print(f"{app[:28]:<28} {kb // 1024:>7}MB {n:>6}")
+            total = sum(kb for _, kb, _ in rows)
+            print(f"{'TOTAL':<28} {total // 1024:>7}MB")
+            return
+        procs, _, _, _ = walk_procs({}, None)
         procs = [p for p in procs if p.pid != SELF_PID]
         cmdlines = {p.pid: _cmdline(p.pid) for p in procs}
         rows, rest_kb, total_kb = mem_by_app(procs, cmdlines, top)
