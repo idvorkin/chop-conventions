@@ -43,6 +43,7 @@ CREATE TABLE IF NOT EXISTS app_sample (
     nprocs    INTEGER,
     PRIMARY KEY (ts, app)
 );
+CREATE INDEX IF NOT EXISTS idx_app_peak  ON app_sample(app, mem_kb);
 CREATE INDEX IF NOT EXISTS idx_proc_ts   ON proc_sample(ts);
 CREATE INDEX IF NOT EXISTS idx_proc_comm ON proc_sample(comm);
 """

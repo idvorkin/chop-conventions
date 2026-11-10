@@ -921,6 +921,7 @@ def _build_app():
                                 {"app": a, "mem_kb": kb, "procs": n}
                                 for a, kb, n in rows
                             ],
+                            "total_kb": sum(kb for _, kb, _ in rows),
                             "pressure": mi.pressure,
                             "swap_used_kb": mi.swap_total_kb - mi.swap_free_kb,
                         },
