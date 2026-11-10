@@ -39,6 +39,7 @@ import json
 import os
 import re
 import shutil
+import signal
 import sqlite3
 import subprocess
 import sys
@@ -263,6 +264,8 @@ def send_alert(cmd: str, text: str) -> bool:
     True on success. A failing alert is reported, never fatal, and the short
     timeout keeps a hung command from punching a hole in the samples."""
     try:
+        # The alert text (with process names in it) goes on stdin, never into
+        # the shell command line, so shell=True stays injection-free.
         # Own process group: on timeout kill the whole tree, or a hung child
         # still holding the pipes would block us past the timeout anyway.
         p = subprocess.Popen(
@@ -280,7 +283,10 @@ def send_alert(cmd: str, text: str) -> bool:
     try:
         out, err = p.communicate(text, timeout=15)
     except subprocess.TimeoutExpired:
-        os.killpg(p.pid, 9)
+        try:
+            os.killpg(p.pid, signal.SIGKILL)
+        except OSError:  # already gone between the timeout and the kill
+            pass
         p.wait()
         print(
             f"[{time.strftime('%H:%M:%S')}] alert-cmd timed out after 15s", flush=True

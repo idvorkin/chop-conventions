@@ -95,7 +95,15 @@ class TestSendAlert(unittest.TestCase):
             mock.patch.object(md.os, "killpg") as killpg,
         ):
             self.assertFalse(md.send_alert("notify", "hot"))
-        killpg.assert_called_once_with(4242, 9)
+        killpg.assert_called_once_with(4242, md.signal.SIGKILL)
+
+    def test_timeout_survives_an_already_exited_group(self):
+        p = self._popen(timeout=True)
+        with (
+            mock.patch.object(md.subprocess, "Popen", return_value=p),
+            mock.patch.object(md.os, "killpg", side_effect=ProcessLookupError),
+        ):
+            self.assertFalse(md.send_alert("notify", "hot"))
 
     def test_unstartable_command_is_failure(self):
         with mock.patch.object(md.subprocess, "Popen", side_effect=OSError("no shell")):
