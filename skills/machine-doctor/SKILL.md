@@ -322,8 +322,8 @@ Key behaviors:
   A new or worsening hazard alerts at once, a known one every 30 min, then once
   on recovery; a failed send retries next sample. After a sleep, thermal
   emergency sleeps it missed are posted too. CPU and swap spikes only dump,
-  never alert — builds cause them all day. Igor's
-  form: `--alert-cmd 'larry post --thread <key>'`.
+  never alert — builds cause them all day. Any stdin-reading command works,
+  e.g. `--alert-cmd 'terminal-notifier -title machine-doctor'` or a chat CLI.
 - **Interval CPU%, not lifetime averages** — a long-lived process that starts spinning
   shows up immediately.
 - Spike triggers (any proc >300% CPU; idle <25% or swap-out sustained 2 samples;

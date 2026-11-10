@@ -172,8 +172,10 @@ for r in ~/gits/*/; do
   find "$r" -maxdepth 5 -type d \( -name Build -o -name build -o -name DerivedData \
     -o -name node_modules -o -name target -o -name .build -o -name dist \) -prune \
     -exec \du -sk {} + 2>/dev/null
-done | sort -nr | head -20 | awk '{printf "%6.1f GB  %s\n", $1/1048576, $2}'
+done | sort -nr | head -20 | awk -F'\t' '{printf "%6.1f GB  %s\n", $1/1048576, $2}'
 ```
+
+`-maxdepth 5` keeps the scan fast; raise it for deeply nested build trees.
 
 Before deleting:
 

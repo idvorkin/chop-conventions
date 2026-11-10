@@ -66,5 +66,41 @@ class TestOrbStackGate(unittest.TestCase):
         self.assertEqual(calls, [])
 
 
+class TestSendAlert(unittest.TestCase):
+    def _popen(self, *, rc=0, err="", timeout=False):
+        p = mock.MagicMock(pid=4242, returncode=rc)
+        if timeout:
+            p.communicate.side_effect = md.subprocess.TimeoutExpired("x", 15)
+        else:
+            p.communicate.return_value = ("", err)
+        return p
+
+    def test_success_feeds_stdin(self):
+        p = self._popen()
+        with mock.patch.object(md.subprocess, "Popen", return_value=p) as popen:
+            self.assertTrue(md.send_alert("notify", "hot"))
+        p.communicate.assert_called_once_with("hot", timeout=15)
+        self.assertTrue(popen.call_args.kwargs["start_new_session"])
+
+    def test_nonzero_exit_is_failure(self):
+        with mock.patch.object(
+            md.subprocess, "Popen", return_value=self._popen(rc=1, err="nope")
+        ):
+            self.assertFalse(md.send_alert("notify", "hot"))
+
+    def test_timeout_kills_the_process_group(self):
+        p = self._popen(timeout=True)
+        with (
+            mock.patch.object(md.subprocess, "Popen", return_value=p),
+            mock.patch.object(md.os, "killpg") as killpg,
+        ):
+            self.assertFalse(md.send_alert("notify", "hot"))
+        killpg.assert_called_once_with(4242, 9)
+
+    def test_unstartable_command_is_failure(self):
+        with mock.patch.object(md.subprocess, "Popen", side_effect=OSError("no shell")):
+            self.assertFalse(md.send_alert("notify", "hot"))
+
+
 if __name__ == "__main__":
     unittest.main()

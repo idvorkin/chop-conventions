@@ -263,19 +263,36 @@ def send_alert(cmd: str, text: str) -> bool:
     True on success. A failing alert is reported, never fatal, and the short
     timeout keeps a hung command from punching a hole in the samples."""
     try:
-        r = subprocess.run(
-            cmd, shell=True, input=text, text=True, capture_output=True, timeout=15
+        # Own process group: on timeout kill the whole tree, or a hung child
+        # still holding the pipes would block us past the timeout anyway.
+        p = subprocess.Popen(
+            cmd,
+            shell=True,
+            text=True,
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            start_new_session=True,
         )
-    except (OSError, subprocess.TimeoutExpired) as e:
+    except OSError as e:
         print(f"[{time.strftime('%H:%M:%S')}] alert-cmd failed: {e}", flush=True)
         return False
-    if r.returncode != 0:
+    try:
+        out, err = p.communicate(text, timeout=15)
+    except subprocess.TimeoutExpired:
+        os.killpg(p.pid, 9)
+        p.wait()
         print(
-            f"[{time.strftime('%H:%M:%S')}] alert-cmd exit {r.returncode}: "
-            f"{(r.stderr or r.stdout).strip()[:200]}",
+            f"[{time.strftime('%H:%M:%S')}] alert-cmd timed out after 15s", flush=True
+        )
+        return False
+    if p.returncode != 0:
+        print(
+            f"[{time.strftime('%H:%M:%S')}] alert-cmd exit {p.returncode}: "
+            f"{(err or out).strip()[:200]}",
             flush=True,
         )
-    return r.returncode == 0
+    return p.returncode == 0
 
 
 def read_load1() -> float:
