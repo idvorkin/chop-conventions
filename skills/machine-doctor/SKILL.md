@@ -313,10 +313,21 @@ Key behaviors:
   it to a Monitor); it prints only on state transitions, so silence means no change.
 - **An empty window is not a quiet box.** If `report`/`at` find no samples, they say so
   and exit 1 — never treat that as "nothing happened".
+- **Heat is recorded every sample** (macOS `notifyutil -g com.apple.system.thermalpressurelevel`:
+  0 nominal, 1 moderate, 2 heavy, 3 trapping, 4 sleeping). It rises long before
+  `pmset -g therm` records any speed limit, which on Apple Silicon often never
+  appears even on the way to a thermal emergency sleep.
+- **`--alert-cmd '<cmd>'` warns a human**: the alert text goes to `<cmd>` on stdin
+  for heat (≥ moderate), critical memory, or the data volume under 20 GB free.
+  A new or worsening hazard alerts at once, a known one every 30 min, then once
+  on recovery; a failed send retries next sample. After a sleep, thermal
+  emergency sleeps it missed are posted too. CPU and swap spikes only dump,
+  never alert — builds cause them all day. Any stdin-reading command works,
+  e.g. `--alert-cmd 'terminal-notifier -title machine-doctor'` or a chat CLI.
 - **Interval CPU%, not lifetime averages** — a long-lived process that starts spinning
   shows up immediately.
 - Spike triggers (any proc >300% CPU; idle <25% or swap-out sustained 2 samples;
-  MemAvailable <10%; macOS pressure critical) write a full redacted process tree to `spikes/`; samples keep 7 days,
+  MemAvailable <10%; macOS pressure critical; macOS thermal pressure ≥ moderate) write a full redacted process tree to `spikes/`; samples keep 7 days,
   dumps keep the newest 50.
 
 ### Gas City profile (`/machine-doctor gascity`)

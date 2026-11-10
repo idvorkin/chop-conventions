@@ -262,6 +262,8 @@ class SpikeConfig:
     idle_pct: int = 25
     mem_avail_pct: int = 10
     consecutive: int = 2  # a single sample is an artifact, not an event
+    thermal_level: int = 1  # macOS thermal pressure: 1 moderate already clamps clocks
+    disk_free_gb: float = 20.0  # below this, builds start failing within the hour
 
 
 @dataclass
@@ -278,6 +280,7 @@ def detect_spike(
     mem: MemInfo,
     swap_out: int,
     procs: list[ProcSample],
+    thermal: int | None = None,
 ) -> tuple[SpikeState, list[str]]:
     """Returns (next_state, reasons). Empty reasons -> not a spike.
 
@@ -312,8 +315,67 @@ def detect_spike(
         )
     if mem.pressure == "critical":
         reasons.append("macOS memory pressure is critical")
+    if thermal is not None and thermal >= cfg.thermal_level:
+        reasons.append(f"thermal pressure is {thermal_name(thermal)}")
 
     return nxt, reasons
+
+
+@dataclass(frozen=True)
+class Hazard:
+    level: int  # higher is worse; a rise re-alerts at once
+    text: str
+
+
+def hazards(
+    cfg: SpikeConfig,
+    *,
+    thermal: int | None,
+    mem: MemInfo,
+    disk_free_gb: float | None,
+) -> dict[str, Hazard]:
+    """What is worth interrupting a human for, keyed by kind. CPU and swap
+    spikes are routine during builds; heat, critical memory and a filling disk
+    precede forced sleeps, kills and failed builds."""
+    out: dict[str, Hazard] = {}
+    if thermal is not None and thermal >= cfg.thermal_level:
+        out["thermal"] = Hazard(thermal, f"thermal pressure is {thermal_name(thermal)}")
+    if mem.pressure == "critical":
+        out["memory"] = Hazard(1, "macOS memory pressure is critical")
+    if disk_free_gb is not None and disk_free_gb < cfg.disk_free_gb:
+        # Each 5 GB lost is a new level, so a disk still filling re-alerts.
+        out["disk"] = Hazard(
+            int((cfg.disk_free_gb - disk_free_gb) // 5) + 1,
+            f"disk has only {disk_free_gb:.1f} GB free",
+        )
+    return out
+
+
+def ease_told(told: dict[str, int], cur: dict[str, Hazard]) -> dict[str, int]:
+    """Lower `told` to what is active now, so a hazard that eased, or cleared
+    and came back, alerts again when it worsens. With nothing active it is left
+    whole: the caller still owes a recovery message."""
+    if not cur:
+        return told
+    return {k: min(v, cur[k].level) for k, v in told.items() if k in cur}
+
+
+def alert_due(
+    cur: dict[str, Hazard],
+    told: dict[str, int],
+    *,
+    now: int,
+    last_sent: int,
+    throttle_s: int,
+) -> bool:
+    """`told` is kind -> level as last successfully sent. A hazard that is
+    new or worse than what the human was told goes out now, whatever else is
+    active; one they already know about repeats only after throttle_s."""
+    if not cur:
+        return False
+    if any(h.level > told.get(k, -1) for k, h in cur.items()):
+        return True
+    return now - last_sent >= throttle_s
 
 
 DURATION_RE = re.compile(r"^(\d+)([smhd])$")
@@ -507,6 +569,22 @@ def pressure_name(level: int | None) -> str | None:
         if level is not None
         else None
     )
+
+
+THERMAL_NAMES = {0: "nominal", 1: "moderate", 2: "heavy", 3: "trapping", 4: "sleeping"}
+
+
+def thermal_name(level: int | None) -> str:
+    return "-" if level is None else THERMAL_NAMES.get(level, str(level))
+
+
+def parse_thermal_pressure(text: str) -> int | None:
+    """`notifyutil -g com.apple.system.thermalpressurelevel` -> 0..4.
+
+    The leading indicator: it rises well before pmset's CPU_Speed_Limit is
+    ever recorded, and 4 is the thermal emergency sleep itself."""
+    m = re.search(r"thermalpressurelevel\s+(\d+)", text)
+    return int(m.group(1)) if m else None
 
 
 def parse_speed_limit(text: str) -> int | None:

@@ -163,6 +163,29 @@ holds multi-GB models — list them, let the user pick.
 | `CoreSimulator` runtimes                 | `xcrun simctl runtime list`, `xcrun simctl runtime delete <id>` for old ones; deletion is async                                                                       |
 | sim devices                              | `xcrun simctl delete <udid>` / `delete unavailable` — **deletes the device's installed apps and their data for good**; confirm each is a disposable test device first |
 
+**Per-worktree build output adds up fast** (24 GB seen: ~75 worktrees, each
+with its own `native/Build`). Every worktree rebuilds from scratch, so the
+caches above don't catch it. Size it by repo:
+
+```bash
+for r in ~/gits/*/; do
+  find "$r" -maxdepth 5 -type d \( -name Build -o -name build -o -name DerivedData \
+    -o -name node_modules -o -name target -o -name .build -o -name dist \) -prune \
+    -exec \du -sk {} + 2>/dev/null
+done | sort -nr | head -20 | awk -F'\t' '{printf "%6.1f GB  %s\n", $1/1048576, $2}'
+```
+
+`-maxdepth 5` keeps the scan fast; raise it for deeply nested build trees.
+
+Before deleting:
+
+- **Skip worktrees with a build in progress.** Check `pgrep -af xcodebuild` and
+  `lsof +D <dir>`; deleting a live build's folder breaks the build.
+- **Then remove the worktrees themselves.** Worktrees on branches that are
+  fully merged into main are the real hog, and pruning them takes their build
+  folders too. List them with `git branch --merged main` and check each with
+  `git -C <wt> status --porcelain`. Never prune one with uncommitted changes.
+
 **Don't `du` all of `~/Library/Developer`** — `CoreDevice/DeviceFS` is a connected
 iPhone's filesystem; walking it hangs for many minutes. Size the subfolders and
 skip `CoreDevice`. Likewise `du` of `~/.Trash` and some `~/Library` folders fails or hangs on TCC

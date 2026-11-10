@@ -39,6 +39,7 @@ import json
 import os
 import re
 import shutil
+import signal
 import sqlite3
 import subprocess
 import sys
@@ -59,6 +60,9 @@ from md_probe import (
     detect_spike,
     etime_s,
     idle_pct_between,
+    alert_due,
+    ease_told,
+    hazards,
     interval_cpu_pct,
     parse_cpu_totals,
     parse_catcher_log,
@@ -72,6 +76,7 @@ from md_probe import (
     parse_pswpout,
     parse_speed_limit,
     parse_swapusage,
+    parse_thermal_pressure,
     parse_top_mem,
     parse_vm_stat,
     pressure_name,
@@ -80,6 +85,7 @@ from md_probe import (
     resolve_at,
     select_mounts,
     swap_out_kb_s,
+    thermal_name,
     top_n,
 )
 from profiles import PROFILES, USER_SOCKETS, HostFacts, is_deleted_cwd, is_jekyll_server
@@ -100,6 +106,8 @@ MEM_LABEL = "MEM" if IS_DARWIN else "RSS"
 # While a spike persists, at most one full dump per this many seconds — a
 # one-hour build must not flush all 50 retained dumps.
 DUMP_THROTTLE_S = 600
+# While an alert condition persists, re-alert at most this often.
+ALERT_THROTTLE_S = 1800
 
 DEFAULT_DB = str(store.DEFAULT_STATE_DIR / "samples.db")
 DEFAULT_STATE = str(store.DEFAULT_STATE_DIR)
@@ -229,6 +237,68 @@ def read_mem() -> MemInfo:
         swap_free_kb=swap_free,
         pressure=pressure_name(_sysctl_int("kern.memorystatus_vm_pressure_level")),
     )
+
+
+def read_thermal() -> int | None:
+    """macOS thermal pressure 0..4; None off-mac or when unreadable."""
+    if not IS_DARWIN:
+        return None
+    return parse_thermal_pressure(
+        _run(["notifyutil", "-g", "com.apple.system.thermalpressurelevel"])
+    )
+
+
+# The volume that fills: on macOS `/` is the sealed system snapshot.
+DATA_MOUNT = "/System/Volumes/Data" if IS_DARWIN else "/"
+
+
+def read_disk_free_gb() -> float | None:
+    try:
+        return shutil.disk_usage(DATA_MOUNT).free / 1e9
+    except OSError:
+        return None
+
+
+def send_alert(cmd: str, text: str) -> bool:
+    """Pipe text to the user's alert command (e.g. `larry post --thread X`).
+    True on success. A failing alert is reported, never fatal, and the short
+    timeout keeps a hung command from punching a hole in the samples."""
+    try:
+        # The alert text (with process names in it) goes on stdin, never into
+        # the shell command line, so shell=True stays injection-free.
+        # Own process group: on timeout kill the whole tree, or a hung child
+        # still holding the pipes would block us past the timeout anyway.
+        p = subprocess.Popen(
+            cmd,
+            shell=True,
+            text=True,
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            start_new_session=True,
+        )
+    except OSError as e:
+        print(f"[{time.strftime('%H:%M:%S')}] alert-cmd failed: {e}", flush=True)
+        return False
+    try:
+        out, err = p.communicate(text, timeout=15)
+    except subprocess.TimeoutExpired:
+        try:
+            os.killpg(p.pid, signal.SIGKILL)
+        except OSError:  # already gone between the timeout and the kill
+            pass
+        p.wait()
+        print(
+            f"[{time.strftime('%H:%M:%S')}] alert-cmd timed out after 15s", flush=True
+        )
+        return False
+    if p.returncode != 0:
+        print(
+            f"[{time.strftime('%H:%M:%S')}] alert-cmd exit {p.returncode}: "
+            f"{(err or out).strip()[:200]}",
+            flush=True,
+        )
+    return p.returncode == 0
 
 
 def read_load1() -> float:
@@ -460,6 +530,7 @@ def collect_facts(
     if IS_DARWIN:
         facts.compressor_kb = parse_vm_stat(_run(["vm_stat"])).get("compressor_kb")
         facts.speed_limit = parse_speed_limit(_run(["pmset", "-g", "therm"]))
+        facts.thermal = read_thermal()
         facts.sleeps = read_sleeps(datetime.now() - SLEEP_LOOKBACK)
         facts.booted_sims = read_booted_sims()
 
@@ -513,6 +584,13 @@ def _build_app():
         spike_cpu: float = typer.Option(
             300.0, "--spike-cpu", help="Per-process cpu%% spike trigger."
         ),
+        alert_cmd: str = typer.Option(
+            "",
+            "--alert-cmd",
+            help="Shell command fed the alert text on stdin on heat, critical memory "
+            "or low disk: at once when new or worse, every 30 min while it lasts, "
+            "and on recovery.",
+        ),
         db: str = typer.Option(DEFAULT_DB, "--db"),
         state_dir: str = typer.Option(DEFAULT_STATE, "--state-dir"),
     ) -> None:
@@ -537,6 +615,9 @@ def _build_app():
 
         in_spike = False
         last_dump_ts = 0
+        told: dict[str, int] = {}  # hazard kind -> level last sent successfully
+        last_alert_ts = 0
+        host = os.uname().nodename.split(".")[0]
         last_ts = int(time.time())
         last_mono = time.monotonic()
         try:
@@ -548,6 +629,8 @@ def _build_app():
                 pswp_cur, swap_page_kb = read_swapout()
                 mem = read_mem()
                 load1 = read_load1()
+                thermal = read_thermal()
+                disk_free = read_disk_free_gb()
                 procs, jmap, _, jt = walk_procs(jmap, jt)
                 walk_ms = (time.monotonic() - t0) * 1000
 
@@ -558,10 +641,34 @@ def _build_app():
                         f"({_ts_label(last_ts)} -> {_ts_label(ts)}); history around this point is suspect",
                         flush=True,
                     )
+                # Monotonic time stops while a Mac sleeps; the wall clock does not.
+                # A gap means we slept: say so if it was a thermal emergency, since
+                # nothing can alert during the sleep itself.
+                if IS_DARWIN and ts - last_ts > 3 * interval:
+                    hot_sleeps = [
+                        e
+                        for e in read_sleeps(datetime.fromtimestamp(last_ts))
+                        if e.thermal
+                    ]
+                    if hot_sleeps:
+                        msg = (
+                            f"🔥 {host}: forced to sleep by heat {len(hot_sleeps)}x while "
+                            f"I couldn't watch, last {hot_sleeps[-1].when} "
+                            f"({hot_sleeps[-1].reason}). Was it closed with work running?"
+                        )
+                        print(f"[{time.strftime('%H:%M:%S')}] {msg}", flush=True)
+                        if alert_cmd:
+                            send_alert(alert_cmd, msg)
                 idle = idle_pct_between(cpu_prev, cpu_cur)
                 so = swap_out_kb_s(pswp_prev, pswp_cur, dt, swap_page_kb)
                 sstate, reasons = detect_spike(
-                    sstate, cfg, idle_pct=idle, mem=mem, swap_out=so, procs=procs
+                    sstate,
+                    cfg,
+                    idle_pct=idle,
+                    mem=mem,
+                    swap_out=so,
+                    procs=procs,
+                    thermal=thermal,
                 )
                 spiking = bool(reasons)
 
@@ -578,6 +685,7 @@ def _build_app():
                         nproc=len(procs),
                         is_spike=spiking,
                         procs=stored,
+                        thermal=thermal,
                     )
                 except sqlite3.IntegrityError:
                     print(
@@ -591,7 +699,7 @@ def _build_app():
                     header = (
                         f"# spike at {_ts_label(ts)}  reasons: {'; '.join(reasons)}\n"
                         f"# load1={load1} idle={idle}% mem_avail={mem.mem_avail_kb // 1024}MB "
-                        f"pressure={mem.pressure or '-'} "
+                        f"pressure={mem.pressure or '-'} thermal={thermal_name(thermal)} "
                         f"swap_out={so}KB/s nproc={len(procs)} walk={walk_ms:.0f}ms\n\n"
                     )
                     dump = store.write_spike_dump(
@@ -612,6 +720,45 @@ def _build_app():
                         f"[{time.strftime('%H:%M:%S')}] recovered: idle={idle_s} load1={load1}",
                         flush=True,
                     )
+                cur = hazards(cfg, thermal=thermal, mem=mem, disk_free_gb=disk_free)
+                told = ease_told(told, cur)
+                if alert_cmd and alert_due(
+                    cur,
+                    told,
+                    now=ts,
+                    last_sent=last_alert_ts,
+                    throttle_s=ALERT_THROTTLE_S,
+                ):
+                    hot = ", ".join(
+                        [
+                            f"{p.comm} {p.cpu_pct:.0f}%"
+                            for p in sorted(procs, key=lambda p: -(p.cpu_pct or 0))
+                            if p.pid != SELF_PID and p.cpu_pct
+                        ][:3]
+                    )
+                    if send_alert(
+                        alert_cmd,
+                        f"⚠ {host}: {'; '.join(h.text for h in cur.values())}. "
+                        f"load1={load1:.0f}"
+                        + (f", top: {hot}" if hot else "")
+                        + (
+                            ". Lid open, on a hard surface, and stop the builds"
+                            " before it forces a thermal sleep."
+                            if "thermal" in cur
+                            else ""
+                        ),
+                    ):
+                        told = {k: h.level for k, h in cur.items()}
+                        last_alert_ts = ts
+                elif alert_cmd and told and not cur:
+                    if send_alert(
+                        alert_cmd,
+                        f"✓ {host}: recovered, thermal={thermal_name(thermal)} "
+                        f"memory={mem.pressure or '-'} disk_free="
+                        + ("?" if disk_free is None else f"{disk_free:.0f}GB")
+                        + ".",
+                    ):
+                        told = {}
                 in_spike = spiking
                 cpu_prev, pswp_prev = cpu_cur, pswp_cur
                 last_ts, last_mono = ts, t0
@@ -697,7 +844,7 @@ def _build_app():
         print(
             f"{_ts_label(row.ts)}  load1={row.load1} idle={idle} "
             f"mem_avail={row.mem_avail_kb // 1024}MB swap_out={row.swap_out}KB/s "
-            f"nproc={row.nproc}{spike}\n"
+            f"nproc={row.nproc} thermal={thermal_name(row.thermal)}{spike}\n"
         )
         print(f"{'PID':>8} {'CPU%':>6} {MEM_LABEL:>8} {'ETIME':>8}  COMM")
         for p in store.procs_at(conn, row.ts):

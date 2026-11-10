@@ -22,7 +22,8 @@ CREATE TABLE IF NOT EXISTS sample (
     swap_used_kb  INTEGER,
     swap_out      INTEGER,               -- KB/s swapped out over the interval
     nproc         INTEGER,
-    is_spike      INTEGER NOT NULL DEFAULT 0
+    is_spike      INTEGER NOT NULL DEFAULT 0,
+    thermal       INTEGER                -- macOS thermal pressure 0..4; NULL off-mac
 );
 CREATE TABLE IF NOT EXISTS proc_sample (
     ts        INTEGER NOT NULL,
@@ -44,6 +45,13 @@ def connect(db_path: str | Path) -> sqlite3.Connection:
         Path(db_path).parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(db_path)
     conn.executescript(_SCHEMA)
+    cols = {r[1] for r in conn.execute("PRAGMA table_info(sample)")}
+    if "thermal" not in cols:  # databases recorded before thermal existed
+        try:
+            conn.execute("ALTER TABLE sample ADD COLUMN thermal INTEGER")
+        except sqlite3.OperationalError as e:  # a concurrent connect() won the race
+            if "duplicate column" not in str(e):
+                raise
     return conn
 
 
@@ -59,10 +67,22 @@ def insert_sample(
     nproc: int,
     is_spike: bool,
     procs: list[ProcSample],
+    thermal: int | None = None,
 ) -> None:
     conn.execute(
-        "INSERT INTO sample VALUES (?,?,?,?,?,?,?,?)",
-        (ts, load1, idle_pct, mem_avail_kb, swap_used_kb, swap_out, nproc, int(is_spike)),
+        "INSERT INTO sample (ts, load1, idle_pct, mem_avail_kb, swap_used_kb, "
+        "swap_out, nproc, is_spike, thermal) VALUES (?,?,?,?,?,?,?,?,?)",
+        (
+            ts,
+            load1,
+            idle_pct,
+            mem_avail_kb,
+            swap_used_kb,
+            swap_out,
+            nproc,
+            int(is_spike),
+            thermal,
+        ),
     )
     conn.executemany(
         "INSERT INTO proc_sample VALUES (?,?,?,?,?,?,?)",
@@ -134,7 +154,9 @@ def report(
 
 
 def sample_count(conn: sqlite3.Connection, since_ts: int) -> int:
-    return conn.execute("SELECT COUNT(*) FROM sample WHERE ts >= ?", (since_ts,)).fetchone()[0]
+    return conn.execute(
+        "SELECT COUNT(*) FROM sample WHERE ts >= ?", (since_ts,)
+    ).fetchone()[0]
 
 
 def spike_count(conn: sqlite3.Connection, since_ts: int) -> int:
@@ -153,6 +175,7 @@ class SampleRow:
     swap_out: int
     nproc: int
     is_spike: bool
+    thermal: int | None = None
 
 
 def nearest_sample(
@@ -161,13 +184,13 @@ def nearest_sample(
     """Nearest sample within tolerance, else None. The record-time interval is
     not stored, so the tolerance is fixed rather than interval-derived."""
     row = conn.execute(
-        "SELECT ts, load1, idle_pct, mem_avail_kb, swap_used_kb, swap_out, nproc, is_spike "
+        "SELECT ts, load1, idle_pct, mem_avail_kb, swap_used_kb, swap_out, nproc, is_spike, thermal "
         "FROM sample ORDER BY ABS(ts - ?) LIMIT 1",
         (ts,),
     ).fetchone()
     if row is None or abs(row[0] - ts) > tolerance_s:
         return None
-    return SampleRow(*row[:7], bool(row[7]))
+    return SampleRow(*row[:7], bool(row[7]), row[8])
 
 
 def procs_at(conn: sqlite3.Connection, ts: int) -> list[ProcSample]:
@@ -177,6 +200,8 @@ def procs_at(conn: sqlite3.Connection, ts: int) -> list[ProcSample]:
         (ts,),
     ).fetchall()
     return [
-        ProcSample(pid=r[0], ppid=r[1], comm=r[2], cpu_pct=r[3], rss_kb=r[4], etime_s=r[5])
+        ProcSample(
+            pid=r[0], ppid=r[1], comm=r[2], cpu_pct=r[3], rss_kb=r[4], etime_s=r[5]
+        )
         for r in rows
     ]
