@@ -59,8 +59,10 @@ from md_probe import (
     detect_spike,
     etime_s,
     idle_pct_between,
+    alert_due,
+    ease_told,
+    hazards,
     interval_cpu_pct,
-    is_alert,
     parse_cpu_totals,
     parse_catcher_log,
     parse_df,
@@ -256,21 +258,24 @@ def read_disk_free_gb() -> float | None:
         return None
 
 
-def send_alert(cmd: str, text: str) -> None:
+def send_alert(cmd: str, text: str) -> bool:
     """Pipe text to the user's alert command (e.g. `larry post --thread X`).
-    A failing alert is reported, never fatal: the recorder must keep running."""
+    True on success. A failing alert is reported, never fatal, and the short
+    timeout keeps a hung command from punching a hole in the samples."""
     try:
         r = subprocess.run(
-            cmd, shell=True, input=text, text=True, capture_output=True, timeout=60
+            cmd, shell=True, input=text, text=True, capture_output=True, timeout=15
         )
-        if r.returncode != 0:
-            print(
-                f"[{time.strftime('%H:%M:%S')}] alert-cmd exit {r.returncode}: "
-                f"{(r.stderr or r.stdout).strip()[:200]}",
-                flush=True,
-            )
     except (OSError, subprocess.TimeoutExpired) as e:
         print(f"[{time.strftime('%H:%M:%S')}] alert-cmd failed: {e}", flush=True)
+        return False
+    if r.returncode != 0:
+        print(
+            f"[{time.strftime('%H:%M:%S')}] alert-cmd exit {r.returncode}: "
+            f"{(r.stderr or r.stdout).strip()[:200]}",
+            flush=True,
+        )
+    return r.returncode == 0
 
 
 def read_load1() -> float:
@@ -559,8 +564,9 @@ def _build_app():
         alert_cmd: str = typer.Option(
             "",
             "--alert-cmd",
-            help="Shell command fed the alert text on stdin when heat or critical "
-            "memory starts, again every 30 min while it lasts, and on recovery.",
+            help="Shell command fed the alert text on stdin on heat, critical memory "
+            "or low disk: at once when new or worse, every 30 min while it lasts, "
+            "and on recovery.",
         ),
         db: str = typer.Option(DEFAULT_DB, "--db"),
         state_dir: str = typer.Option(DEFAULT_STATE, "--state-dir"),
@@ -586,7 +592,7 @@ def _build_app():
 
         in_spike = False
         last_dump_ts = 0
-        alerting = False
+        told: dict[str, int] = {}  # hazard kind -> level last sent successfully
         last_alert_ts = 0
         host = os.uname().nodename.split(".")[0]
         last_ts = int(time.time())
@@ -640,7 +646,6 @@ def _build_app():
                     swap_out=so,
                     procs=procs,
                     thermal=thermal,
-                    disk_free_gb=disk_free,
                 )
                 spiking = bool(reasons)
 
@@ -692,11 +697,14 @@ def _build_app():
                         f"[{time.strftime('%H:%M:%S')}] recovered: idle={idle_s} load1={load1}",
                         flush=True,
                     )
-                alerts = [r for r in reasons if is_alert(r)]
-                if (
-                    alert_cmd
-                    and alerts
-                    and (not alerting or ts - last_alert_ts >= ALERT_THROTTLE_S)
+                cur = hazards(cfg, thermal=thermal, mem=mem, disk_free_gb=disk_free)
+                told = ease_told(told, cur)
+                if alert_cmd and alert_due(
+                    cur,
+                    told,
+                    now=ts,
+                    last_sent=last_alert_ts,
+                    throttle_s=ALERT_THROTTLE_S,
                 ):
                     hot = ", ".join(
                         [
@@ -705,27 +713,29 @@ def _build_app():
                             if p.pid != SELF_PID and p.cpu_pct
                         ][:3]
                     )
-                    send_alert(
+                    if send_alert(
                         alert_cmd,
-                        f"⚠ {host}: {'; '.join(alerts)}. load1={load1:.0f}"
+                        f"⚠ {host}: {'; '.join(h.text for h in cur.values())}. "
+                        f"load1={load1:.0f}"
                         + (f", top: {hot}" if hot else "")
                         + (
                             ". Lid open, on a hard surface, and stop the builds"
                             " before it forces a thermal sleep."
-                            if any(a.startswith("thermal") for a in alerts)
+                            if "thermal" in cur
                             else ""
                         ),
-                    )
-                    last_alert_ts = ts
-                elif alert_cmd and alerting and not alerts:
-                    send_alert(
+                    ):
+                        told = {k: h.level for k, h in cur.items()}
+                        last_alert_ts = ts
+                elif alert_cmd and told and not cur:
+                    if send_alert(
                         alert_cmd,
                         f"✓ {host}: recovered, thermal={thermal_name(thermal)} "
                         f"memory={mem.pressure or '-'} disk_free="
                         + ("?" if disk_free is None else f"{disk_free:.0f}GB")
                         + ".",
-                    )
-                alerting = bool(alerts)
+                    ):
+                        told = {}
                 in_spike = spiking
                 cpu_prev, pswp_prev = cpu_cur, pswp_cur
                 last_ts, last_mono = ts, t0

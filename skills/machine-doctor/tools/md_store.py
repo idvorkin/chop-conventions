@@ -47,7 +47,11 @@ def connect(db_path: str | Path) -> sqlite3.Connection:
     conn.executescript(_SCHEMA)
     cols = {r[1] for r in conn.execute("PRAGMA table_info(sample)")}
     if "thermal" not in cols:  # databases recorded before thermal existed
-        conn.execute("ALTER TABLE sample ADD COLUMN thermal INTEGER")
+        try:
+            conn.execute("ALTER TABLE sample ADD COLUMN thermal INTEGER")
+        except sqlite3.OperationalError as e:  # a concurrent connect() won the race
+            if "duplicate column" not in str(e):
+                raise
     return conn
 
 

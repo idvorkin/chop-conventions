@@ -13,7 +13,9 @@ from md_probe import (
     cpu_totals_from_ticks,
     detect_spike,
     idle_pct_between,
-    is_alert,
+    alert_due,
+    ease_told,
+    hazards,
     parse_catcher_log,
     parse_df,
     parse_pmset_sleeps,
@@ -200,38 +202,79 @@ class TestThermal(unittest.TestCase):
         self.assertEqual(self._reasons(0), [])
         self.assertEqual(self._reasons(None), [])
 
-    def test_moderate_spikes_and_alerts(self):
-        reasons = self._reasons(1)
-        self.assertEqual(reasons, ["thermal pressure is moderate"])
-        self.assertTrue(is_alert(reasons[0]))
+    def test_moderate_spikes(self):
+        self.assertEqual(self._reasons(1), ["thermal pressure is moderate"])
 
-    def test_low_disk_alerts(self):
+
+def _haz(thermal=None, pressure="normal", disk=None):
+    mem = MemInfo(16 << 20, 8 << 20, 0, 0, pressure=pressure)
+    return hazards(SpikeConfig(), thermal=thermal, mem=mem, disk_free_gb=disk)
+
+
+class TestHazards(unittest.TestCase):
+    def test_quiet_box_has_none(self):
+        self.assertEqual(_haz(thermal=0, disk=45.0), {})
+
+    def test_each_kind(self):
+        h = _haz(thermal=2, pressure="critical", disk=0.9)
+        self.assertEqual(set(h), {"thermal", "memory", "disk"})
+        self.assertEqual(h["thermal"].level, 2)
+        self.assertEqual(h["disk"].text, "disk has only 0.9 GB free")
+
+    def test_low_disk_is_not_a_dump_spike(self):
         mem = MemInfo(16 << 20, 8 << 20, 0, 0, pressure="normal")
         _, reasons = detect_spike(
-            SpikeState(),
-            SpikeConfig(),
-            idle_pct=80,
-            mem=mem,
-            swap_out=0,
-            procs=[],
-            disk_free_gb=0.9,
-        )
-        self.assertEqual(reasons, ["disk has only 0.9 GB free"])
-        self.assertTrue(is_alert(reasons[0]))
-        _, reasons = detect_spike(
-            SpikeState(),
-            SpikeConfig(),
-            idle_pct=80,
-            mem=mem,
-            swap_out=0,
-            procs=[],
-            disk_free_gb=45.0,
+            SpikeState(), SpikeConfig(), idle_pct=80, mem=mem, swap_out=0, procs=[]
         )
         self.assertEqual(reasons, [])
 
-    def test_cpu_spike_does_not_alert(self):
-        self.assertFalse(is_alert("proc cc pid=1 at 900% cpu"))
-        self.assertTrue(is_alert("macOS memory pressure is critical"))
+    def test_disk_still_filling_escalates(self):
+        self.assertGreater(_haz(disk=4.0)["disk"].level, _haz(disk=18.0)["disk"].level)
+
+
+class TestAlertDue(unittest.TestCase):
+    def due(self, cur, told, now=100, last=90):
+        return alert_due(cur, told, now=now, last_sent=last, throttle_s=1800)
+
+    def test_new_hazard_alerts(self):
+        self.assertTrue(self.due(_haz(thermal=1), {}))
+
+    def test_known_hazard_waits_for_throttle(self):
+        cur = _haz(thermal=1)
+        self.assertFalse(self.due(cur, {"thermal": 1}))
+        self.assertTrue(self.due(cur, {"thermal": 1}, now=1900))
+
+    def test_heat_is_not_hidden_behind_disk(self):
+        cur = _haz(thermal=1, disk=10.0)
+        told = {"disk": cur["disk"].level}
+        self.assertTrue(self.due(cur, told))
+
+    def test_escalation_alerts_at_once(self):
+        self.assertTrue(self.due(_haz(thermal=3), {"thermal": 1}))
+
+    def test_nothing_active_never_alerts(self):
+        self.assertFalse(self.due({}, {"thermal": 2}, now=10**6))
+
+    def test_failed_send_retries(self):
+        # told only advances on success, so after a failure the hazard is still new
+        self.assertTrue(self.due(_haz(thermal=1), {}, now=91))
+
+
+class TestEaseTold(unittest.TestCase):
+    def test_clear_keeps_told_for_recovery(self):
+        self.assertEqual(ease_told({"thermal": 2}, {}), {"thermal": 2})
+
+    def test_cleared_kind_is_forgotten_and_eased_kind_lowered(self):
+        told = {"thermal": 3, "disk": 1}
+        self.assertEqual(ease_told(told, _haz(thermal=1)), {"thermal": 1})
+
+    def test_cleared_then_back_alerts(self):
+        told = ease_told({"thermal": 1, "disk": 1}, _haz(disk=19.0))
+        self.assertTrue(
+            alert_due(
+                _haz(thermal=1, disk=19.0), told, now=1, last_sent=0, throttle_s=1800
+            )
+        )
 
 
 class TestSleeps(unittest.TestCase):
