@@ -1,0 +1,11 @@
+# The worktree pool (https://github.com/kunchenguid/treehouse). Every extra checkout of this repo is a slot:
+# `treehouse get --lease -b <branch>`, work there, `treehouse return <path>` when the PR merges or the job ends.
+
+# Three slots: this repo has no build output, so a slot costs little disk; three covers the agents that edit
+# skills here at once.
+max_trees = 3
+
+# Named so a missing main is an error, never a quiet fall back to whatever branch the checkout is on.
+base_branch = "main"
+
+# No hooks: treehouse ignores hooks in a repository's file.
