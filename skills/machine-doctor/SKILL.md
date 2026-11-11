@@ -321,7 +321,9 @@ Key behaviors:
   for heat (≥ moderate), critical memory, or the data volume under 20 GB free.
   A new or worsening hazard alerts at once, a known one every 30 min, then once
   on recovery; a failed send retries next sample. **`--hold 3m` (default)**: heat
-  and critical memory count only after lasting that long without a break, and
+  and critical memory count only once that long has passed since they first
+  appeared (a clear gap under 60 s does not restart the clock, so flapping heat
+  still alerts), and
   "recovered" goes out only after everything has been clear that long, so
   pressure flapping every minute stays quiet. Low disk skips the hold and alerts
   on the first sample. `--hold 0s` restores instant alerts. After a sleep, thermal

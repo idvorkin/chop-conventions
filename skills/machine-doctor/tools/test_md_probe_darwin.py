@@ -312,6 +312,14 @@ class TestAlertHold(unittest.TestCase):
         actions, _ = _run([(300, HEAVY), (30, CLEAR), (600, HEAVY)])
         self.assertEqual(actions, [(180, "alert")])
 
+    def test_flapping_heat_alerts_once_hold_passes_since_first_sample(self):
+        actions, _ = _run([(90, HEAVY), (30, CLEAR)] * 5)
+        self.assertEqual(actions, [(180, "alert")])
+
+    def test_gap_of_60s_restarts_the_hold(self):
+        actions, _ = _run([(90, HEAVY), (60, CLEAR), (150, HEAVY)])
+        self.assertEqual(actions, [])
+
     def test_recovery_after_clear_for_hold(self):
         actions, _ = _run([(300, HEAVY), (600, CLEAR)])
         # clear from t=300, so recovered lands on the tick at t=480

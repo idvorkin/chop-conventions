@@ -381,6 +381,7 @@ def alert_due(
 # Heat and memory pressure flap for seconds at a time; a filling disk is the
 # emergency, so it alone skips the hold.
 HELD_KINDS = frozenset({"thermal", "memory"})
+BRIDGE_S = 60  # a clear gap shorter than this does not restart a hazard's hold
 
 
 @dataclass(frozen=True)
@@ -388,6 +389,7 @@ class AlertState:
     told: dict[str, int] = field(default_factory=dict)  # kind -> level last sent
     last_sent: int = 0
     seen: dict[str, int] = field(default_factory=dict)  # kind -> start of its run
+    last_seen: dict[str, int] = field(default_factory=dict)  # kind -> last present
     clear_from: int | None = None  # start of the current all-clear run
 
 
@@ -401,11 +403,16 @@ def alert_step(
 ) -> tuple[AlertState, str | None, dict[str, Hazard]]:
     """One watch tick. Returns (state, action, cur): action is "alert",
     "recover" or None, and cur is the hazards to name in an alert. A held kind
-    counts only once present on every tick for hold_s; "recover" waits until
+    counts once hold_s has passed since its run began, a run surviving clear
+    gaps shorter than BRIDGE_S; "recover" waits until
     nothing at all was present for hold_s, so a dip in sustained heat neither
     claims recovery nor re-alerts. The caller applies alert_sent() after a
     send succeeds."""
-    seen = {k: state.seen.get(k, now) for k in raw}
+    # Flapping heat is the dangerous kind, so a gap under BRIDGE_S keeps the run.
+    last_seen = {k: t for k, t in state.last_seen.items() if now - t < BRIDGE_S} | {
+        k: now for k in raw
+    }
+    seen = {k: state.seen.get(k, now) for k in last_seen}
     cur = {
         k: h for k, h in raw.items() if k not in HELD_KINDS or now - seen[k] >= hold_s
     }
@@ -413,7 +420,9 @@ def alert_step(
         None if raw else (now if state.clear_from is None else state.clear_from)
     )
     told = ease_told(state.told, cur)
-    state = replace(state, told=told, seen=seen, clear_from=clear_from)
+    state = replace(
+        state, told=told, seen=seen, last_seen=last_seen, clear_from=clear_from
+    )
     if alert_due(cur, told, now=now, last_sent=state.last_sent, throttle_s=throttle_s):
         return state, "alert", cur
     if told and clear_from is not None and now - clear_from >= hold_s:

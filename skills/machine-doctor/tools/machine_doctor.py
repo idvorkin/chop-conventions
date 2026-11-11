@@ -595,8 +595,9 @@ def _build_app():
         hold: str = typer.Option(
             "3m",
             "--hold",
-            help="Heat and critical memory alert only after lasting this long, and "
-            "'recovered' only after all clear this long. Low disk alerts at once. "
+            help="Heat and critical memory alert only after lasting this long (clear "
+            "gaps under 60s don't restart it), and 'recovered' only after all clear "
+            "this long. Low disk alerts at once. "
             "<int><s|m|h|d>; 0s disables.",
         ),
         db: str = typer.Option(DEFAULT_DB, "--db"),
