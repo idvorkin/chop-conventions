@@ -6,7 +6,7 @@ fixture strings. All I/O lives in machine_doctor.py.
 """
 
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field, replace
 from datetime import datetime, timedelta
 
 SECRET_ENV_RE = re.compile(
@@ -376,6 +376,67 @@ def alert_due(
     if any(h.level > told.get(k, -1) for k, h in cur.items()):
         return True
     return now - last_sent >= throttle_s
+
+
+# Heat and memory pressure flap for seconds at a time; a filling disk is the
+# emergency, so it alone skips the hold.
+HELD_KINDS = frozenset({"thermal", "memory"})
+BRIDGE_S = 60  # a clear gap shorter than this does not restart a hazard's hold
+
+
+@dataclass(frozen=True)
+class AlertState:
+    told: dict[str, int] = field(default_factory=dict)  # kind -> level last sent
+    last_sent: int = 0
+    seen: dict[str, int] = field(default_factory=dict)  # kind -> start of its run
+    last_seen: dict[str, int] = field(default_factory=dict)  # kind -> last present
+    clear_from: int | None = None  # start of the current all-clear run
+
+
+def alert_step(
+    state: AlertState,
+    raw: dict[str, Hazard],
+    *,
+    now: int,
+    hold_s: int,
+    throttle_s: int,
+) -> tuple[AlertState, str | None, dict[str, Hazard]]:
+    """One watch tick. Returns (state, action, cur): action is "alert",
+    "recover" or None, and cur is the hazards to name in an alert. A held kind
+    counts once hold_s has passed since its run began, a run surviving clear
+    gaps shorter than BRIDGE_S; "recover" waits until
+    nothing at all was present for hold_s, so a dip in sustained heat neither
+    claims recovery nor re-alerts. The caller applies alert_sent() after a
+    send succeeds."""
+    # Flapping heat is the dangerous kind, so a gap under BRIDGE_S keeps the run.
+    last_seen = {k: t for k, t in state.last_seen.items() if now - t < BRIDGE_S} | {
+        k: now for k in raw
+    }
+    seen = {k: state.seen.get(k, now) for k in last_seen}
+    cur = {
+        k: h for k, h in raw.items() if k not in HELD_KINDS or now - seen[k] >= hold_s
+    }
+    clear_from = (
+        None if raw else (now if state.clear_from is None else state.clear_from)
+    )
+    told = ease_told(state.told, cur)
+    state = replace(
+        state, told=told, seen=seen, last_seen=last_seen, clear_from=clear_from
+    )
+    if alert_due(cur, told, now=now, last_sent=state.last_sent, throttle_s=throttle_s):
+        return state, "alert", cur
+    if told and clear_from is not None and now - clear_from >= hold_s:
+        return state, "recover", cur
+    return state, None, cur
+
+
+def alert_sent(
+    state: AlertState, action: str, cur: dict[str, Hazard], now: int
+) -> AlertState:
+    """Record a successful send; a failed one leaves state as is, so it retries."""
+    if action == "alert":
+        return replace(state, told={k: h.level for k, h in cur.items()}, last_sent=now)
+    return replace(state, told={})
 
 
 DURATION_RE = re.compile(r"^(\d+)([smhd])$")

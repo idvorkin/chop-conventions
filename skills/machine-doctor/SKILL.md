@@ -320,7 +320,13 @@ Key behaviors:
 - **`--alert-cmd '<cmd>'` warns a human**: the alert text goes to `<cmd>` on stdin
   for heat (≥ moderate), critical memory, or the data volume under 20 GB free.
   A new or worsening hazard alerts at once, a known one every 30 min, then once
-  on recovery; a failed send retries next sample. After a sleep, thermal
+  on recovery; a failed send retries next sample. **`--hold 3m` (default)**: heat
+  and critical memory count only once that long has passed since they first
+  appeared (a clear gap under 60 s does not restart the clock, so flapping heat
+  still alerts), and
+  "recovered" goes out only after everything has been clear that long, so
+  pressure flapping every minute stays quiet. Low disk skips the hold and alerts
+  on the first sample. `--hold 0s` restores instant alerts. After a sleep, thermal
   emergency sleeps it missed are posted too. CPU and swap spikes only dump,
   never alert — builds cause them all day. Any stdin-reading command works,
   e.g. `--alert-cmd 'terminal-notifier -title machine-doctor'` or a chat CLI.

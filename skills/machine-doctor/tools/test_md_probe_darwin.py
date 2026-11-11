@@ -13,7 +13,10 @@ from md_probe import (
     cpu_totals_from_ticks,
     detect_spike,
     idle_pct_between,
+    AlertState,
     alert_due,
+    alert_sent,
+    alert_step,
     ease_told,
     hazards,
     parse_catcher_log,
@@ -275,6 +278,81 @@ class TestEaseTold(unittest.TestCase):
                 _haz(thermal=1, disk=19.0), told, now=1, last_sent=0, throttle_s=1800
             )
         )
+
+
+def _run(ticks, hold_s=180, state=None, t0=0):
+    """Drive alert_step over (seconds, hazards) spans at 30 s ticks, every send
+    succeeding. Returns (actions as (ts, action), final state)."""
+    state, now, out = state or AlertState(), t0, []
+    for secs, raw in ticks:
+        for _ in range(secs // 30):
+            state, action, cur = alert_step(
+                state, raw, now=now, hold_s=hold_s, throttle_s=1800
+            )
+            if action:
+                out.append((now, action))
+                state = alert_sent(state, action, cur, now)
+            now += 30
+    return out, state
+
+
+HEAVY = _haz(thermal=2)
+CLEAR = _haz(thermal=0)
+
+
+class TestAlertHold(unittest.TestCase):
+    def test_brief_heat_is_silent(self):
+        self.assertEqual(_run([(30, HEAVY), (600, CLEAR)])[0], [])
+
+    def test_heat_past_hold_alerts_once(self):
+        actions, _ = _run([(600, HEAVY)])
+        self.assertEqual(actions, [(180, "alert")])
+
+    def test_dip_during_heat_neither_recovers_nor_realerts(self):
+        actions, _ = _run([(300, HEAVY), (30, CLEAR), (600, HEAVY)])
+        self.assertEqual(actions, [(180, "alert")])
+
+    def test_flapping_heat_alerts_once_hold_passes_since_first_sample(self):
+        actions, _ = _run([(90, HEAVY), (30, CLEAR)] * 5)
+        self.assertEqual(actions, [(180, "alert")])
+
+    def test_gap_of_60s_restarts_the_hold(self):
+        actions, _ = _run([(90, HEAVY), (60, CLEAR), (150, HEAVY)])
+        self.assertEqual(actions, [])
+
+    def test_recovery_after_clear_for_hold(self):
+        actions, _ = _run([(300, HEAVY), (600, CLEAR)])
+        # clear from t=300, so recovered lands on the tick at t=480
+        self.assertEqual(actions, [(180, "alert"), (480, "recover")])
+
+    def test_low_disk_alerts_on_first_tick(self):
+        actions, _ = _run([(30, _haz(disk=10.0))])
+        self.assertEqual(actions, [(0, "alert")])
+
+    def test_critical_memory_is_held(self):
+        mem = _haz(pressure="critical")
+        self.assertEqual(_run([(150, mem), (600, CLEAR)])[0], [])
+        self.assertEqual(_run([(210, mem)])[0], [(180, "alert")])
+
+    def test_disk_does_not_skip_heat_hold(self):
+        actions, state = _run([(30, _haz(thermal=2, disk=10.0))])
+        self.assertEqual(actions, [(0, "alert")])
+        self.assertEqual(state.told, {"disk": _haz(disk=10.0)["disk"].level})
+
+    def test_zero_hold_is_immediate(self):
+        actions, _ = _run([(30, HEAVY), (30, CLEAR)], hold_s=0)
+        self.assertEqual(actions, [(0, "alert"), (30, "recover")])
+
+    def test_failed_send_retries_next_tick(self):
+        state, action, cur = alert_step(
+            AlertState(), _haz(disk=10.0), now=0, hold_s=180, throttle_s=1800
+        )
+        self.assertEqual(action, "alert")
+        # send failed: alert_sent not applied, so the next tick is still due
+        _, action, _ = alert_step(
+            state, _haz(disk=10.0), now=30, hold_s=180, throttle_s=1800
+        )
+        self.assertEqual(action, "alert")
 
 
 class TestSleeps(unittest.TestCase):
