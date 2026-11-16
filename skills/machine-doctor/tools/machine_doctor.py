@@ -47,6 +47,7 @@ import time
 from datetime import datetime, timedelta
 from pathlib import Path
 
+import md_sims
 import md_store as store
 from md_probe import (
     CpuTotals,
@@ -534,6 +535,9 @@ def collect_facts(
         facts.thermal = read_thermal()
         facts.sleeps = read_sleeps(datetime.now() - SLEEP_LOOKBACK)
         facts.booted_sims = read_booted_sims()
+        facts.sim_posters_kb = {
+            d.name: d.poster_kb for d in md_sims.read_devices() if d.poster_kb
+        }
 
     facts.cmdlines = {pid: _cmdline(pid) for pid in _pids_named("gc")}
     for p in procs:
@@ -914,6 +918,78 @@ def _build_app():
                 "used beyond RSS is kernel memory (slab, page tables, shmem), not a "
                 "process leak; RSS double-counts shared pages."
             )
+
+    @app.command()
+    def sims(
+        prune: bool = typer.Option(
+            False,
+            "--prune",
+            help="Remove the wallpaper (poster) cache of every shut-down simulator.",
+        ),
+        below_free_gb: float = typer.Option(
+            0.0,
+            "--below-free-gb",
+            help="With --prune: only prune when the data volume has less free than this.",
+        ),
+        lock: str = typer.Option(
+            "",
+            "--lock",
+            help="With --prune: hold this flock(2) file while pruning (e.g. a build-lane "
+            "lock); give up at once if another process holds it.",
+        ),
+        root: str = typer.Option(str(md_sims.DEVICES_ROOT), "--root", hidden=True),
+    ) -> None:
+        """Simulator wallpaper caches: size per device; --prune clears shut-down ones."""
+        import fcntl
+
+        import typer as t
+
+        devices_root = Path(root)
+        devs = md_sims.read_devices(devices_root)
+        if not devs:
+            print(f"no simulator devices under {devices_root}")
+            return
+        gb = lambda kb: f"{kb / 1048576:.1f}GB"  # noqa: E731
+        print(f"{'POSTERS':>8}  {'STATE':<12} {'RUNTIME':<14} NAME (UDID)")
+        for d in devs:
+            print(
+                f"{gb(d.poster_kb):>8}  {d.state_name:<12} {d.runtime:<14} {d.name} ({d.udid})"
+            )
+        print(f"{gb(sum(d.poster_kb for d in devs)):>8}  total")
+        if not prune:
+            return
+        free = read_disk_free_gb()
+        if below_free_gb and free is not None and free >= below_free_gb:
+            print(f"\n{free:.1f}GB free >= {below_free_gb:g}GB: nothing pruned")
+            return
+        held = None
+        if lock:
+            held = open(lock, "a")
+            try:
+                fcntl.flock(held, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except BlockingIOError:
+                print(
+                    f"{lock} is held by another process: nothing pruned",
+                    file=sys.stderr,
+                )
+                raise t.Exit(1)
+        try:
+            running = md_sims.running_udids(_run(["ps", "-axo", "command="]))
+            freed = 0
+            print()
+            for d in devs:
+                if not d.poster_kb:
+                    continue
+                dev, kb, why = md_sims.prune_device(devices_root / d.udid, running)
+                if why:
+                    print(f"{NOTE} kept {d.name}: {why}")
+                else:
+                    freed += kb
+                    print(f"{OK} cleared {d.name}: {gb(kb)}")
+            print(f"freed {gb(freed)}")
+        finally:
+            if held:
+                held.close()
 
     @app.command()
     def snapshot(
