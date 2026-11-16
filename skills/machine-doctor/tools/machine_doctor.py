@@ -536,7 +536,9 @@ def collect_facts(
         facts.sleeps = read_sleeps(datetime.now() - SLEEP_LOOKBACK)
         facts.booted_sims = read_booted_sims()
         facts.sim_posters_kb = {
-            d.name: d.poster_kb for d in md_sims.read_devices() if d.poster_kb
+            f"{d.name} ({d.udid[:8]})": d.poster_kb
+            for d in md_sims.read_devices()
+            if d.poster_kb
         }
 
     facts.cmdlines = {pid: _cmdline(pid) for pid in _pids_named("gc")}
@@ -958,29 +960,36 @@ def _build_app():
         print(f"{gb(sum(d.poster_kb for d in devs)):>8}  total")
         if not prune:
             return
-        free = read_disk_free_gb()
-        if below_free_gb and free is not None and free >= below_free_gb:
-            print(f"\n{free:.1f}GB free >= {below_free_gb:g}GB: nothing pruned")
-            return
+        if below_free_gb:
+            free = read_disk_free_gb()
+            if free is None:
+                print("free space unreadable: nothing pruned", file=sys.stderr)
+                raise t.Exit(1)
+            if free >= below_free_gb:
+                print(f"\n{free:.1f}GB free >= {below_free_gb:g}GB: nothing pruned")
+                return
         held = None
         if lock:
-            held = open(lock, "a")
             try:
+                held = open(lock, "a")
                 fcntl.flock(held, fcntl.LOCK_EX | fcntl.LOCK_NB)
-            except BlockingIOError:
-                print(
-                    f"{lock} is held by another process: nothing pruned",
-                    file=sys.stderr,
-                )
+            except OSError as e:  # BlockingIOError: someone holds it
+                busy = isinstance(e, BlockingIOError)
+                why = "is held by another process" if busy else f"unusable ({e})"
+                print(f"{lock} {why}: nothing pruned", file=sys.stderr)
                 raise t.Exit(1)
+
+        def running() -> set[str] | None:
+            out = _run(["ps", "-axo", "command="])
+            return md_sims.running_udids(out) if out.strip() else None
+
         try:
-            running = md_sims.running_udids(_run(["ps", "-axo", "command="]))
             freed = 0
             print()
             for d in devs:
                 if not d.poster_kb:
                     continue
-                dev, kb, why = md_sims.prune_device(devices_root / d.udid, running)
+                dev, kb, why = md_sims.prune_device(d.path, running)
                 if why:
                     print(f"{NOTE} kept {d.name}: {why}")
                 else:

@@ -14,6 +14,7 @@ import os
 import plistlib
 import re
 import shutil
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -38,6 +39,7 @@ class SimDevice:
     runtime: str  # "iOS-27-0"
     state: int | None
     poster_kb: int
+    path: Path  # the device folder; prune acts on this, not on the plist's UDID
 
     @property
     def state_name(self) -> str:
@@ -77,7 +79,8 @@ def read_device(dev_dir: Path) -> SimDevice | None:
         name=plist.get("name", "?"),
         runtime=str(plist.get("runtime", "")).rsplit(".", 1)[-1],
         state=state if isinstance(state, int) else None,
-        poster_kb=dir_kb(dev_dir / POSTER_STORE),
+        poster_kb=0 if store_escapes(dev_dir) else dir_kb(dev_dir / POSTER_STORE),
+        path=dev_dir,
     )
 
 
@@ -100,30 +103,51 @@ def running_udids(ps_commands: str) -> set[str]:
     }
 
 
-def prune_refusal(dev: SimDevice, running: set[str], store: Path) -> str | None:
+def store_escapes(dev_dir: Path) -> bool:
+    """True if any part of the store's path below the device folder is a symlink
+    (a symlinked `data`, `Library` … would point the delete somewhere else)."""
+    p = dev_dir
+    for part in POSTER_STORE.parts:
+        p = p / part
+        if p.is_symlink():
+            return True
+    return False
+
+
+def prune_refusal(dev: SimDevice, running: set[str], dev_dir: Path) -> str | None:
     """Why this device's poster store must not be removed now, or None if it may."""
+    if dev.udid != dev_dir.name:
+        return f"device.plist says {dev.udid}, folder is {dev_dir.name}"
     if dev.state != SHUTDOWN:
         return f"state is {dev.state_name}, not Shutdown"
     if dev.udid in running:
         return "launchd_sim is running for it"
-    if store.is_symlink():
-        return "the store is a symlink"
-    if not store.is_dir():
+    if store_escapes(dev_dir):
+        return "the store's path goes through a symlink"
+    if not (dev_dir / POSTER_STORE).is_dir():
         return "no poster store"
     return None
 
 
 def prune_device(
-    dev_dir: Path, running: set[str]
+    dev_dir: Path, running: Callable[[], set[str] | None]
 ) -> tuple[SimDevice | None, int, str | None]:
-    """Remove one device's poster store if it is safe. Re-reads the device's state
-    right before deleting. Returns (device, freed KB, refusal reason or None)."""
-    dev = read_device(dev_dir)
+    """Remove one device's poster store if it is safe. Measures first, then re-reads
+    the device's state and asks `running` for a fresh launchd_sim list right
+    before deleting; `running` returning None (ps failed) refuses.
+    Returns (device, freed KB, refusal reason or None)."""
+    dev = read_device(dev_dir)  # includes the size walk
     if dev is None:
         return None, 0, "not a simulator device"
-    store = dev_dir / POSTER_STORE
-    reason = prune_refusal(dev, running, store)
+    live = running()
+    now = read_device(dev_dir)
+    if now is None or live is None:
+        return dev, 0, "could not re-check the device (device.plist or ps unreadable)"
+    reason = prune_refusal(now, live, dev_dir)
     if reason:
         return dev, 0, reason
-    shutil.rmtree(store)
+    try:
+        shutil.rmtree(dev_dir / POSTER_STORE)
+    except OSError as e:
+        return dev, 0, f"delete failed: {e}"
     return dev, dev.poster_kb, None
