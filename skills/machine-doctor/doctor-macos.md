@@ -127,8 +127,8 @@ machine_doctor.py sims --prune --lock ~/tmp/agent/locks/build.lock --below-free-
 
 `--prune` removes only the poster store of devices whose `device.plist` says Shutdown and that have no `launchd_sim`.
 It reads each device again just before deleting, never follows a symlinked store, and keeps the device, its UDID and its apps.
-PosterBoard rebuilds the store on the next boot. `--lock` takes a flock(2) file (what `lockf(1)` uses) and gives up at once
-if another job holds it. The lasting fix is fewer boots: leave the device booted between runs.
+PosterBoard rebuilds the store on the next boot. `--lock` takes a flock(2) file and gives up at once if another job holds it;
+it only excludes jobs that take the same file with flock, such as `lockf -k <file> <cmd>`. The lasting fix is fewer boots: leave the device booted between runs.
 
 ---
 

@@ -140,7 +140,21 @@ def prune_device(
     if dev is None:
         return None, 0, "not a simulator device"
     live = running()
-    now = read_device(dev_dir)
+    # Identity and state only: no second size walk between the check and the delete.
+    plist = _read_plist(dev_dir / "device.plist")
+    state = plist.get("state")
+    now = (
+        SimDevice(
+            udid=plist["UDID"],
+            name=dev.name,
+            runtime=dev.runtime,
+            state=state if isinstance(state, int) else None,
+            poster_kb=dev.poster_kb,
+            path=dev_dir,
+        )
+        if plist.get("UDID")
+        else None
+    )
     if now is None or live is None:
         return dev, 0, "could not re-check the device (device.plist or ps unreadable)"
     reason = prune_refusal(now, live, dev_dir)
