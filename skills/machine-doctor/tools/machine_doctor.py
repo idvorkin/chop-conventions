@@ -537,9 +537,14 @@ def collect_facts(
 
     facts.cmdlines = {pid: _cmdline(pid) for pid in _pids_named("gc")}
     for p in procs:
-        cwd = _cwd(p.pid)  # unreadable for other users' procs: "" -> skipped
-        if is_deleted_cwd(cwd):
-            facts.deleted_cwds[p.pid] = cwd
+        # Linux only: " (deleted)" is a /proc readlink marker that macOS never
+        # reports, and there each _cwd is an lsof run, one per process. An lsof
+        # that meets a wedged file system (a hung FSKit DeviceFS, 2026-11) sits
+        # in uninterruptible wait forever, so the scan left orphans behind.
+        if not IS_DARWIN:
+            cwd = _cwd(p.pid)  # unreadable for other users' procs: "" -> skipped
+            if is_deleted_cwd(cwd):
+                facts.deleted_cwds[p.pid] = cwd
         if is_jekyll_server(p.comm, _cmdline(p.pid)):
             facts.jekyll_pids.append(p.pid)
     facts.dolt_cwds = {pid: _cwd(pid) for pid in _pids_named("dolt")}
