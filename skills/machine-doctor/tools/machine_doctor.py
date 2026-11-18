@@ -44,6 +44,7 @@ import sqlite3
 import subprocess
 import sys
 import time
+from collections.abc import Callable
 from datetime import datetime, timedelta
 from pathlib import Path
 
@@ -569,6 +570,33 @@ def collect_facts(
     return facts
 
 
+def _sims_running() -> set[str] | None:
+    """UDIDs with a live launchd_sim; None when ps gave nothing (refuse to prune)."""
+    out = _run(["ps", "-axo", "command="])
+    return md_sims.running_udids(out) if out.strip() else None
+
+
+def _watch_prune_sims(
+    root: Path = md_sims.DEVICES_ROOT,
+    running: Callable[[], set[str] | None] = _sims_running,
+) -> int:
+    """One `watch --prune-sims` pass: print what was cleared; never raise.
+    Returns KB freed."""
+    try:
+        done = md_sims.prune_all(root, running)
+    except Exception as e:  # a cleanup bug must not stop the watcher
+        print(f"[{time.strftime('%H:%M:%S')}] sims prune failed: {e}", flush=True)
+        return 0
+    cleared = [(d, kb) for d, kb, why in done if not why]
+    if cleared:
+        names = ", ".join(f"{d.name} {kb / 1048576:.1f}GB" for d, kb in cleared)
+        print(
+            f"[{time.strftime('%H:%M:%S')}] cleared simulator wallpaper caches: {names}",
+            flush=True,
+        )
+    return sum(kb for _, kb in cleared)
+
+
 # ---------------------------------------------------------------------------
 # CLI
 # ---------------------------------------------------------------------------
@@ -606,15 +634,24 @@ def _build_app():
             "this long. Low disk alerts at once. "
             "<int><s|m|h|d>; 0s disables.",
         ),
+        prune_sims: str = typer.Option(
+            "0s",
+            "--prune-sims",
+            help="Every this long, clear the wallpaper (poster) cache of each shut-down "
+            "simulator, as `sims --prune` does; booted ones are kept. "
+            "<int><s|m|h|d>; 0s (default) never.",
+        ),
         db: str = typer.Option(DEFAULT_DB, "--db"),
         state_dir: str = typer.Option(DEFAULT_STATE, "--state-dir"),
     ) -> None:
         """Sample into the store; print only on state transitions."""
         try:
             hold_s = parse_duration(hold)
+            prune_sims_s = parse_duration(prune_sims)
         except ValueError as e:
             print(e, file=sys.stderr)
             raise typer.Exit(2)
+        last_sims_prune = 0.0
         conn = store.connect(db)
         sdir = Path(state_dir)
         store.prune(conn, int(time.time()))
@@ -776,6 +813,9 @@ def _build_app():
                         + ".",
                     ):
                         astate = alert_sent(astate, action, cur, ts)
+                if prune_sims_s and t0 - last_sims_prune >= prune_sims_s:
+                    last_sims_prune = t0
+                    _watch_prune_sims()
                 in_spike = spiking
                 cpu_prev, pswp_prev = cpu_cur, pswp_cur
                 last_ts, last_mono = ts, t0
@@ -979,17 +1019,10 @@ def _build_app():
                 print(f"{lock} {why}: nothing pruned", file=sys.stderr)
                 raise t.Exit(1)
 
-        def running() -> set[str] | None:
-            out = _run(["ps", "-axo", "command="])
-            return md_sims.running_udids(out) if out.strip() else None
-
         try:
             freed = 0
             print()
-            for d in devs:
-                if not d.poster_kb:
-                    continue
-                dev, kb, why = md_sims.prune_device(d.path, running)
+            for d, kb, why in md_sims.prune_all(devices_root, _sims_running):
                 if why:
                     print(f"{NOTE} kept {d.name}: {why}")
                 else:

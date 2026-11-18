@@ -182,3 +182,46 @@ class TestSimPosterFinding(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestPruneAll(unittest.TestCase):
+    """The watch --prune-sims pass: shut-down stores go, booted ones stay."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self.tmp.name)
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def test_clears_shut_down_keeps_booted_and_running(self):
+        off = make_device(self.root, PHONE, "iPhone 17", 1, 300_000)
+        booted = make_device(self.root, IPAD, "iPad", 3, 300_000)
+        live = make_device(self.root, WATCH, "Watch", 1, 300_000)
+        done = md_sims.prune_all(self.root, lambda: {WATCH})
+        why = {d.name: r for d, _kb, r in done}
+        self.assertEqual(
+            why,
+            {
+                "iPhone 17": None,
+                "iPad": "state is Booted, not Shutdown",
+                "Watch": "launchd_sim is running for it",
+            },
+        )
+        self.assertFalse((off / md_sims.POSTER_STORE).exists())
+        self.assertTrue((booted / md_sims.POSTER_STORE).is_dir())
+        self.assertTrue((live / md_sims.POSTER_STORE).is_dir())
+
+    def test_watch_pass_reports_freed_and_survives_errors(self):
+        import machine_doctor as md
+
+        make_device(self.root, PHONE, "iPhone 17", 1, 300_000)
+        freed = md._watch_prune_sims(self.root, IDLE)
+        self.assertGreater(freed, 0)
+        self.assertEqual(md._watch_prune_sims(self.root, IDLE), 0)  # nothing left
+
+        def boom():
+            raise RuntimeError("ps exploded")
+
+        make_device(self.root, IPAD, "iPad", 1, 300_000)
+        self.assertEqual(md._watch_prune_sims(self.root, boom), 0)  # no raise

@@ -303,6 +303,7 @@ skills/machine-doctor/tools/machine_doctor.py snapshot              # right now 
 skills/machine-doctor/tools/machine_doctor.py mem                   # RSS by app with TOTAL (Tier 1b)
 skills/machine-doctor/tools/machine_doctor.py sleeps --since 24h    # macOS: why it slept, who asked for it
 skills/machine-doctor/tools/machine_doctor.py sims [--prune]        # macOS: simulator wallpaper caches (doctor-macos.md §2)
+skills/machine-doctor/tools/machine_doctor.py watch --prune-sims 10m  # also clear shut-down sims' wallpaper caches every 10 min
 ```
 
 Linux and macOS both work. Linux reads `/proc`; macOS reads Mach CPU ticks,

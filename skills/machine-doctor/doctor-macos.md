@@ -130,6 +130,12 @@ It reads each device again just before deleting, never follows a symlinked store
 PosterBoard rebuilds the store on the next boot. `--lock` takes a flock(2) file and gives up at once if another job holds it;
 it only excludes jobs that take the same file with flock, such as `lockf -k <file> <cmd>`. The lasting fix is fewer boots: leave the device booted between runs.
 
+To keep them from piling up, run the watcher with `--prune-sims 10m`: every 10 minutes it does the same `--prune` pass and prints what it cleared.
+
+```bash
+machine_doctor.py watch --prune-sims 10m
+```
+
 ---
 
 ## 3. Freeing memory on the host

@@ -165,3 +165,17 @@ def prune_device(
     except OSError as e:
         return dev, 0, f"delete failed: {e}"
     return dev, dev.poster_kb, None
+
+
+def prune_all(
+    root: Path, running: Callable[[], set[str] | None]
+) -> list[tuple[SimDevice, int, str | None]]:
+    """prune_device on every device under root that has a poster store.
+    Returns (device, freed KB, refusal reason or None) for each one tried."""
+    out = []
+    for d in read_devices(root):
+        if not d.poster_kb:
+            continue
+        dev, kb, why = prune_device(d.path, running)
+        out.append((dev or d, kb, why))
+    return out
