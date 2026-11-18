@@ -180,10 +180,6 @@ class TestSimPosterFinding(unittest.TestCase):
         self.assertIn("sims --prune", f.message)
 
 
-if __name__ == "__main__":
-    unittest.main()
-
-
 class TestPruneAll(unittest.TestCase):
     """The watch --prune-sims pass: shut-down stores go, booted ones stay."""
 
@@ -215,13 +211,41 @@ class TestPruneAll(unittest.TestCase):
     def test_watch_pass_reports_freed_and_survives_errors(self):
         import machine_doctor as md
 
-        make_device(self.root, PHONE, "iPhone 17", 1, 300_000)
-        freed = md._watch_prune_sims(self.root, IDLE)
-        self.assertGreater(freed, 0)
-        self.assertEqual(md._watch_prune_sims(self.root, IDLE), 0)  # nothing left
+        import contextlib
+        import io
+
+        phone = make_device(self.root, PHONE, "iPhone 17", 1, 300_000)
+        make_device(self.root, WATCH, "Watch", 3, 300_000)  # booted: kept quietly
+        # Oracle: du(1) before the pass.
+        du = subprocess.run(
+            ["/usr/bin/du", "-sk", str(phone / md_sims.POSTER_STORE)],
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            freed = md._watch_prune_sims(self.root, IDLE)
+        self.assertEqual(freed, int(du.stdout.split()[0]))
+        self.assertFalse((phone / md_sims.POSTER_STORE).exists())
+        self.assertIn("cleared simulator wallpaper caches: iPhone 17", out.getvalue())
+        self.assertNotIn("Watch", out.getvalue())
+
+        ipad = make_device(self.root, IPAD, "iPad", 1, 300_000)
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            freed = md._watch_prune_sims(self.root, lambda: None)  # ps failed
+        self.assertEqual(freed, 0)
+        self.assertTrue((ipad / md_sims.POSTER_STORE).is_dir())
+        self.assertIn("kept iPad: could not re-check", out.getvalue())
 
         def boom():
             raise RuntimeError("ps exploded")
 
-        make_device(self.root, IPAD, "iPad", 1, 300_000)
-        self.assertEqual(md._watch_prune_sims(self.root, boom), 0)  # no raise
+        with contextlib.redirect_stdout(io.StringIO()):
+            self.assertEqual(md._watch_prune_sims(self.root, boom), 0)  # no raise
+        self.assertTrue((ipad / md_sims.POSTER_STORE).is_dir())
+
+
+if __name__ == "__main__":
+    unittest.main()

@@ -588,6 +588,11 @@ def _watch_prune_sims(
         print(f"[{time.strftime('%H:%M:%S')}] sims prune failed: {e}", flush=True)
         return 0
     cleared = [(d, kb) for d, kb, why in done if not why]
+    # A running device is kept every pass by design; anything else (ps failed,
+    # delete failed, a symlink) would repeat silently while the caches grow.
+    for d, _kb, why in done:
+        if why and not why.startswith("state is") and "launchd_sim" not in why:
+            print(f"[{time.strftime('%H:%M:%S')}] kept {d.name}: {why}", flush=True)
     if cleared:
         names = ", ".join(f"{d.name} {kb / 1048576:.1f}GB" for d, kb in cleared)
         print(
@@ -651,7 +656,7 @@ def _build_app():
         except ValueError as e:
             print(e, file=sys.stderr)
             raise typer.Exit(2)
-        last_sims_prune = 0.0
+        last_sims_prune = float("-inf")  # first pass on the first tick
         conn = store.connect(db)
         sdir = Path(state_dir)
         store.prune(conn, int(time.time()))
