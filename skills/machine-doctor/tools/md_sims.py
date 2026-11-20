@@ -52,7 +52,7 @@ def dir_kb(path: Path) -> int:
         return 0
     total = 0
     for dirpath, dirs, files in os.walk(path):
-        # du counts each directory's own blocks (4 KB apiece on ext4/APFS) and
+        # du counts each directory's own blocks (4 KB apiece on ext4) and
         # a symlinked dir's link inode, which os.walk lists under dirs.
         links = [d for d in dirs if os.path.islink(os.path.join(dirpath, d))]
         for name in (".", *files, *links):

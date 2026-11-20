@@ -89,7 +89,7 @@ class TestSims(unittest.TestCase):
         self.assertEqual(devs[0].poster_kb, int(du.stdout.split()[0]))
 
     def test_size_counts_directory_blocks_like_du(self):
-        # btrfs/tmpfs report 0 blocks for a directory, ext4/APFS do not: fake
+        # btrfs/tmpfs report 0 blocks for a directory, ext4 does not: fake
         # ext4's 4 KB per directory so the count is exercised on any test box.
         store = make_device(self.root, PHONE, "iPhone 17", 1, 0) / "store"
         (store / "a/b").mkdir(parents=True)
