@@ -62,7 +62,7 @@ from md_probe import (
     etime_s,
     idle_pct_between,
     alert_due,
-    app_name,
+    app_labels,
     app_totals,
     ease_told,
     hazards,
@@ -392,13 +392,12 @@ def _walk_procs_darwin(
 
 def _with_app_labels(procs: list[ProcSample]) -> list[ProcSample]:
     """Linux has no .app path: label by command line, as `mem` does, so
-    python3:serve.py, pytest, jekyll and dolt stay distinct apps in history."""
+    python3:serve.py, pytest (with its xdist workers), jekyll and dolt stay
+    distinct apps in history."""
     if IS_DARWIN:
         return procs
-    cmd = _cmdlines([p.pid for p in procs])
-    return [
-        dataclasses.replace(p, app=app_name(p.comm, cmd.get(p.pid, ""))) for p in procs
-    ]
+    labels = app_labels(procs, _cmdlines([p.pid for p in procs]))
+    return [dataclasses.replace(p, app=labels[p.pid]) for p in procs]
 
 
 def walk_procs(
