@@ -4,6 +4,27 @@
 
 Put all command scripts into the justfile. Check justfile to see if the command you want to run is already there.
 
+### Standard entry points
+
+Every repo that builds something offers the same four names, so people, setup scripts and agents can run them in any repo without reading its justfile first:
+
+| Recipe         | Does                                                                                                                              |
+| -------------- | --------------------------------------------------------------------------------------------------------------------------------- |
+| `just build`   | The quickest full compile of the main target (a Mac app bundle, an iOS app for the simulator, a package)                          |
+| `just test`    | The fast first rung of the test ladder: host tests, seconds not minutes                                                           |
+| `just install` | Puts the app where it is used (`/Applications`, `~/.local/bin`). Skip it when there is nothing to install, as for an iOS-only app |
+| `just run`     | Builds and opens it                                                                                                               |
+
+Keep the repo's own descriptive recipe names and point the standard ones at them with aliases, rather than renaming:
+
+```just
+# Shared entry points: just build, test, install, run.
+alias build := app
+alias run := run-sim
+```
+
+A recipe that takes arguments, or that needs a device, is not a standard entry point: `build` and `run` must work with no arguments on a Mac with only Xcode and the simulators.
+
 ## Python Scripts
 
 When running python scripts with UV script shebangs, run them directly:
