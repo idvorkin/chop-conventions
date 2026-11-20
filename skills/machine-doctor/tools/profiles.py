@@ -34,6 +34,9 @@ WINDOWSERVER_WARN_KB = 2 * 1024 * 1024
 # Each booted iOS/watchOS simulator runs a whole OS worth of daemons; eight
 # booted at once meant 2,400 processes and load ~980 on a 16GB laptop.
 BOOTED_SIMS_WARN = 3
+# iOS 27 simulators keep ~300 MB of wallpaper snapshots per boot and never evict
+# them; 26 GB across two test-ladder devices in a month.
+SIM_POSTERS_WARN_KB = 5 * 1024 * 1024
 
 
 @dataclass(frozen=True)
@@ -70,6 +73,7 @@ class HostFacts:
     vm_mem_mib: dict[str, int] = field(default_factory=dict)  # VM name -> memory cap
     sleeps: list[SleepEvent] = field(default_factory=list)  # macOS, recent window
     booted_sims: list[str] = field(default_factory=list)  # macOS simulator names
+    sim_posters_kb: dict[str, int] = field(default_factory=dict)  # sim name -> KB
 
 
 def classify_dolt(cwd: str) -> str:
@@ -231,17 +235,29 @@ def sim_findings(facts: HostFacts) -> list[Finding]:
     """No single simulator process looks guilty in a CPU sort; the cost is the
     count. Test pipelines that boot a fresh device per run and never shut it
     down are the usual source."""
+    out: list[Finding] = []
     n = len(facts.booted_sims)
-    if n < BOOTED_SIMS_WARN:
-        return []
-    names = ", ".join(facts.booted_sims)
-    return [
-        Finding(
-            "warn",
-            f"{n} simulators booted ({names}) — each is a whole OS; "
-            "`xcrun simctl shutdown <udid>` the ones no build is using",
+    if n >= BOOTED_SIMS_WARN:
+        names = ", ".join(facts.booted_sims)
+        out.append(
+            Finding(
+                "warn",
+                f"{n} simulators booted ({names}) — each is a whole OS; "
+                "`xcrun simctl shutdown <udid>` the ones no build is using",
+            )
         )
-    ]
+    total = sum(facts.sim_posters_kb.values())
+    if total >= SIM_POSTERS_WARN_KB:
+        name, kb = max(facts.sim_posters_kb.items(), key=lambda kv: kv[1])
+        out.append(
+            Finding(
+                "warn",
+                f"simulator wallpaper caches hold {total / 1048576:.1f}GB "
+                f"(most: {name} {kb / 1048576:.1f}GB), ~300MB more per boot — "
+                "`machine_doctor.py sims --prune` clears the shut-down ones",
+            )
+        )
+    return out
 
 
 def power_findings(facts: HostFacts) -> list[Finding]:

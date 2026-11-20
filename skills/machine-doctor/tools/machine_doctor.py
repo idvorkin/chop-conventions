@@ -44,9 +44,11 @@ import sqlite3
 import subprocess
 import sys
 import time
+from collections.abc import Callable
 from datetime import datetime, timedelta
 from pathlib import Path
 
+import md_sims
 import md_store as store
 from md_probe import (
     CpuTotals,
@@ -534,6 +536,11 @@ def collect_facts(
         facts.thermal = read_thermal()
         facts.sleeps = read_sleeps(datetime.now() - SLEEP_LOOKBACK)
         facts.booted_sims = read_booted_sims()
+        facts.sim_posters_kb = {
+            f"{d.name} ({d.udid[:8]})": d.poster_kb
+            for d in md_sims.read_devices()
+            if d.poster_kb
+        }
 
     facts.cmdlines = {pid: _cmdline(pid) for pid in _pids_named("gc")}
     for p in procs:
@@ -561,6 +568,38 @@ def collect_facts(
         if ppid_of.get(pid) == 1:
             facts.orphan_tmux[pid] = m.group(1)
     return facts
+
+
+def _sims_running() -> set[str] | None:
+    """UDIDs with a live launchd_sim; None when ps gave nothing (refuse to prune)."""
+    out = _run(["ps", "-axo", "command="])
+    return md_sims.running_udids(out) if out.strip() else None
+
+
+def _watch_prune_sims(
+    root: Path = md_sims.DEVICES_ROOT,
+    running: Callable[[], set[str] | None] = _sims_running,
+) -> int:
+    """One `watch --prune-sims` pass: print what was cleared; never raise.
+    Returns KB freed."""
+    try:
+        done = md_sims.prune_all(root, running)
+    except Exception as e:  # a cleanup bug must not stop the watcher
+        print(f"[{time.strftime('%H:%M:%S')}] sims prune failed: {e}", flush=True)
+        return 0
+    cleared = [(d, kb) for d, kb, why in done if not why]
+    # A running device is kept every pass by design; anything else (ps failed,
+    # delete failed, a symlink) would repeat silently while the caches grow.
+    for d, _kb, why in done:
+        if why and not why.startswith("state is") and "launchd_sim" not in why:
+            print(f"[{time.strftime('%H:%M:%S')}] kept {d.name}: {why}", flush=True)
+    if cleared:
+        names = ", ".join(f"{d.name} {kb / 1048576:.1f}GB" for d, kb in cleared)
+        print(
+            f"[{time.strftime('%H:%M:%S')}] cleared simulator wallpaper caches: {names}",
+            flush=True,
+        )
+    return sum(kb for _, kb in cleared)
 
 
 # ---------------------------------------------------------------------------
@@ -600,15 +639,24 @@ def _build_app():
             "this long. Low disk alerts at once. "
             "<int><s|m|h|d>; 0s disables.",
         ),
+        prune_sims: str = typer.Option(
+            "0s",
+            "--prune-sims",
+            help="Every this long, clear the wallpaper (poster) cache of each shut-down "
+            "simulator, as `sims --prune` does; booted ones are kept. "
+            "<int><s|m|h|d>; 0s (default) never.",
+        ),
         db: str = typer.Option(DEFAULT_DB, "--db"),
         state_dir: str = typer.Option(DEFAULT_STATE, "--state-dir"),
     ) -> None:
         """Sample into the store; print only on state transitions."""
         try:
             hold_s = parse_duration(hold)
+            prune_sims_s = parse_duration(prune_sims)
         except ValueError as e:
             print(e, file=sys.stderr)
             raise typer.Exit(2)
+        last_sims_prune = float("-inf")  # first pass on the first tick
         conn = store.connect(db)
         sdir = Path(state_dir)
         store.prune(conn, int(time.time()))
@@ -770,6 +818,9 @@ def _build_app():
                         + ".",
                     ):
                         astate = alert_sent(astate, action, cur, ts)
+                if prune_sims_s and t0 - last_sims_prune >= prune_sims_s:
+                    last_sims_prune = t0
+                    _watch_prune_sims()
                 in_spike = spiking
                 cpu_prev, pswp_prev = cpu_cur, pswp_cur
                 last_ts, last_mono = ts, t0
@@ -914,6 +965,78 @@ def _build_app():
                 "used beyond RSS is kernel memory (slab, page tables, shmem), not a "
                 "process leak; RSS double-counts shared pages."
             )
+
+    @app.command()
+    def sims(
+        prune: bool = typer.Option(
+            False,
+            "--prune",
+            help="Remove the wallpaper (poster) cache of every shut-down simulator.",
+        ),
+        below_free_gb: float = typer.Option(
+            0.0,
+            "--below-free-gb",
+            help="With --prune: only prune when the data volume has less free than this.",
+        ),
+        lock: str = typer.Option(
+            "",
+            "--lock",
+            help="With --prune: hold this flock(2) file while pruning (e.g. a build-lane "
+            "lock); give up at once if another process holds it.",
+        ),
+        root: str = typer.Option(str(md_sims.DEVICES_ROOT), "--root", hidden=True),
+    ) -> None:
+        """Simulator wallpaper caches: size per device; --prune clears shut-down ones."""
+        import fcntl
+
+        import typer as t
+
+        devices_root = Path(root)
+        devs = md_sims.read_devices(devices_root)
+        if not devs:
+            print(f"no simulator devices under {devices_root}")
+            return
+        gb = lambda kb: f"{kb / 1048576:.1f}GB"  # noqa: E731
+        print(f"{'POSTERS':>8}  {'STATE':<12} {'RUNTIME':<14} NAME (UDID)")
+        for d in devs:
+            print(
+                f"{gb(d.poster_kb):>8}  {d.state_name:<12} {d.runtime:<14} {d.name} ({d.udid})"
+            )
+        print(f"{gb(sum(d.poster_kb for d in devs)):>8}  total")
+        if not prune:
+            return
+        if below_free_gb:
+            free = read_disk_free_gb()
+            if free is None:
+                print("free space unreadable: nothing pruned", file=sys.stderr)
+                raise t.Exit(1)
+            if free >= below_free_gb:
+                print(f"\n{free:.1f}GB free >= {below_free_gb:g}GB: nothing pruned")
+                return
+        held = None
+        if lock:
+            try:
+                held = open(lock, "a")
+                fcntl.flock(held, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except OSError as e:  # BlockingIOError: someone holds it
+                busy = isinstance(e, BlockingIOError)
+                why = "is held by another process" if busy else f"unusable ({e})"
+                print(f"{lock} {why}: nothing pruned", file=sys.stderr)
+                raise t.Exit(1)
+
+        try:
+            freed = 0
+            print()
+            for d, kb, why in md_sims.prune_all(devices_root, _sims_running):
+                if why:
+                    print(f"{NOTE} kept {d.name}: {why}")
+                else:
+                    freed += kb
+                    print(f"{OK} cleared {d.name}: {gb(kb)}")
+            print(f"freed {gb(freed)}")
+        finally:
+            if held:
+                held.close()
 
     @app.command()
     def snapshot(
