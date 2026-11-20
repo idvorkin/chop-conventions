@@ -228,6 +228,16 @@ def app_name(comm: str, cmdline: str) -> str:
     return comm
 
 
+def app_labels(procs: list[ProcSample], cmdlines: dict[int, str]) -> dict[int, str]:
+    """{pid: app label}. pytest-xdist workers run as anonymous `python -c ...`;
+    they inherit the parent's `pytest` label."""
+    labels = {p.pid: app_name(p.comm, cmdlines.get(p.pid, "")) for p in procs}
+    for p in procs:
+        if labels.get(p.ppid) == "pytest" and labels[p.pid].startswith("python"):
+            labels[p.pid] = "pytest"
+    return labels
+
+
 @dataclass(frozen=True)
 class AppMem:
     name: str
@@ -243,11 +253,7 @@ def mem_by_app(
     as anonymous `python -c ...`; they inherit the parent's `pytest` label.
     RSS double-counts shared pages, so treat this as a ranking, not a ledger."""
     by_pid = {p.pid: p for p in procs}
-    labels = {p.pid: app_name(p.comm, cmdlines.get(p.pid, "")) for p in procs}
-    for p in procs:
-        parent = labels.get(p.ppid)
-        if parent == "pytest" and labels[p.pid].startswith("python"):
-            labels[p.pid] = "pytest"
+    labels = app_labels(procs, cmdlines)
     rss: dict[str, int] = {}
     count: dict[str, int] = {}
     for pid, name in labels.items():
