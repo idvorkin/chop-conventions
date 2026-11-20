@@ -8,10 +8,13 @@ Run from this directory: python3 -m unittest
 import os
 import plistlib
 import shutil
+import stat
 import subprocess
 import tempfile
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
+from unittest import mock
 
 import md_sims
 from profiles import SIM_POSTERS_WARN_KB, HostFacts, sim_findings
@@ -84,6 +87,29 @@ class TestSims(unittest.TestCase):
             check=True,
         )
         self.assertEqual(devs[0].poster_kb, int(du.stdout.split()[0]))
+
+    def test_size_counts_directory_blocks_like_du(self):
+        # btrfs/tmpfs report 0 blocks for a directory, ext4/APFS do not: fake
+        # ext4's 4 KB per directory so the count is exercised on any test box.
+        store = make_device(self.root, PHONE, "iPhone 17", 1, 0) / "store"
+        (store / "a/b").mkdir(parents=True)
+        (store / "a/b/f").write_bytes(b"")
+        os.symlink(store / "a", store / "link-to-a")
+        real_lstat = os.lstat
+
+        def lstat(p):  # 8 x 512-byte blocks per real directory, as on ext4
+            st = real_lstat(p)
+            is_dir = stat.S_ISDIR(st.st_mode)
+            return SimpleNamespace(
+                st_mode=st.st_mode, st_blocks=8 if is_dir else st.st_blocks
+            )
+
+        with mock.patch.object(md_sims.os, "lstat", lstat):
+            got = md_sims.dir_kb(store)
+        # store, a, a/b at 4 KB each, plus the link's own inode (du counts it)
+        # without following it into a again.
+        link_kb = real_lstat(store / "link-to-a").st_blocks // 2
+        self.assertEqual(got, 3 * 4 + link_kb)
 
     def test_prunes_only_a_shut_down_idle_device(self):
         off = make_device(self.root, PHONE, "iPhone 17", 1, 300_000)
