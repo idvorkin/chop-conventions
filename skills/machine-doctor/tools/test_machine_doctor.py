@@ -110,5 +110,22 @@ class TestSendAlert(unittest.TestCase):
             self.assertFalse(md.send_alert("notify", "hot"))
 
 
+class TestLinuxAppLabels(unittest.TestCase):
+    def test_interpreters_named_by_script(self):
+        procs = [
+            md.ProcSample(1, 0, "python3", 0.0, 100, 1),
+            md.ProcSample(2, 0, "python3", 0.0, 100, 1),
+        ]
+        cmds = {1: "python3 serve.py", 2: "python3 worker.py"}
+        with (
+            mock.patch.object(md, "IS_DARWIN", False),
+            mock.patch.object(md, "_cmdlines", return_value=cmds),
+        ):
+            got = md._with_app_labels(procs)
+        self.assertEqual(
+            [p.app for p in got], ["python3:serve.py", "python3:worker.py"]
+        )
+
+
 if __name__ == "__main__":
     unittest.main()

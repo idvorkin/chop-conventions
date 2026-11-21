@@ -127,10 +127,12 @@ Flag Claude processes, node processes, and dolt/jekyll servers specifically.
 # Mac — free pages are near zero by design; read the kernel's verdict instead
 sysctl kern.memorystatus_vm_pressure_level   # 1 normal, 2 warn, 4 critical
 sysctl vm.swapusage
-top -l 1 -o mem -n 15 -stats pid,command,mem  # footprint, compressed pages included
+/usr/bin/top -l 1 -o mem -n 15 -stats pid,command,mem  # `top` is often aliased to btm
 
-# Linux: RSS grouped by app, top rows + "everything else" + TOTAL
+# Both: memory grouped by app, top rows + "everything else" + TOTAL
 skills/machine-doctor/tools/machine_doctor.py mem
+# History: apps by peak memory over a window (needs `watch`)
+skills/machine-doctor/tools/machine_doctor.py report --mem --since 6h
 ```
 
 Flag Linux if available memory is under 500MB; flag macOS on pressure warn or
@@ -138,6 +140,14 @@ critical. On macOS rank by footprint (`top`'s MEM), not RSS — RSS hides
 compressed memory, which is exactly where a VM's guest memory ends up. If the
 top footprint is a VM (OrbStack Helper, Docker), go to
 [`doctor-macos.md`](./doctor-macos.md) §2.
+
+**Per-process `top` hides fan-out.** An iOS Simulator spreads 10+ GB over 200+
+small processes; none ranks in `top`, but `mem` shows it as one row. On macOS `mem`
+groups by the outermost `.app` bundle (Edge and CapCut helpers count toward their
+app) and puts everything under `CoreSimulator` in one `iOS Simulator` row;
+`xcrun simctl shutdown <udid>` returns it, so check first that no agent is using it.
+`watch` stores these per-app totals and the pressure level every sample, so `at`
+and `report --mem` answer "who ate memory at 7:13" after the fact.
 
 On Linux, when asked "what's using memory", answer **by app, not by PID**, with a TOTAL row: `mem` collapses claude sessions, pytest workers, jekyll previews and `dolt sql-server`s into one row each and names bare interpreters by their script (`python3:serve.py`).
 
