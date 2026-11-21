@@ -61,10 +61,11 @@ from md_probe import (
     detect_spike,
     etime_s,
     idle_pct_between,
-    alert_due,
+    AlertState,
+    alert_sent,
+    alert_step,
     app_name,
     app_totals,
-    ease_told,
     hazards,
     interval_cpu_pct,
     mac_app_name,
@@ -611,10 +612,23 @@ def _build_app():
             "or low disk: at once when new or worse, every 30 min while it lasts, "
             "and on recovery.",
         ),
+        hold: str = typer.Option(
+            "3m",
+            "--hold",
+            help="Heat and critical memory alert only after lasting this long (clear "
+            "gaps under 60s don't restart it), and 'recovered' only after all clear "
+            "this long. Low disk alerts at once. "
+            "<int><s|m|h|d>; 0s disables.",
+        ),
         db: str = typer.Option(DEFAULT_DB, "--db"),
         state_dir: str = typer.Option(DEFAULT_STATE, "--state-dir"),
     ) -> None:
         """Sample into the store; print only on state transitions."""
+        try:
+            hold_s = parse_duration(hold)
+        except ValueError as e:
+            print(e, file=sys.stderr)
+            raise typer.Exit(2)
         conn = store.connect(db)
         sdir = Path(state_dir)
         store.prune(conn, int(time.time()))
@@ -635,8 +649,7 @@ def _build_app():
 
         in_spike = False
         last_dump_ts = 0
-        told: dict[str, int] = {}  # hazard kind -> level last sent successfully
-        last_alert_ts = 0
+        astate = AlertState()
         host = os.uname().nodename.split(".")[0]
         last_ts = int(time.time())
         last_mono = time.monotonic()
@@ -746,15 +759,14 @@ def _build_app():
                         f"[{time.strftime('%H:%M:%S')}] recovered: idle={idle_s} load1={load1}",
                         flush=True,
                     )
-                cur = hazards(cfg, thermal=thermal, mem=mem, disk_free_gb=disk_free)
-                told = ease_told(told, cur)
-                if alert_cmd and alert_due(
-                    cur,
-                    told,
+                astate, action, cur = alert_step(
+                    astate,
+                    hazards(cfg, thermal=thermal, mem=mem, disk_free_gb=disk_free),
                     now=ts,
-                    last_sent=last_alert_ts,
+                    hold_s=hold_s,
                     throttle_s=ALERT_THROTTLE_S,
-                ):
+                )
+                if alert_cmd and action == "alert":
                     hot = ", ".join(
                         [
                             f"{p.comm} {p.cpu_pct:.0f}%"
@@ -774,9 +786,8 @@ def _build_app():
                             else ""
                         ),
                     ):
-                        told = {k: h.level for k, h in cur.items()}
-                        last_alert_ts = ts
-                elif alert_cmd and told and not cur:
+                        astate = alert_sent(astate, action, cur, ts)
+                elif alert_cmd and action == "recover":
                     if send_alert(
                         alert_cmd,
                         f"✓ {host}: recovered, thermal={thermal_name(thermal)} "
@@ -784,7 +795,7 @@ def _build_app():
                         + ("?" if disk_free is None else f"{disk_free:.0f}GB")
                         + ".",
                     ):
-                        told = {}
+                        astate = alert_sent(astate, action, cur, ts)
                 in_spike = spiking
                 cpu_prev, pswp_prev = cpu_cur, pswp_cur
                 last_ts, last_mono = ts, t0
