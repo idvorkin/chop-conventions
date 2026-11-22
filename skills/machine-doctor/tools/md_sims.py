@@ -51,10 +51,13 @@ def dir_kb(path: Path) -> int:
     if path.is_symlink() or not path.is_dir():
         return 0
     total = 0
-    for dirpath, _dirs, files in os.walk(path):
-        for f in files:
+    for dirpath, dirs, files in os.walk(path):
+        # du counts each directory's own blocks (4 KB apiece on ext4) and
+        # a symlinked dir's link inode, which os.walk lists under dirs.
+        links = [d for d in dirs if os.path.islink(os.path.join(dirpath, d))]
+        for name in (".", *files, *links):
             try:
-                total += os.lstat(os.path.join(dirpath, f)).st_blocks * 512
+                total += os.lstat(os.path.join(dirpath, name)).st_blocks * 512
             except OSError:
                 continue
     return total // 1024
