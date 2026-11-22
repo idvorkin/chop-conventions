@@ -150,14 +150,20 @@ def _build_app():  # pragma: no cover
             None, "--input-file", help="JSON file: array of absolute file paths."
         ),
         max_workers: int = typer.Option(
-            DEFAULT_MAX_WORKERS, "--max-workers", min=1,
+            DEFAULT_MAX_WORKERS,
+            "--max-workers",
+            min=1,
             help="Max parallel file reads.",
         ),
         max_bytes: int = typer.Option(
-            DEFAULT_MAX_BYTES, "--max-bytes", min=1,
+            DEFAULT_MAX_BYTES,
+            "--max-bytes",
+            min=1,
             help="Skip (don't load) files larger than this. Default 1 MB.",
         ),
-        pretty: bool = typer.Option(False, "--pretty", help="Pretty-print JSON output."),
+        pretty: bool = typer.Option(
+            False, "--pretty", help="Pretty-print JSON output."
+        ),
     ) -> None:
         if ctx.invoked_subcommand is not None:
             return

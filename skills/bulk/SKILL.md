@@ -80,13 +80,15 @@ never partial-fails.
 Input: `owner/repo#N` specs. Output per PR:
 
 ```json
-{"repo": "idvorkin/chop-conventions",
- "number": 169,
- "title": "feat(packaging): migrate ...",
- "state": "OPEN",
- "mergeable": "MERGEABLE",
- "mergeStateStatus": "CLEAN",
- "url": "https://github.com/idvorkin/chop-conventions/pull/169"}
+{
+  "repo": "idvorkin/chop-conventions",
+  "number": 169,
+  "title": "feat(packaging): migrate ...",
+  "state": "OPEN",
+  "mergeable": "MERGEABLE",
+  "mergeStateStatus": "CLEAN",
+  "url": "https://github.com/idvorkin/chop-conventions/pull/169"
+}
 ```
 
 ### `bulk-gh-prs-open`
@@ -94,10 +96,16 @@ Input: `owner/repo#N` specs. Output per PR:
 Input: `owner/repo` slugs. Output per repo:
 
 ```json
-{"repo": "idvorkin/chop-conventions",
- "open_prs": [
-   {"number": 169, "title": "feat(packaging)...", "headRefName": "feat/uv-tool-packaging"}
- ]}
+{
+  "repo": "idvorkin/chop-conventions",
+  "open_prs": [
+    {
+      "number": 169,
+      "title": "feat(packaging)...",
+      "headRefName": "feat/uv-tool-packaging"
+    }
+  ]
+}
 ```
 
 ### `bulk-bd-show`
@@ -105,14 +113,16 @@ Input: `owner/repo` slugs. Output per repo:
 Input: bead IDs. Output per bead:
 
 ```json
-{"id": "igor2-bgt",
- "title": "Telegram Infrastructure",
- "status": "open",
- "priority": 1,
- "type": "epic",
- "parent": null,
- "blocks": [],
- "blocked_by": []}
+{
+  "id": "igor2-bgt",
+  "title": "Telegram Infrastructure",
+  "status": "open",
+  "priority": 1,
+  "type": "epic",
+  "parent": null,
+  "blocks": [],
+  "blocked_by": []
+}
 ```
 
 Handles the `bd show --json` array-vs-object gotcha internally —
@@ -153,7 +163,7 @@ accidental big-file globs.
   justified at N=5 (the "wait for N=2" rule from CLAUDE.md).
 - **Subprocess injection for tests.** Each worker fn takes a `run=None`
   kwarg and resolves it in the body (`if run is None: run =
-  subprocess.run`). Tests either pass a fake `run` or patch
+subprocess.run`). Tests either pass a fake `run` or patch
   `chop_bulk.<module>.subprocess.run`; both work because the lookup
   happens at call time. Never write `run=subprocess.run` as the default:
   it binds at def-time and silently ignores the patch.
