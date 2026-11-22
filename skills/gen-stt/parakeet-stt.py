@@ -39,6 +39,7 @@ AUDIO_EXTS = {".wav", ".ogg", ".oga", ".mp3", ".m4a", ".flac", ".aac", ".opus"}
 
 DEFAULT_MODEL = "nemo-parakeet-tdt-0.6b-v2"
 
+
 def build_nice_prefix(which=None) -> list[str]:
     """Return the nice/thread-cap prefix, with ionice only where it exists.
 
@@ -148,9 +149,13 @@ def _probe_duration_s(path: Path) -> float | None:
         # also avoids the env-var cost for a sub-second call.
         res = subprocess.run(
             [
-                "ffprobe", "-v", "error",
-                "-show_entries", "format=duration",
-                "-of", "default=noprint_wrappers=1:nokey=1",
+                "ffprobe",
+                "-v",
+                "error",
+                "-show_entries",
+                "format=duration",
+                "-of",
+                "default=noprint_wrappers=1:nokey=1",
                 str(path),
             ],
             capture_output=True,
@@ -169,12 +174,24 @@ def _transcode_to_16k_mono(input_path: Path, wav_path: Path) -> None:
     Raises RuntimeError with ffmpeg stderr on failure.
     """
     wav_path.parent.mkdir(parents=True, exist_ok=True)
-    res = _niced_run([
-        "ffmpeg", "-y", "-hide_banner", "-loglevel", "error",
-        "-i", str(input_path),
-        "-ar", "16000", "-ac", "1", "-acodec", "pcm_s16le",
-        str(wav_path),
-    ])
+    res = _niced_run(
+        [
+            "ffmpeg",
+            "-y",
+            "-hide_banner",
+            "-loglevel",
+            "error",
+            "-i",
+            str(input_path),
+            "-ar",
+            "16000",
+            "-ac",
+            "1",
+            "-acodec",
+            "pcm_s16le",
+            str(wav_path),
+        ]
+    )
     if res.returncode != 0:
         raise RuntimeError(
             f"ffmpeg transcode failed (rc={res.returncode}):\n{res.stderr.strip()}"
@@ -188,12 +205,18 @@ def _run_onnx_asr(wav_path: Path, model: str) -> tuple[str, str]:
     or empty transcript, including the captured stderr tail so failure
     modes (missing model, runtime errors) are visible.
     """
-    res = _niced_run([
-        "uvx",
-        "--with", "onnxruntime",
-        "--with", "huggingface_hub",
-        "onnx-asr", model, str(wav_path),
-    ])
+    res = _niced_run(
+        [
+            "uvx",
+            "--with",
+            "onnxruntime",
+            "--with",
+            "huggingface_hub",
+            "onnx-asr",
+            model,
+            str(wav_path),
+        ]
+    )
     stderr_tail = (res.stderr or "")[-2048:]
 
     if res.returncode != 0:
@@ -243,7 +266,9 @@ def transcribe_one(job: STTJob, work_root: Path) -> STTResult:
 
         duration_s = _probe_duration_s(wav_file)
 
-        print(f"  [{label}] Running Parakeet ASR (model={job.model})...", file=sys.stderr)
+        print(
+            f"  [{label}] Running Parakeet ASR (model={job.model})...", file=sys.stderr
+        )
         transcript, _stderr_tail = _run_onnx_asr(wav_file, job.model)
 
         elapsed_s = round(time.monotonic() - t0, 1)
@@ -304,8 +329,7 @@ def discover_audio_files(dir_path: Path) -> list[Path]:
     if not dir_path.is_dir():
         return []
     return sorted(
-        p for p in dir_path.iterdir()
-        if p.is_file() and p.suffix.lower() in AUDIO_EXTS
+        p for p in dir_path.iterdir() if p.is_file() and p.suffix.lower() in AUDIO_EXTS
     )
 
 
@@ -396,9 +420,7 @@ def _run_batch(
         batch_t0 = time.monotonic()
         workers = min(max_workers, len(jobs))
         with ThreadPoolExecutor(max_workers=workers) as pool:
-            futures = {
-                pool.submit(transcribe_one, j, work_root): j for j in jobs
-            }
+            futures = {pool.submit(transcribe_one, j, work_root): j for j in jobs}
             for future in as_completed(futures):
                 result = future.result()
                 if result.success:

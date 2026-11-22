@@ -41,8 +41,8 @@ Parse the user's input for:
   `nemo-parakeet-tdt-0.6b-v2` onnx-asr model.
 - **`--max-workers N`**: Parallel batch workers. Default **1**
   (serial). Aggregate CPU = `max_workers × per-process thread cap (2)`,
-  so `--max-workers=2` already drives 4 threads and often runs *slower
-  per file* than serial on consumer CPUs (measured 2026-04-16: 3 files
+  so `--max-workers=2` already drives 4 threads and often runs _slower
+  per file_ than serial on consumer CPUs (measured 2026-04-16: 3 files
   at `--max-workers=2` took 114s vs ~60s projected serial). Only raise
   on a box with spare cores where wall-clock matters more than per-file
   latency.
@@ -65,7 +65,7 @@ Parse the user's input for:
 - Audio contract: 16 kHz mono PCM\_S16LE WAV — the script detects
   already-conforming WAVs via the stdlib `wave` module and skips the
   transcode; otherwise it invokes `ffmpeg -ar 16000 -ac 1 -acodec
-  pcm_s16le`.
+pcm_s16le`.
 
 ## Mandatory Nice-Wrap
 
@@ -155,7 +155,7 @@ cat /tmp/roundtrip.txt
 
 - **Missing ffmpeg**: Required for any non-16kHz-mono input. The script
   surfaces ffmpeg's stderr on failure. Install via `brew install
-  ffmpeg` or `apt install ffmpeg`.
+ffmpeg` or `apt install ffmpeg`.
 - **Missing uvx**: Required to fetch `onnx-asr`. Install via
   `brew install uv` or `pip install uv`.
 - **First-run download delay**: The initial Parakeet model pull from
@@ -181,4 +181,4 @@ cat /tmp/roundtrip.txt
   assets dir.
 - Parakeet is English-only. For multilingual audio, prefer Whisper
   (available via the same `onnx-asr` binary — swap `--model
-  whisper-base`).
+whisper-base`).
