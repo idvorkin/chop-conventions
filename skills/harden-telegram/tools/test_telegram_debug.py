@@ -14,10 +14,13 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
 
+import telegram_debug  # noqa: E402
+
 from telegram_debug import (  # noqa: E402
     REACTION_WHITELIST,
     DoctorReport,
     _default_chat_id,
+    _doctor_check_alert_chat,
     _doctor_check_channel_gate,
     _doctor_check_delivery,
     _doctor_check_session_subscription,
@@ -33,7 +36,9 @@ from telegram_debug import (  # noqa: E402
     parse_bridge_pid,
     parse_env_token,
     parse_iso_ts,
+    parse_lsof_cwd,
     parse_proc_stat,
+    parse_ps_stat,
     parse_sent_message_id,
     session_subscribed_to_telegram,
     show_undelivered,
@@ -526,7 +531,7 @@ class TestBuildReactRequest(unittest.TestCase):
 
 class TestReactionWhitelist(unittest.TestCase):
     def test_contains_common_reactions(self):
-        for emoji in ("👍", "🎉", "👀", "🫡", "🔥", "❤"):
+        for emoji in ("👍", "🎉", "👀", "🫡", "🔥", "❤", "😁"):
             self.assertIn(emoji, REACTION_WHITELIST)
 
     def test_contains_larry_bead_consumer_reactions(self):
@@ -1306,6 +1311,249 @@ class TestDoctorCheckChannelGate(unittest.TestCase):
             any("cannot confirm the gate is deployed" in line for line in report.lines),
             report.lines,
         )
+
+
+def _warn_count(report: DoctorReport) -> int:
+    return sum(
+        1 for line in report.lines if line.startswith(f"  {telegram_debug.WARN} ")
+    )
+
+
+class TestDoctorCheckAlertChat(unittest.TestCase):
+    """direct-send's only default destination is TELEGRAM_ALERT_CHAT_ID —
+    the doctor must say so before the Recovery Protocol needs it."""
+
+    def _run(self, *, env_chat, allow_from):
+        from unittest.mock import patch
+
+        with tempfile.TemporaryDirectory() as d:
+            (Path(d) / "access.json").write_text(
+                json.dumps({"dmPolicy": "allowlist", "allowFrom": allow_from})
+            )
+            env = {"TELEGRAM_STATE_DIR": d}
+            if env_chat is not None:
+                env["TELEGRAM_ALERT_CHAT_ID"] = env_chat
+            with patch.dict(os.environ, env):
+                if env_chat is None:
+                    os.environ.pop("TELEGRAM_ALERT_CHAT_ID", None)
+                report = DoctorReport()
+                _doctor_check_alert_chat(report)
+        return report
+
+    def test_unset_warns_and_names_the_variable(self):
+        report = self._run(env_chat=None, allow_from=["42"])
+        self.assertEqual(report.failures, 0)
+        self.assertEqual(_warn_count(report), 1)
+        self.assertTrue(
+            any("TELEGRAM_ALERT_CHAT_ID unset" in line for line in report.lines),
+            report.lines,
+        )
+
+    def test_set_but_not_allowlisted_is_red(self):
+        report = self._run(env_chat="42", allow_from=["7"])
+        self.assertEqual(report.failures, 1)
+
+    def test_authorized_is_green(self):
+        report = self._run(env_chat="42", allow_from=["42"])
+        self.assertEqual(report.failures, 0)
+        self.assertEqual(_warn_count(report), 0)
+
+
+class TestParsePsStat(unittest.TestCase):
+    def test_macos_full_path_comm_reduced_to_basename(self):
+        self.assertEqual(parse_ps_stat("16123 /opt/homebrew/bin/zsh\n"), ("zsh", 16123))
+
+    def test_bare_comm(self):
+        self.assertEqual(parse_ps_stat("    1 claude\n"), ("claude", 1))
+
+    def test_comm_path_with_spaces(self):
+        self.assertEqual(
+            parse_ps_stat(
+                "39890 /Applications/Claude.app/Contents/MacOS/Claude Helper"
+            ),
+            ("Claude Helper", 39890),
+        )
+
+    def test_malformed(self):
+        self.assertIsNone(parse_ps_stat(""))
+        self.assertIsNone(parse_ps_stat("123"))
+        self.assertIsNone(parse_ps_stat("abc claude"))
+
+
+class TestParseLsofCwd(unittest.TestCase):
+    def test_field_output(self):
+        self.assertEqual(
+            parse_lsof_cwd("p36143\nfcwd\nn/Users/x/plugins/telegram/0.0.5\n"),
+            "/Users/x/plugins/telegram/0.0.5",
+        )
+
+    def test_no_name_field(self):
+        self.assertIsNone(parse_lsof_cwd("p36143\nfcwd\n"))
+        self.assertIsNone(parse_lsof_cwd(""))
+
+
+class _FakeCompleted:
+    def __init__(self, stdout="", returncode=0):
+        self.stdout = stdout
+        self.returncode = returncode
+
+
+class TestNoProcfsFallback(unittest.TestCase):
+    """macOS path: no /proc, so comm/ppid/argv come from `ps` and cwd from
+    `lsof`. subprocess.run is always mocked — these never touch the real
+    process table and nothing here can signal a process."""
+
+    def setUp(self):
+        from unittest.mock import patch
+
+        self.calls: list[list[str]] = []
+        self.responses: dict[tuple[str, str], _FakeCompleted] = {}
+
+        def fake_run(argv, **kwargs):
+            self.calls.append(list(argv))
+            tool = os.path.basename(argv[0])
+            if tool == "ps":
+                key = ("ps:" + argv[argv.index("-o") + 1], argv[-1])
+            elif tool == "lsof":
+                key = ("lsof", argv[argv.index("-p") + 1])
+            elif tool == "pgrep":
+                key = ("pgrep", "")
+            else:
+                raise AssertionError(f"unexpected subprocess: {argv}")
+            return self.responses.get(key, _FakeCompleted(returncode=1))
+
+        for target, value in (
+            ("telegram_debug._have_procfs", lambda: False),
+            ("telegram_debug._tool_path", lambda name: f"/fake/{name}"),
+            ("telegram_debug.subprocess.run", fake_run),
+        ):
+            p = patch(target, value)
+            p.start()
+            self.addCleanup(p.stop)
+
+    def _proc(self, pid, ppid, comm, command=None, cwd=None):
+        self.responses[("ps:ppid=,comm=", str(pid))] = _FakeCompleted(
+            f"{ppid} {comm}\n"
+        )
+        if command is not None:
+            self.responses[("ps:command=", str(pid))] = _FakeCompleted(command + "\n")
+        if cwd is not None:
+            self.responses[("lsof", str(pid))] = _FakeCompleted(
+                f"p{pid}\nfcwd\nn{cwd}\n"
+            )
+
+    def test_supported_when_ps_and_lsof_exist(self):
+        self.assertIsNone(telegram_debug.process_introspection_error())
+
+    def test_owning_claude_walk_uses_ps(self):
+        self._proc(500, 400, "/usr/local/bin/bun")
+        self._proc(400, 300, "/bin/zsh")
+        self._proc(300, 1, "claude")
+        self.assertEqual(
+            _find_owning_claude(500, stat_reader=telegram_debug._read_proc_stat), 300
+        )
+
+    def test_dead_pid_reads_as_none(self):
+        self.assertIsNone(telegram_debug._read_proc_stat(999))
+        self.assertIsNone(telegram_debug._read_proc_cmdline(999))
+        self.assertIsNone(telegram_debug._proc_cwd("999"))
+
+    def test_cmdline_from_ps_finds_channels_flag(self):
+        self._proc(
+            300,
+            1,
+            "claude",
+            command="claude --channels plugin:telegram@claude-plugins-official",
+        )
+        argv = telegram_debug._read_proc_cmdline(300)
+        self.assertTrue(session_subscribed_to_telegram(argv))
+
+    def test_bridge_discovery_filters_by_lsof_cwd(self):
+        self.responses[("pgrep", "")] = _FakeCompleted("500\n501\n")
+        self._proc(
+            500,
+            300,
+            "bun",
+            cwd="/h/.claude/plugins/cache/claude-plugins-official/telegram/0.0.5",
+        )
+        self._proc(501, 300, "bun", cwd="/h/gits/unrelated-project")
+        self.assertEqual(telegram_debug._find_telegram_bridge_pids(), [500])
+
+    def test_only_read_only_tools_are_invoked(self):
+        self.responses[("pgrep", "")] = _FakeCompleted("500\n")
+        self._proc(500, 300, "bun", cwd="/x")
+        telegram_debug._find_telegram_bridge_pids()
+        telegram_debug._read_proc_stat(500)
+        self.assertTrue(self.calls)
+        for argv in self.calls:
+            self.assertIn(os.path.basename(argv[0]), {"ps", "lsof", "pgrep"})
+
+
+class TestUnsupportedOsIsLoud(unittest.TestCase):
+    """No /proc and no ps/lsof: the doctor must warn, not print quiet notes."""
+
+    def setUp(self):
+        from unittest.mock import patch
+
+        def no_subprocess(*a, **kw):
+            raise AssertionError("no subprocess expected on an unsupported host")
+
+        for target, value in (
+            ("telegram_debug._have_procfs", lambda: False),
+            ("telegram_debug._tool_path", lambda name: None),
+            ("telegram_debug.subprocess.run", no_subprocess),
+        ):
+            p = patch(target, value)
+            p.start()
+            self.addCleanup(p.stop)
+
+    def test_server_ts_section_warns(self):
+        report = DoctorReport()
+        telegram_debug._doctor_check_server_ts(report)
+        self.assertEqual(report.failures, 0)
+        self.assertEqual(_warn_count(report), 1)
+        self.assertTrue(
+            any(
+                "bridge checks unsupported on this OS" in line for line in report.lines
+            ),
+            report.lines,
+        )
+
+    def test_bridge_discovery_returns_the_reason(self):
+        result = telegram_debug._find_telegram_bridge_pids()
+        self.assertIsInstance(result, str)
+        self.assertIn("unsupported on this OS", result)
+
+    def test_session_section_warns(self):
+        report = DoctorReport()
+        _doctor_check_session_subscription(report)
+        self.assertEqual(_warn_count(report), 1)
+        self.assertTrue(
+            any("unsupported on this OS" in line for line in report.lines),
+            report.lines,
+        )
+
+
+class TestSkillDocMatchesCode(unittest.TestCase):
+    """SKILL.md claims that have drifted from the code before."""
+
+    SKILL = (Path(__file__).parent.parent / "SKILL.md").read_text()
+
+    def test_no_bare_source_dir_expansion_in_shell_snippets(self):
+        # The server/ default lives in Python (_source_dir); an unset
+        # $TELEGRAM_SOURCE_DIR in shell expands to "" and yields "/server.ts".
+        import re
+
+        blocks = re.findall(r"```bash\n(.*?)```", self.SKILL, flags=re.S)
+        self.assertTrue(blocks)
+        for block in blocks:
+            self.assertNotIn('"$TELEGRAM_SOURCE_DIR/', block)
+
+    def test_documents_the_direct_send_default(self):
+        self.assertIn("TELEGRAM_ALERT_CHAT_ID", self.SKILL)
+
+    def test_no_broadcast_kill_recipe_for_the_bot(self):
+        self.assertNotIn("**Fix:** `pkill", self.SKILL)
 
 
 if __name__ == "__main__":

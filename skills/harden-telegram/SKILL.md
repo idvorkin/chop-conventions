@@ -1,7 +1,7 @@
 ---
 name: harden-telegram
 description: Diagnose and recover the two-process Telegram MCP chain — run the doctor, hot-redeploy server.ts, reload plugins without bouncing MCP, restart telegram_bot.py, and walk through known failure modes. Use when Telegram stops working mid-session, messages aren't arriving, or the bot is silent.
-allowed-tools: Bash, Read, Glob, Grep
+allowed-tools: Bash, Read, Glob, Grep, CronCreate, CronDelete
 ---
 
 # Harden Telegram
@@ -35,10 +35,11 @@ The Python tooling this skill drives ships with the skill itself under `tools/`.
 | Runtime state dir              | `$LARRY_TELEGRAM_DIR` (default `~/larry-telegram/`)                  |
 | Canonical source dir override  | `$TELEGRAM_SOURCE_DIR` (optional — defaults to the `server/` subdir) |
 
-Two env vars parameterize the tool:
+These env vars parameterize the tool:
 
 - **`LARRY_TELEGRAM_DIR`** — runtime state directory (`bot.pid`, `bot.sock`, `inbound.db`, `server.log`, `attachments/`). Defaults to `~/larry-telegram/` if unset. The telegram_bot.py production process reads the same variable.
 - **`TELEGRAM_SOURCE_DIR`** — directory containing the canonical `server.ts` + `telegram_bot.py` source you deploy from. **Defaults to the sibling `server/` subdirectory of this skill when unset.** Override if you're deploying from a different checkout (e.g. an in-flight feature branch elsewhere). The drift check always runs against whichever directory resolves.
+- **`TELEGRAM_ALERT_CHAT_ID`** — the only default destination for `direct-send`. Must be a positive (private-chat) id that is listed in `allowFrom` in `~/.claude/channels/telegram/access.json`, with `dmPolicy` not `disabled`. Export it in the environment that launches Claude and the watchdog (e.g. `export TELEGRAM_ALERT_CHAT_ID=<your id>` in the shell profile). Unset, a bare `direct-send "..."` exits 1 with `no chat_id`; the doctor's `CONFIG` section warns when it is unset and fails when it is set but not authorized.
 - **`TELEGRAM_BRIDGE_FORCE`** — set to `1` to bypass the channel gate (see below) and start the bridge in a session that never asked for the channel. For manual runs, tests, and non-Claude MCP hosts only. Never set it in a shell that launches Claude sessions.
 
 ### Source layout
@@ -61,7 +62,7 @@ skills/harden-telegram/
     └── tests/            # pytest + bun test suites
 ```
 
-**`server/` is the canonical source going forward.** When Tier 2a (Deploy) says `cp "$TELEGRAM_SOURCE_DIR/server.ts" <plugin-path>`, `$TELEGRAM_SOURCE_DIR` now resolves to `skills/harden-telegram/server/` by default — no env var required for the common case. Pre-existing callers that set `TELEGRAM_SOURCE_DIR` (e.g. cron scripts) continue to work unchanged; the override still wins when set.
+**`server/` is the canonical source going forward.** `telegram_debug.py` resolves an unset `TELEGRAM_SOURCE_DIR` to this skill's `server/` directory, so the doctor needs no env var. **That default exists only in Python** — a shell does not know it, and a bare `"$TELEGRAM_SOURCE_DIR/server.ts"` with the variable unset expands to `/server.ts`. Every shell snippet below therefore sets `SRC="${TELEGRAM_SOURCE_DIR:-$HOME/.claude/skills/harden-telegram/server}"` first; `telegram_debug.py paths` prints the directory the tool itself resolved (`Source tree` group) if you want to confirm. Callers that set `TELEGRAM_SOURCE_DIR` (e.g. cron scripts) continue to work unchanged; the override wins when set.
 
 This skill only helps on machines running the Telegram MCP plugin with the two-process architecture. If you don't have a `telegram_bot.py` process alongside the MCP `server.ts`, the doctor will report the whole chain as missing.
 
@@ -88,7 +89,9 @@ The doctor's `DELIVERY` section detects this:
 - ✅ `single bridge polling inbound.db` / `last N delivered rows: X this session, Y unattributed, Z foreign >1h old` — healthy.
 - · Pre-migration DBs (no `delivered_to` column) skip attribution with a note — never a crash. Old rows stay NULL; restarting `telegram_bot.py` applies the idempotent `ALTER TABLE`.
 
-Attribution mechanics: `server.ts` stamps `inbound.delivered_to` with its bridge identity (`BRIDGE_ID`) whenever it marks a row delivered — `CLAUDE_CODE_SESSION_ID` when the plugin env provides it (verified present on plugin-spawned bridges), else `hostname:pid:starttime`. `telegram_bot.py` owns the schema and adds the column on startup. The doctor matches stamps against this session's bridges by session id (read from `/proc/<pid>/environ`) with a pid fallback.
+Attribution mechanics: `server.ts` stamps `inbound.delivered_to` with its bridge identity (`BRIDGE_ID`) whenever it marks a row delivered — `CLAUDE_CODE_SESSION_ID` when the plugin env provides it (verified present on plugin-spawned bridges), else `hostname:pid:starttime`. `telegram_bot.py` owns the schema and adds the column on startup. The doctor matches stamps against this session's bridges by session id (read from `/proc/<pid>/environ`; on macOS, where there is no `/proc`, from the doctor's own `CLAUDE_CODE_SESSION_ID`) with a pid fallback.
+
+**No `/proc` (macOS).** Bridge discovery, ownership and the `SESSION` check fall back to read-only `ps` (comm, ppid, argv) and `lsof` (cwd). If neither `/proc` nor those tools exist, `SERVER.TS` and `SESSION` print ⚠️ `bridge checks unsupported on this OS` rather than staying quiet — treat those sections as unchecked, not healthy.
 
 ### CHANNEL GATE check
 
@@ -117,7 +120,7 @@ When the doctor is red, the MCP `reply` tool may be unavailable — you can't us
 
 ```bash
 ~/.claude/skills/harden-telegram/tools/telegram_debug.py direct-send "your message here"
-# Override the default chat_id:
+# No TELEGRAM_ALERT_CHAT_ID exported? Name the target explicitly:
 ~/.claude/skills/harden-telegram/tools/telegram_debug.py direct-send "..." --chat-id 12345
 ```
 
@@ -125,7 +128,7 @@ How it works:
 
 - Reads `TELEGRAM_BOT_TOKEN` from `~/.claude/channels/telegram/.env` (the same file the doctor checks).
 - POSTs straight to `https://api.telegram.org/bot<TOKEN>/sendMessage` via stdlib `urllib` — no MCP, no `server.ts`, no `bot.sock`, no inbound.db. The only moving parts are the token file and Telegram's HTTPS endpoint.
-- Chat id defaults to the most recent `inbound.chat_id` in `inbound.db`. Override with `--chat-id` if you need a specific target.
+- Chat id defaults to `$TELEGRAM_ALERT_CHAT_ID`, and only when that id is a positive (private-chat) id currently in `access.json` `allowFrom` and `dmPolicy` is not `disabled` — it is re-checked against the live policy on every send. There is **no** fallback to the latest inbound chat: with the variable unset or unauthorized the command exits 1 with `no chat_id`. Pass `--chat-id` to name a target explicitly. `telegram_debug.py doctor` reports whether the default is usable (`CONFIG` section) — fix a warning there before you need the escape hatch.
 - Every outgoing message is auto-prefixed with `[direct-send] ` so Igor can tell on his phone that MCP was down when it landed. **Do not remove the tag** — the visual signal is the whole point.
 
 Use it when:
@@ -146,6 +149,8 @@ When an interactive Claude session detects the Telegram MCP has died — `mcp__p
    ~/.claude/skills/harden-telegram/tools/telegram_debug.py \
      direct-send "⚠️ Larry: Telegram MCP down. Starting recovery."
    ```
+
+   If it exits 1 with `no chat_id`, `TELEGRAM_ALERT_CHAT_ID` is not exported in this shell — rerun with `--chat-id <id from access.json allowFrom>` and fix the env var afterwards (see Tool locations).
 
 2. **Diagnose.** Run `telegram_debug.py doctor`. Identify the specific failure mode.
 
@@ -181,16 +186,19 @@ bun resolves imports relative to the real file path. Symlinking `server.ts` into
 # v2 shape; v2 nests everything under "plugins"):
 python3 -c "import json,pathlib;d=json.load(open(pathlib.Path.home()/'.claude/plugins/installed_plugins.json'));p=d.get('plugins',d);print(p['telegram@claude-plugins-official'][0]['installPath'])"
 
-# Deploy (TELEGRAM_SOURCE_DIR points at your canonical source tree):
-cp "$TELEGRAM_SOURCE_DIR/server.ts" <that-path>/server.ts
-cmp -s "$TELEGRAM_SOURCE_DIR/server.ts" <that-path>/server.ts && echo deployed
+# Deploy. The server/ default lives in telegram_debug.py, not in the shell,
+# so resolve it here (override with TELEGRAM_SOURCE_DIR for another checkout):
+SRC="${TELEGRAM_SOURCE_DIR:-$HOME/.claude/skills/harden-telegram/server}"
+test -f "$SRC/server.ts" || echo "no server.ts in $SRC — set TELEGRAM_SOURCE_DIR"
+cp "$SRC/server.ts" <that-path>/server.ts
+cmp -s "$SRC/server.ts" <that-path>/server.ts && echo deployed
 ```
 
 Always back up first: `cp server.ts server.ts.backup-$(date +%Y%m%d-%H%M%S)`.
 
 **A deploy takes effect for NEW sessions only** — the running bun process keeps serving the old code (Tier 2b). That is the point for the channel gate: the live bridge is untouched, and every session started afterwards is gated.
 
-Doctor catches source/plugin drift automatically via sha256 compare when `TELEGRAM_SOURCE_DIR` is set.
+Doctor catches source/plugin drift automatically via sha256 compare against the resolved source dir (`TELEGRAM_SOURCE_DIR`, else this skill's `server/`).
 
 ### 2b. `/reload-plugins` doesn't pick up new server.ts code
 
@@ -237,7 +245,9 @@ Flags:
 ### 2d. telegram_bot.py died or never started
 
 ```bash
-nohup "$TELEGRAM_SOURCE_DIR/telegram_bot.py" \
+SRC="${TELEGRAM_SOURCE_DIR:-$HOME/.claude/skills/harden-telegram/server}"
+test -x "$SRC/telegram_bot.py" || echo "no telegram_bot.py in $SRC — set TELEGRAM_SOURCE_DIR"
+nohup "$SRC/telegram_bot.py" \
   --base-dir "${LARRY_TELEGRAM_DIR:-$HOME/larry-telegram}" \
   >>"${LARRY_TELEGRAM_DIR:-$HOME/larry-telegram}/startup.log" 2>&1 &
 disown
@@ -259,7 +269,7 @@ Run the doctor first. If it's clean but Telegram is still misbehaving, walk this
 
 **Symptom:** `outer reaction failed: 400 Bad Request: REACTION_INVALID` in `server.log`, or a raw API call with `{"type":"emoji","emoji":"X"}` is rejected.
 **Cause:** Telegram's free-tier bot reaction whitelist is fixed. `✅` is NOT on it. `🦝` is NOT on it. `👀 🫡 👍 👎 🔥 🎉 🤝 ❤️ 😁 🤔 🤩 🙏 👌 🏆 💯 ⚡` ARE.
-**Fix:** Pick from the whitelist. Full list: https://core.telegram.org/bots/api#reactiontypeemoji
+**Fix:** Pick from the whitelist. Full list: https://core.telegram.org/bots/api#reactiontypeemoji — `telegram_debug.py react` rejects anything outside its `REACTION_WHITELIST` copy of that list before calling the API.
 
 ### python-telegram-bot post_init skipped in manual lifecycle
 
@@ -282,8 +292,21 @@ Run the doctor first. If it's clean but Telegram is still misbehaving, walk this
 ### Zombie telegram_bot.py steals updates (409 Conflict)
 
 **Symptom:** `409 Conflict` in log, messages don't arrive.
-**Cause:** Two instances polling the same bot token. `flock` should prevent this in steady state, but a crashed singleton can leave a dangling PID file.
-**Fix:** `pkill -f telegram_bot.py`, verify only one comes back, check doctor. The 409 retry loop in `telegram_bot.py` uses exponential backoff — Telegram drops the stale poller on its own once a fresh `getUpdates` arrives.
+**Cause:** Two pollers on the same bot token. It is NOT a dangling `bot.pid`: the singleton is a kernel `flock` on that file, released the instant the holder dies, so a crashed bot never blocks or duplicates the next one. The `flock` is per base dir, though, so the second poller is one of: a `telegram_bot.py` started with a different `--base-dir` / `LARRY_TELEGRAM_DIR` (its own lock, its own `bot.pid`); an upstream-vanilla `server.ts` that polls `getUpdates` itself (doctor `CHANNEL GATE` → `gate MISSING`, redeploy per Tier 2a); or another machine running the same token.
+**Fix:** a transient 409 clears on its own — the retry loop in `telegram_bot.py` backs off exponentially and Telegram drops the stale poller once a fresh `getUpdates` arrives. If it persists, stop the bot this chain owns by its lock-file pid, then restart it:
+
+```bash
+BASE="${LARRY_TELEGRAM_DIR:-$HOME/larry-telegram}"
+PID="$(cat "$BASE/bot.pid")"
+# Only signal it if that pid really is the bot (guards against pid reuse):
+/bin/ps -ww -o command= -p "$PID" | grep -q 'telegram_bot\.py' && kill -TERM "$PID"
+# List — do not kill — any other poller; inspect each line before acting:
+pgrep -fl 'telegram_bot\.py'
+```
+
+Then restart per Tier 2d (nothing respawns the bot for you) and confirm with `telegram_debug.py doctor`. A leftover line from `pgrep -fl` that is a real second bot (not a pytest run or an editor) gets a `kill -TERM <that pid>` by pid.
+
+**DO NOT** `pkill -f telegram_bot.py` — it is a broadcast kill that also matches pytest runs of the bot's test-suite, editors, and bots belonging to other base dirs, and it leaves nothing running afterwards.
 
 ### Another session answered Igor, or nothing arrived at all
 
@@ -326,7 +349,7 @@ Diagnosis order:
 
 When `cp`-ing an intentional debug build of `server.ts` into `~/.claude/plugins/cache/claude-plugins-official/telegram/<version>/server.ts`, the hourly watchdog's source/plugin hash check flags drift every run. Two options:
 
-1. **Revert cache to pristine source when done debugging** (`cp "$TELEGRAM_SOURCE_DIR/server.ts" <cache-path>`). Clean state, watchdog quiet.
+1. **Revert cache to pristine source when done debugging** (the Tier 2a `cp "$SRC/server.ts" <cache-path>`). Clean state, watchdog quiet.
 2. **Update the watchdog cron prompt to ignore drift during the debug window** — pass explicit "hash drift is expected, do not recover" instructions in the prompt.
 
 Without one of these, the watchdog's default recovery path (redeploy source → cache) will clobber the live debug build mid-diagnostic. Seen during the 2026-04-15 session when the race condition debug required multiple server.ts iterations.

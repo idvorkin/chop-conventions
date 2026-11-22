@@ -112,12 +112,100 @@ def check_bun_processes() -> list[dict]:
     return processes
 
 
-def _proc_cwd(pid: str) -> str | None:
-    """Read /proc/<pid>/cwd symlink to get the process working directory."""
+def _have_procfs() -> bool:
+    """True on hosts with a Linux-style /proc (false on macOS)."""
+    return os.path.isdir("/proc/self")
+
+
+def _tool_path(name: str) -> str | None:
+    """Absolute path of a read-only inspection tool, or None.
+
+    Prefers the system locations over $PATH: interactive shells routinely
+    alias or shadow `ps` (e.g. with `procs`), whose flags differ.
+    """
+    import shutil
+
+    for candidate in (f"/bin/{name}", f"/usr/bin/{name}", f"/usr/sbin/{name}"):
+        if os.access(candidate, os.X_OK):
+            return candidate
+    return shutil.which(name)
+
+
+def _run_inspect(argv: list[str]) -> str | None:
+    """Thin wrapper for the read-only `ps` / `lsof` calls used without /proc.
+
+    Never signals anything. Returns stdout, or None on any failure (tool
+    missing, non-zero exit — `ps -p` exits 1 for a dead pid — or timeout).
+    """
     try:
-        return os.readlink(f"/proc/{pid}/cwd")
-    except (OSError, ValueError):
+        r = subprocess.run(argv, capture_output=True, text=True, timeout=5)
+    except (OSError, subprocess.SubprocessError):
         return None
+    if r.returncode != 0:
+        return None
+    return r.stdout
+
+
+def _ps_fields(pid: int | str, fields: str) -> str | None:
+    """`ps -ww -o <fields> -p <pid>` for one pid, or None if unavailable."""
+    ps = _tool_path("ps")
+    if ps is None:
+        return None
+    try:
+        pid_arg = str(int(pid))
+    except (TypeError, ValueError):
+        return None
+    out = _run_inspect([ps, "-ww", "-o", fields, "-p", pid_arg])
+    if out is None or not out.strip():
+        return None
+    return out
+
+
+def process_introspection_error() -> str | None:
+    """Why bridge/session checks cannot run on this host, or None if they can.
+
+    Linux reads /proc. Hosts without it (macOS) fall back to `ps` for
+    comm/ppid/argv and `lsof` for cwd. With neither, every ownership check
+    would silently see "no bridges" — the doctor must say so instead.
+    """
+    if _have_procfs():
+        return None
+    missing = [t for t in ("ps", "lsof") if _tool_path(t) is None]
+    if missing:
+        return (
+            f"bridge checks unsupported on this OS ({sys.platform}): no /proc and "
+            f"no {'/'.join(missing)} — bridge ownership and session checks are blind"
+        )
+    return None
+
+
+def parse_lsof_cwd(output: str) -> str | None:
+    """Extract the cwd path from `lsof -a -p <pid> -d cwd -Fn` output.
+
+    Field output is one item per line: `p<pid>`, `fcwd`, `n<path>`.
+    """
+    for line in output.splitlines():
+        if line.startswith("n") and len(line) > 1:
+            return line[1:]
+    return None
+
+
+def _proc_cwd(pid: str) -> str | None:
+    """Working directory of a pid: /proc/<pid>/cwd, or `lsof` without /proc."""
+    if _have_procfs():
+        try:
+            return os.readlink(f"/proc/{pid}/cwd")
+        except (OSError, ValueError):
+            return None
+    lsof = _tool_path("lsof")
+    if lsof is None:
+        return None
+    try:
+        pid_arg = str(int(pid))
+    except (TypeError, ValueError):
+        return None
+    out = _run_inspect([lsof, "-a", "-p", pid_arg, "-d", "cwd", "-Fn"])
+    return parse_lsof_cwd(out) if out else None
 
 
 def parse_proc_stat(data: str) -> tuple[str, int] | None:
@@ -143,8 +231,37 @@ def parse_proc_stat(data: str) -> tuple[str, int] | None:
     return (comm, ppid)
 
 
+def parse_ps_stat(output: str) -> tuple[str, int] | None:
+    """Parse `ps -o ppid=,comm=` output for one pid into (comm, ppid).
+
+    macOS prints comm as the full executable path (which may contain
+    spaces), so take everything after the ppid and keep the basename — that
+    matches the short comm /proc/<pid>/stat reports on Linux.
+    """
+    line = output.strip()
+    if not line:
+        return None
+    parts = line.split(None, 1)
+    if len(parts) < 2:
+        return None
+    try:
+        ppid = int(parts[0])
+    except ValueError:
+        return None
+    comm = os.path.basename(parts[1].strip())
+    if not comm:
+        return None
+    return (comm, ppid)
+
+
 def _read_proc_stat(pid: int) -> tuple[str, int] | None:
-    """Return (comm, ppid) for a PID, or None if the process is gone."""
+    """Return (comm, ppid) for a PID, or None if the process is gone.
+
+    /proc/<pid>/stat on Linux; `ps` on hosts without /proc (macOS).
+    """
+    if not _have_procfs():
+        out = _ps_fields(pid, "ppid=,comm=")
+        return parse_ps_stat(out) if out else None
     try:
         data = Path(f"/proc/{pid}/stat").read_text()
     except (OSError, ValueError):
@@ -204,7 +321,14 @@ def _read_proc_cmdline(pid: int) -> list[str] | None:
     """Return argv of a PID from /proc/<pid>/cmdline, or None if unreadable.
 
     The file is null-separated; a trailing null terminates the final arg.
+
+    Without /proc (macOS) the argv comes from `ps -o command=`, split on
+    whitespace. That is lossy for arguments containing spaces, which is fine
+    for the only consumer — finding a `--channels` flag and its value.
     """
+    if not _have_procfs():
+        out = _ps_fields(pid, "command=")
+        return out.split() if out else None
     try:
         data = Path(f"/proc/{pid}/cmdline").read_bytes()
     except (OSError, ValueError):
@@ -974,6 +1098,9 @@ def _find_telegram_bridge_pids() -> list[int] | str:
     the SERVER.TS and DELIVERY doctor checks so both agree on what counts
     as a bridge.
     """
+    unsupported = process_introspection_error()
+    if unsupported:
+        return unsupported
     try:
         r = subprocess.run(
             ["pgrep", "-f", "bun.*server.ts"],
@@ -993,6 +1120,11 @@ def _find_telegram_bridge_pids() -> list[int] | str:
 
 def _doctor_check_server_ts(report: DoctorReport) -> None:
     report.section("SERVER.TS")
+    unsupported = process_introspection_error()
+    if unsupported:
+        # warn, not a silent note: a blind doctor must not read as healthy.
+        report.warn(unsupported)
+        return
     pids_or_err = _find_telegram_bridge_pids()
     if isinstance(pids_or_err, str):
         report.fail(pids_or_err)
@@ -1093,10 +1225,17 @@ def _doctor_check_channel_gate(
                     "--channels telegram session"
                 )
             else:
+                source = _source_server_ts()
+                redeploy = (
+                    f"cp {source} {plugin_path}"
+                    if source
+                    else "cp <canonical server.ts> <that path> (no source dir "
+                    "resolved — set TELEGRAM_SOURCE_DIR)"
+                )
                 report.fail(
                     f"gate MISSING from {plugin_path} — every claude on this box "
                     "spawns a bridge that races for Igor's inbound rows. Redeploy: "
-                    "cp $TELEGRAM_SOURCE_DIR/server.ts <that path>"
+                    f"{redeploy}"
                 )
 
     if os.environ.get("TELEGRAM_BRIDGE_FORCE"):
@@ -1311,6 +1450,10 @@ def _doctor_check_session_subscription(
     Discovery inputs are injected for tests.
     """
     report.section("SESSION")
+    unsupported = process_introspection_error()
+    if unsupported:
+        report.warn(f"{unsupported} — subscription check skipped")
+        return
     our_claude = find_owning_claude(os.getpid())
     if our_claude is None:
         report.note(
@@ -1320,7 +1463,8 @@ def _doctor_check_session_subscription(
     argv = read_cmdline(our_claude)
     if argv is None:
         report.warn(
-            f"could not read /proc/{our_claude}/cmdline — subscription check skipped"
+            f"could not read argv of claude pid={our_claude} — "
+            "subscription check skipped"
         )
         return
     if session_subscribed_to_telegram(argv):
@@ -1412,6 +1556,32 @@ def _doctor_check_token(report: DoctorReport) -> None:
         report.fail(str(e))
     else:
         report.ok("token: present")
+
+
+def _doctor_check_alert_chat(report: DoctorReport) -> None:
+    """Can `direct-send` reach anyone without an explicit --chat-id?
+
+    The Recovery Protocol's mandatory first step is a bare
+    `direct-send "..."`. Its only default destination is an authorized
+    TELEGRAM_ALERT_CHAT_ID (see _default_chat_id) — with it unset the command
+    exits 1 "no chat_id" at exactly the moment the operator needs it.
+    """
+    raw = os.environ.get("TELEGRAM_ALERT_CHAT_ID", "")
+    if not raw:
+        report.warn(
+            "TELEGRAM_ALERT_CHAT_ID unset — `direct-send` without --chat-id will "
+            'fail with "no chat_id". Export it (a private chat id listed in '
+            "access.json allowFrom) in the environment that launches Claude and "
+            "the watchdog, or always pass --chat-id"
+        )
+    elif _default_chat_id() is None:
+        report.fail(
+            "TELEGRAM_ALERT_CHAT_ID is set but rejected — it must be a positive "
+            "(private-chat) id listed in access.json allowFrom with dmPolicy not "
+            "disabled; `direct-send` without --chat-id will fail"
+        )
+    else:
+        report.ok("TELEGRAM_ALERT_CHAT_ID: authorized direct-send default")
 
 
 def _doctor_check_access(report: DoctorReport) -> None:
@@ -1567,6 +1737,7 @@ def run_doctor() -> int:
     report.section("CONFIG")
     _doctor_check_token(report)
     _doctor_check_access(report)
+    _doctor_check_alert_chat(report)
     _doctor_check_hooks(report, base)
     _doctor_check_logs(report, base)
     print(report.render())
@@ -1837,6 +2008,7 @@ REACTION_WHITELIST: frozenset[str] = frozenset(
         "\U0001f970",  # 🥰
         "\U0001f44f",  # 👏
         "\U0001f60a",  # 😊
+        "\U0001f601",  # 😁
         "\U0001f914",  # 🤔
         "\U0001f92f",  # 🤯
         "\U0001f631",  # 😱
