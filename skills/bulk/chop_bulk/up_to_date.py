@@ -54,7 +54,7 @@ def diagnose_repo(
     repo_path: str,
     *,
     run: Any = None,
-    resolve: Any = resolve_diagnose_cmd,
+    resolve: Any = None,
 ) -> dict:
     """Invoke the resolved diagnose CLI with `cwd=<repo>`.
 
@@ -62,11 +62,14 @@ def diagnose_repo(
     any path arg — it introspects the current working directory. We
     pass `cwd=repo_path` so the diagnosis applies to the right repo.
 
-    `run=None` resolves to `subprocess.run` at call time so tests can
-    patch the module global.
+    `run=None` and `resolve=None` resolve to `subprocess.run` and
+    `resolve_diagnose_cmd` at call time so tests can patch the module
+    globals (a default bound at def-time would ignore the patch).
     """
     if run is None:
         run = subprocess.run
+    if resolve is None:
+        resolve = resolve_diagnose_cmd
     p = Path(repo_path).expanduser()
     if not p.is_dir():
         return {"repo": repo_path, "diagnose_json": None, "error": "not a directory"}

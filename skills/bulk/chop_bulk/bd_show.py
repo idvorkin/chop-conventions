@@ -6,7 +6,7 @@ Output: JSON array, one entry per bead:
     {id, title, status, priority, type, parent, blocks, blocked_by, error?}
 
 Under the hood:
-    bd show <id> --json --include-dependents
+    bd show --json --include-dependents -- <id>
 
 **Array-vs-object quirk**: `bd show --json` returns a single-element
 array when the bead is found. Normalize with
@@ -88,7 +88,7 @@ def fetch_bead(
     *,
     run: Any = None,
 ) -> dict:
-    """Fetch one bead via `bd show <id> --json --include-dependents`.
+    """Fetch one bead via `bd show --json --include-dependents -- <id>`.
 
     `--include-dependents` (bd 1.0.5+) adds the `dependents` list that
     `normalize_bead` needs to populate `blocks`; without it that field
@@ -105,7 +105,9 @@ def fetch_bead(
     bid = str(bead_id).strip()
     if not bid:
         return {"id": bead_id, "error": "empty bead id"}
-    cmd = ["bd", "show", bid, "--json", "--include-dependents"]
+    # `--` ends flag parsing, so an id that starts with "-" is looked up
+    # as an id instead of being read as a bd flag.
+    cmd = ["bd", "show", "--json", "--include-dependents", "--", bid]
     try:
         result = run(cmd, capture_output=True, text=True, timeout=30)
     except Exception as exc:  # noqa: BLE001

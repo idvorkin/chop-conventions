@@ -151,10 +151,12 @@ accidental big-file globs.
 - **Shared `common.py`** owns input parsing, the ThreadPoolExecutor
   wiring, and the "never partial-fail" contract. The abstraction is
   justified at N=5 (the "wait for N=2" rule from CLAUDE.md).
-- **Subprocess injection for tests.** Each worker fn takes a
-  `run=subprocess.run` kwarg so tests mock it without patching the
-  module global. Matches the `test_diagnose.py` and
-  `test_telegram_debug.py` style in this repo.
+- **Subprocess injection for tests.** Each worker fn takes a `run=None`
+  kwarg and resolves it in the body (`if run is None: run =
+  subprocess.run`). Tests either pass a fake `run` or patch
+  `chop_bulk.<module>.subprocess.run`; both work because the lookup
+  happens at call time. Never write `run=subprocess.run` as the default:
+  it binds at def-time and silently ignores the patch.
 
 ## Tests
 
@@ -164,8 +166,8 @@ python3 -m unittest discover -s skills/bulk/tests -p 'test_*.py'
 
 Covered: `bulk-gh-pr-details` spec parsing + fetch + fan-out, and
 `bulk-bd-show` normalization of the array-vs-object JSON + dependency
-slicing. Other tools use the same `common.py` plumbing; the two tested
-paths validate the shared contract.
+slicing, `bulk-file-read` size/special-file/bad-input handling, and
+`bulk-up-to-date` call-time resolution of its injected helpers.
 
 ## Related
 
