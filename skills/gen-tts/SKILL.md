@@ -25,7 +25,7 @@ Parse the user's input for:
 - **`--style-preset NAME`**: Load a multi-line style directive from `voices/<NAME>.txt` (e.g. `freud`, `soprano`). Comment lines stripped, body collapsed to one paragraph, prepended as a director's note. Mutually exclusive with `--style-prompt` / `--style-file`.
 - **`--style-file PATH`**: Like `--style-preset` but takes an explicit file path (for styles kept outside the skill dir).
 - **`--output path.wav`**: Where to save the WAV file
-- **`--speed FLOAT`**: Post-process tempo multiplier applied via `ffmpeg atempo` after the Gemini call. `1.0` (default) = no change, `1.8` pairs well with the `freud` preset (the preset is deliberately slow; speeding to 1.8× tightens the phrasing without losing the character). Quality is best in [0.5, 2.0]; values outside that band chain atempo filters automatically. Gemini 3.1 Flash TTS has no server-side speed parameter, so post-processing is the deterministic path. Requires `ffmpeg` on PATH.
+- **`--speed FLOAT`**: Post-process tempo multiplier applied via `ffmpeg atempo` after the Gemini call. `1.0` (default) = no change, `1.8` pairs well with the `freud` preset (the preset is deliberately slow; speeding to 1.8× tightens the phrasing without losing the character). Quality is best in [0.5, 2.0]; values outside that band chain atempo filters automatically. Allowed range is [0.1, 100]; anything else is rejected before the Gemini call, so a bad value costs no API request. Gemini 3.1 Flash TTS has no server-side speed parameter, so post-processing is the deterministic path. Requires `ffmpeg` on PATH.
 - **`batch file.json`**: Parallel batch mode subcommand (see shape below)
 - **`--api-url URL`**: Override the Gemini endpoint (rarely needed; useful for testing against a proxy)
 

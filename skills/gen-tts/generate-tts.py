@@ -22,6 +22,7 @@
 
 import base64
 import json
+import math
 import os
 import struct
 import subprocess
@@ -29,6 +30,7 @@ import sys
 import time
 import urllib.error
 import urllib.request
+import wave
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from pathlib import Path
@@ -86,8 +88,26 @@ def load_env(env_file: str = "~/.env") -> None:
             line = line.strip()
             if not line or line.startswith("#") or "=" not in line:
                 continue
-            key, _, value = line.partition("=")
-            os.environ.setdefault(key.strip(), value.strip())
+            key, value = parse_env_line(line)
+            if key:
+                os.environ.setdefault(key, value)
+
+
+def parse_env_line(line: str) -> tuple[str, str]:
+    """Split one KEY=VALUE line, shell-style.
+
+    Drops a leading "export " and one pair of matching surrounding quotes,
+    so 'export GOOGLE_API_KEY="abc"' yields ("GOOGLE_API_KEY", "abc") rather
+    than a key named "export GOOGLE_API_KEY" and a value with the quotes in it.
+    """
+    key, _, value = line.strip().partition("=")
+    key = key.strip()
+    if key.startswith("export ") or key.startswith("export\t"):
+        key = key[len("export") :].strip()
+    value = value.strip()
+    if len(value) >= 2 and value[0] == value[-1] and value[0] in "\"'":
+        value = value[1:-1]
+    return key, value
 
 
 # ----- Voice + style resolution ------------------------------------------
@@ -411,15 +431,32 @@ def pcm_to_wav(
 # ----- Post-processing ---------------------------------------------------
 
 
+MIN_SPEED = 0.1
+MAX_SPEED = 100.0
+
+
+def validate_speed(speed: object) -> float:
+    """Return speed as a float, or raise ValueError naming the allowed range.
+
+    Called before the (paid) Gemini request so a bad --speed or batch
+    "speed" value costs nothing.
+    """
+    if isinstance(speed, bool) or not isinstance(speed, (int, float)):
+        raise ValueError(f"speed must be a number, got {speed!r}")
+    value = float(speed)
+    if not math.isfinite(value) or value < MIN_SPEED or value > MAX_SPEED:
+        raise ValueError(f"speed must be in [{MIN_SPEED}, {MAX_SPEED}], got {speed}")
+    return value
+
+
 def atempo_filter_chain(speed: float) -> str:
     """Build an ffmpeg -filter:a expression for the requested speed.
 
-    ffmpeg's atempo filter accepts 0.5–100.0, but quality degrades outside
-    [0.5, 2.0]. For speeds outside that band we chain atempo filters so each
-    individual step stays in range.
+    A single ffmpeg atempo filter accepts 0.5–100.0, and quality degrades
+    outside [0.5, 2.0]. For speeds outside that band we chain atempo filters
+    so each individual step stays in [0.5, 2.0].
     """
-    if speed < 0.5 or speed > 100.0:
-        raise ValueError(f"speed must be in [0.5, 100.0], got {speed}")
+    speed = validate_speed(speed)
     if 0.5 <= speed <= 2.0:
         return f"atempo={speed}"
     # Chain 2.0-multipliers until the remainder fits, then apply it.
@@ -459,6 +496,16 @@ def post_process_speed(wav_path: str, speed: float) -> None:
     os.replace(tmp_path, wav_path)
 
 
+def wav_duration_s(wav_path: str) -> float | None:
+    """Duration of the WAV on disk, or None if its header can't be read."""
+    try:
+        with wave.open(wav_path, "rb") as w:
+            rate = w.getframerate()
+            return round(w.getnframes() / rate, 2) if rate else None
+    except (wave.Error, EOFError, OSError):
+        return None
+
+
 # ----- Single-job driver -------------------------------------------------
 
 
@@ -471,12 +518,14 @@ def generate_one(job: TTSJob, api_url: str, api_key: str) -> TTSResult:
     )
     t0 = time.monotonic()
     try:
+        # Before the API call: a bad speed must not cost a paid request.
+        validate_speed(job.speed)
         text = compose_prompt(job.text, job.style_prompt)
         pcm_bytes, sample_rate = call_gemini_tts(text, job.voice, api_url, api_key)
         pcm_to_wav(pcm_bytes, job.output, sample_rate)
         if job.speed != 1.0:
             post_process_speed(job.output, job.speed)
-    except TTSError as e:
+    except (TTSError, ValueError) as e:
         duration_s = round(time.monotonic() - t0, 1)
         return TTSResult(
             output=job.output, success=False, error=str(e), duration_s=duration_s
@@ -493,7 +542,12 @@ def generate_one(job: TTSJob, api_url: str, api_key: str) -> TTSResult:
     duration_s = round(time.monotonic() - t0, 1)
     wav_bytes = os.path.getsize(job.output)
     byte_rate = sample_rate * DEFAULT_CHANNELS * DEFAULT_BITS_PER_SAMPLE // 8
-    audio_seconds = round(len(pcm_bytes) / byte_rate, 2) if byte_rate else 0.0
+    # Measure the file that was saved: after a --speed pass the PCM length
+    # from the API no longer says how long the clip is.
+    audio_seconds = wav_duration_s(job.output)
+    if audio_seconds is None:
+        raw_seconds = len(pcm_bytes) / byte_rate if byte_rate else 0.0
+        audio_seconds = round(raw_seconds / job.speed, 2)
     print(
         f"Saved: {job.output} ({wav_bytes} bytes, ~{audio_seconds}s, "
         f"{sample_rate}Hz mono {DEFAULT_BITS_PER_SAMPLE}-bit)",
@@ -563,7 +617,8 @@ def _build_app():
             help=(
                 "Post-process tempo multiplier via ffmpeg atempo. 1.0=no change, "
                 "1.8 pairs well with the freud preset. Quality stays best in "
-                "[0.5, 2.0]; values outside that band chain atempo filters."
+                "[0.5, 2.0]; values outside that band chain atempo filters. "
+                f"Allowed range: [{MIN_SPEED}, {MAX_SPEED}]."
             ),
         ),
         api_url: str = typer.Option(
@@ -698,6 +753,12 @@ def _build_app():
             )
             raise typer.Exit(1)
 
+        try:
+            validate_speed(speed)
+        except ValueError as e:
+            print(f"Error: --{e}", file=sys.stderr)
+            raise typer.Exit(2)
+
         skill_dir = resolve_skill_dir()
         load_env()
 
@@ -744,7 +805,11 @@ def _build_app():
                 print(f"Error: {e} (job output={d.get('output')})", file=sys.stderr)
                 raise typer.Exit(2)
             resolved_style = job_style if job_style is not None else cli_style
-            job_speed = d.get("speed", speed)
+            try:
+                job_speed = validate_speed(d.get("speed", speed))
+            except ValueError as e:
+                print(f"Error: {e} (job output={d.get('output')})", file=sys.stderr)
+                raise typer.Exit(2)
             jobs.append(
                 TTSJob(
                     text=d["text"],
