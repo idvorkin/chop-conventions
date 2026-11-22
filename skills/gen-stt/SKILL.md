@@ -31,6 +31,8 @@ Parse the user's input for:
 - **`--output path`**: Single-mode transcript destination. Defaults to
   `<input>.txt` (or `.json`) alongside the input.
 - **`--output-dir DIR`**: Batch-mode transcript destination dir.
+  Batch inputs that would share a transcript name (`a.wav` + `a.mp3`)
+  keep their audio suffix instead: `a.wav.txt`, `a.mp3.txt`.
 - **`--json`**: Emit `{text, duration_s, model, elapsed_s}` JSON
   instead of plain text.
 - **`--keep-wav`**: Retain the intermediate transcoded WAV for
@@ -39,8 +41,8 @@ Parse the user's input for:
   `nemo-parakeet-tdt-0.6b-v2` onnx-asr model.
 - **`--max-workers N`**: Parallel batch workers. Default **1**
   (serial). Aggregate CPU = `max_workers × per-process thread cap (2)`,
-  so `--max-workers=2` already drives 4 threads and often runs *slower
-  per file* than serial on consumer CPUs (measured 2026-04-16: 3 files
+  so `--max-workers=2` already drives 4 threads and often runs _slower
+  per file_ than serial on consumer CPUs (measured 2026-04-16: 3 files
   at `--max-workers=2` took 114s vs ~60s projected serial). Only raise
   on a box with spare cores where wall-clock matters more than per-file
   latency.
@@ -63,7 +65,7 @@ Parse the user's input for:
 - Audio contract: 16 kHz mono PCM\_S16LE WAV — the script detects
   already-conforming WAVs via the stdlib `wave` module and skips the
   transcode; otherwise it invokes `ffmpeg -ar 16000 -ac 1 -acodec
-  pcm_s16le`.
+pcm_s16le`.
 
 ## Mandatory Nice-Wrap
 
@@ -72,6 +74,9 @@ Parse the user's input for:
 ```text
 nice -n 19 ionice -c 3 env OMP_NUM_THREADS=2 ORT_NUM_THREADS=2 MKL_NUM_THREADS=2 <cmd>
 ```
+
+`ionice -c 3` is included only where `ionice` exists (Linux); macOS has
+no `ionice`, so there the prefix is `nice -n 19 env …`.
 
 The prefix is baked into a single `_niced_run()` helper in
 `parakeet-stt.py`; there is no code path that invokes ffmpeg or
@@ -85,7 +90,7 @@ onnx-asr without it. Rationale:
   fastembed without the cap.)
 - Leaves 6 cores for interactive work on dev VMs.
 
-Verify on a live run with `awk '{print $19}' /proc/<pid>/stat` (nice
+Verify on a live Linux run with `awk '{print $19}' /proc/<pid>/stat` (nice
 level) and `ionice -p <pid>` (IO class `idle`).
 
 ## Usage
@@ -150,7 +155,7 @@ cat /tmp/roundtrip.txt
 
 - **Missing ffmpeg**: Required for any non-16kHz-mono input. The script
   surfaces ffmpeg's stderr on failure. Install via `brew install
-  ffmpeg` or `apt install ffmpeg`.
+ffmpeg` or `apt install ffmpeg`.
 - **Missing uvx**: Required to fetch `onnx-asr`. Install via
   `brew install uv` or `pip install uv`.
 - **First-run download delay**: The initial Parakeet model pull from
@@ -176,4 +181,4 @@ cat /tmp/roundtrip.txt
   assets dir.
 - Parakeet is English-only. For multilingual audio, prefer Whisper
   (available via the same `onnx-asr` binary — swap `--model
-  whisper-base`).
+whisper-base`).
