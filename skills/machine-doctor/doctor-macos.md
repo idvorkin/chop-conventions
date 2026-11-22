@@ -111,6 +111,32 @@ Test pipelines that create a throwaway device per run and never shut it down
 are the usual source; the devices pile up across runs. Shutting them down dropped the box to
 ~1,000 processes and normal pressure within two minutes.
 
+### Simulator wallpaper caches (iOS 27)
+
+The opposite habit, shutting a device down after every run and booting it again next time, costs disk.
+Each boot of an iOS 27 simulator adds about 300 MB of Lock/Home Screen wallpaper snapshots (`Composite.atx` textures)
+under `data/Library/Application Support/PRBPosterExtensionDataStore`, and nothing evicts them. One measurement went
+from empty to 324 MB after one boot and 621 MB after two. One iPad simulator reached 17.8 GB after a month of test-ladder boots,
+31 boots in one day. Each boot also starts PosterBoard and the poster extensions (Mercury, Emoji, Gradient, Collections), which adds load.
+`snapshot` warns once the caches total 5 GB.
+
+```bash
+machine_doctor.py sims                                  # poster cache per device
+machine_doctor.py sims --prune --lock ~/tmp/agent/locks/build.lock --below-free-gb 30
+```
+
+`--prune` removes only the poster store of devices whose `device.plist` says Shutdown and that have no `launchd_sim`.
+It reads each device again just before deleting, never follows a symlinked store, and keeps the device, its UDID and its apps.
+PosterBoard rebuilds the store on the next boot. `--lock` takes a flock(2) file and gives up at once if another job holds it;
+it only excludes jobs that take the same file with flock, such as `lockf -k <file> <cmd>`. The lasting fix is fewer boots: leave the device booted between runs.
+
+To keep them from piling up, run the watcher with `--prune-sims 10m`: every 10 minutes, starting with the first sample, it does the same `--prune` pass, whatever the free space and without a lock.
+It prints what it cleared, and any device it kept for a reason other than being booted. It is off (`0s`) by default.
+
+```bash
+machine_doctor.py watch --prune-sims 10m
+```
+
 ---
 
 ## 3. Freeing memory on the host
