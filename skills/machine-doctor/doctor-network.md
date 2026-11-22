@@ -6,12 +6,12 @@ affected Mac, not inside its Linux VM.
 
 ## Diagnose
 
-Run the read-only helper from this skill's directory:
+Run the read-only helper from the installed skill:
 
 ```bash
-uv run tools/network_doctor.py
+uv run ~/.claude/skills/machine-doctor/tools/network_doctor.py
 # Target another affected service or compare with a configured DNS server:
-uv run tools/network_doctor.py --host api.anthropic.com --dns-server 100.100.100.100
+uv run ~/.claude/skills/machine-doctor/tools/network_doctor.py --host api.anthropic.com --dns-server 100.100.100.100
 ```
 
 The helper runs bounded checks concurrently: route, resolver/proxy configuration,

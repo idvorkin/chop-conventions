@@ -30,7 +30,7 @@ lsof <lock-file> 2>/dev/null || echo "Stale — safe to remove"
 # Check all known project roots
 for dir in ~/gits/*/  ~/gt/*/; do
   [ -d "$dir/.git" ] || continue
-  git -C "$dir" worktree list 2>/dev/null | grep -v "bare\|$(basename $dir)"
+  git -C "$dir" worktree list 2>/dev/null | tail -n +2   # line 1 is the main checkout
 done
 ```
 

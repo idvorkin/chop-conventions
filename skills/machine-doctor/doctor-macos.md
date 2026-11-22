@@ -5,8 +5,8 @@ asleep when it should not be. Start with the tool; this file is for reading its
 findings and fixing them.
 
 ```bash
-skills/machine-doctor/tools/machine_doctor.py snapshot        # everything below, checked
-skills/machine-doctor/tools/machine_doctor.py sleeps --since 24h
+~/.claude/skills/machine-doctor/tools/machine_doctor.py snapshot        # everything below, checked
+~/.claude/skills/machine-doctor/tools/machine_doctor.py sleeps --since 24h
 ```
 
 ---
@@ -121,8 +121,8 @@ from empty to 324 MB after one boot and 621 MB after two. One iPad simulator rea
 `snapshot` warns once the caches total 5 GB.
 
 ```bash
-machine_doctor.py sims                                  # poster cache per device
-machine_doctor.py sims --prune --lock ~/tmp/agent/locks/build.lock --below-free-gb 30
+~/.claude/skills/machine-doctor/tools/machine_doctor.py sims                                  # poster cache per device
+~/.claude/skills/machine-doctor/tools/machine_doctor.py sims --prune --lock ~/tmp/agent/locks/build.lock --below-free-gb 30
 ```
 
 `--prune` removes only the poster store of devices whose `device.plist` says Shutdown and that have no `launchd_sim`.
@@ -134,7 +134,7 @@ To keep them from piling up, run the watcher with `--prune-sims 10m`: every 10 m
 It prints what it cleared, and any device it kept for a reason other than being booted. It is off (`0s`) by default.
 
 ```bash
-machine_doctor.py watch --prune-sims 10m
+~/.claude/skills/machine-doctor/tools/machine_doctor.py watch --prune-sims 10m
 ```
 
 ---
@@ -268,7 +268,7 @@ note; only thermal sleeps are a warning.
 ### Reading why it slept
 
 ```bash
-skills/machine-doctor/tools/machine_doctor.py sleeps --since 24h
+~/.claude/skills/machine-doctor/tools/machine_doctor.py sleeps --since 24h
 ```
 
 It parses `pmset -g log` and prints every sleep except maintenance ones:
@@ -297,8 +297,8 @@ instant, then resolves pid N against it and logs the parent chain. `sleeps`
 folds those catches into its output.
 
 ```bash
-skills/machine-doctor/tools/sleep-catcher.sh install   # agent + copy on the internal disk
-skills/machine-doctor/tools/sleep-catcher.sh status
+~/.claude/skills/machine-doctor/tools/sleep-catcher.sh install   # agent + copy on the internal disk
+~/.claude/skills/machine-doctor/tools/sleep-catcher.sh status
 ```
 
 - `install` copies the script to `~/.local/share/machine-doctor/`: a launchd

@@ -9,9 +9,38 @@ import re
 from dataclasses import dataclass, field, replace
 from datetime import datetime, timedelta
 
-SECRET_ENV_RE = re.compile(
-    r"(-e\s+)([A-Z0-9_]*(?:API_KEY|TOKEN|SECRET|PASSWORD)[A-Z0-9_]*)=\S+"
-)
+# Each rule is (pattern, replacement), applied in order. sleep-catcher.sh's
+# redact() carries the same rules as sed -E expressions and a test holds the two
+# to the same output, so stay inside what BSD sed can express: no \b, no
+# lookahead, no case-insensitive flag.
+_REDACT_RULES = [
+    # NAME=value where NAME looks secret: `-e ANTHROPIC_API_KEY=…`, `env
+    # GH_TOKEN=…`, or a leading assignment.
+    (
+        r"(^|\s)([A-Z0-9_]*(?:KEY|TOKEN|SECRET|PASSWORD|PASS|AUTH)[A-Z0-9_]*)=\S+",
+        r"\1\2=<redacted>",
+    ),
+    # --password=…, --token …, --api-key=…; a following -flag is not a value.
+    (
+        r"(^|\s)(--[A-Za-z0-9_-]*(?:[Pp]assword|[Pp]asswd|[Tt]oken|[Ss]ecret"
+        r"|[Aa]pi[-_]?[Kk]ey|[Aa]ccess[-_]?[Kk]ey)[A-Za-z0-9_-]*)(=|\s+)[^-\s]\S*",
+        r"\1\2\3<redacted>",
+    ),
+    (
+        r"([Aa]uthorization:\s*)((?:[Bb]earer|[Bb]asic|[Tt]oken)\s+)?\S+",
+        r"\1\2<redacted>",
+    ),
+    (r"(^|\s)(Bearer)\s+\S+", r"\1\2 <redacted>"),
+    # https://user:password@host
+    (r"(://[^/\s:@]+:)[^@\s/]+@", r"\1<redacted>@"),
+    # Bare keys recognisable by prefix, wherever they sit.
+    (
+        r"(^|[^A-Za-z0-9])(?:sk-[A-Za-z0-9_-]{10,}|gh[pousr]_[A-Za-z0-9]{10,}"
+        r"|github_pat_[A-Za-z0-9_]{10,}|xox[a-z]-[A-Za-z0-9-]{10,})",
+        r"\1<redacted>",
+    ),
+]
+_REDACT_RES = [(re.compile(p), r) for p, r in _REDACT_RULES]
 
 
 def redact(cmdline: str) -> str:
@@ -19,9 +48,12 @@ def redact(cmdline: str) -> str:
 
     Agent sessions carry credentials in argv (`tmux ... -e
     ANTHROPIC_API_KEY=sk-...`), world-readable via /proc, so anything that
-    prints or persists a cmdline must scrub it first.
+    prints or persists a cmdline must scrub it first. Over-redaction is fine;
+    a leaked key is not.
     """
-    return SECRET_ENV_RE.sub(r"\1\2=<redacted>", cmdline)
+    for rx, repl in _REDACT_RES:
+        cmdline = rx.sub(repl, cmdline)
+    return cmdline
 
 
 def parse_loadavg(text: str) -> tuple[float, float, float]:

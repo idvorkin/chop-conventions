@@ -140,5 +140,55 @@ class TestLinuxAppLabels(unittest.TestCase):
         self.assertEqual([p.app for p in got], ["pytest", "pytest"])
 
 
+class TestReadLoad1(unittest.TestCase):
+    def test_darwin_parses_sysctl(self):
+        with (
+            mock.patch.object(md, "IS_DARWIN", True),
+            mock.patch.object(
+                md, "_run", lambda cmd, timeout=20: "{ 1.50 2.00 3.00 }\n"
+            ),
+        ):
+            self.assertEqual(md.read_load1(), 1.5)
+
+    def test_empty_sysctl_output_does_not_raise(self):
+        # _run returns "" when sysctl times out; that used to be an IndexError
+        # that ended `watch`.
+        with (
+            mock.patch.object(md, "IS_DARWIN", True),
+            mock.patch.object(md, "_run", lambda cmd, timeout=20: ""),
+            mock.patch.object(md.os, "getloadavg", lambda: (2.349, 1.0, 1.0)),
+        ):
+            self.assertEqual(md.read_load1(), 2.35)
+
+    def test_unreadable_everywhere_is_minus_one(self):
+        def no_load():
+            raise OSError("unobtainable")
+
+        with (
+            mock.patch.object(md, "IS_DARWIN", True),
+            mock.patch.object(md, "_run", lambda cmd, timeout=20: ""),
+            mock.patch.object(md.os, "getloadavg", no_load),
+        ):
+            self.assertEqual(md.read_load1(), -1.0)
+
+
+class TestWatchPruneSimsDefaults(unittest.TestCase):
+    def test_defaults_resolve_at_call_time(self):
+        """prune_all is mocked: a no-argument call must never reach the real
+        simulator caches from a test."""
+        fake_root = object()
+
+        def fake_running():
+            return set()
+
+        with (
+            mock.patch.object(md.md_sims, "DEVICES_ROOT", fake_root),
+            mock.patch.object(md, "_sims_running", fake_running),
+            mock.patch.object(md.md_sims, "prune_all", return_value=[]) as prune,
+        ):
+            self.assertEqual(md._watch_prune_sims(), 0)
+        prune.assert_called_once_with(fake_root, fake_running)
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -4,8 +4,11 @@ Run from this directory: python3 -m unittest
 Stdlib only — no uv, no typer, no live /proc.
 """
 
+import re
+import subprocess
 import unittest
 from datetime import datetime
+from pathlib import Path
 
 from md_probe import (
     CpuTotals,
@@ -48,6 +51,103 @@ class TestRedact(unittest.TestCase):
     def test_leaves_benign_env_alone(self):
         cl = "cmd -e BEADS_ACTOR=mayor -e GC_CITY=/home/u/city"
         self.assertEqual(redact(cl), cl)
+
+    # (command line, the secret that must be gone, text that must survive)
+    FORMS = [
+        ("mysql --password=hunter2 -h db", "hunter2", "--password=<redacted> -h db"),
+        ("cli --token tok123 run", "tok123", "--token <redacted> run"),
+        ("cli --api-key=abc123 run", "abc123", "--api-key=<redacted> run"),
+        ("cli --client-secret=s3 run", "s3", "--client-secret=<redacted>"),
+        (
+            "curl -H Authorization: Bearer abc.def.ghi https://x",
+            "abc.def.ghi",
+            "Authorization: Bearer <redacted> https://x",
+        ),
+        (
+            "curl -H authorization: rawtoken99 u",
+            "rawtoken99",
+            "authorization: <redacted> u",
+        ),
+        ("tool Bearer zzz999 next", "zzz999", "Bearer <redacted> next"),
+        (
+            "env GH_TOKEN=aaa111 gh pr list",
+            "aaa111",
+            "env GH_TOKEN=<redacted> gh pr list",
+        ),
+        (
+            "DB_PASS=pw1 ./serve --port 80",
+            "pw1",
+            "DB_PASS=<redacted> ./serve --port 80",
+        ),
+        ("env BASIC_AUTH=u:p ./serve", "u:p", "BASIC_AUTH=<redacted> ./serve"),
+        ("env SIGNING_KEY=k9 ./sign", "k9", "SIGNING_KEY=<redacted>"),
+        (
+            "app sk-ant-api03-AbCdEf123456 go",
+            "sk-ant-api03-AbCdEf123456",
+            "app <redacted> go",
+        ),
+        ("app ghp_AbCdEf1234567890 go", "ghp_AbCdEf1234567890", "app <redacted> go"),
+        ("app gho_AbCdEf1234567890 go", "gho_AbCdEf1234567890", "app <redacted> go"),
+        (
+            "app xoxb-1234567890-abcdef go",
+            "xoxb-1234567890-abcdef",
+            "app <redacted> go",
+        ),
+        (
+            "git clone https://bob:pw123@github.com/o/r",
+            "pw123",
+            "https://bob:<redacted>@github.com/o/r",
+        ),
+        # A sleep-catcher dump line starts with pid, ppid and etime.
+        (
+            "  812   1 01:02 env API_KEY=q7 node s.js",
+            "q7",
+            "  812   1 01:02 env API_KEY=<redacted>",
+        ),
+    ]
+    BENIGN = [
+        "cli --token --verbose",  # a following flag is not a value
+        "node task-runner.js --port 3000",
+        "/usr/bin/ssh -o ControlPath=/tmp/x host",
+        "python3 risk-model.py --disk-usage",
+    ]
+
+    def test_redacts_each_secret_form(self):
+        for cl, secret, kept in self.FORMS:
+            with self.subTest(cl=cl):
+                got = redact(cl)
+                self.assertNotIn(secret, got)
+                self.assertIn(kept, got)
+
+    def test_leaves_benign_commands_alone(self):
+        for cl in self.BENIGN:
+            with self.subTest(cl=cl):
+                self.assertEqual(redact(cl), cl)
+
+    def test_is_idempotent(self):
+        for cl, _secret, _kept in self.FORMS:
+            with self.subTest(cl=cl):
+                once = redact(cl)
+                self.assertEqual(redact(once), once)
+
+    def test_sleep_catcher_redact_matches(self):
+        """sleep-catcher.sh carries the same rules as sed expressions. Only the
+        redact() function text is run (sed over fixture lines on stdin) — the
+        script itself is never sourced or executed."""
+        src = (Path(__file__).parent / "sleep-catcher.sh").read_text()
+        func = re.search(r"^redact\(\) \{\n.*?\n\}$", src, re.S | re.M).group(0)
+        lines = [cl for cl, _s, _k in self.FORMS] + self.BENIGN
+        lines.append(
+            "tmux -L c new -e ANTHROPIC_API_KEY=sk-ant-secret123 -e GC_CITY=/c"
+        )
+        r = subprocess.run(
+            ["bash", "-c", func + "\nredact"],
+            input="\n".join(lines) + "\n",
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+        self.assertEqual(r.stdout.splitlines(), [redact(cl) for cl in lines])
 
 
 class TestLoadavg(unittest.TestCase):

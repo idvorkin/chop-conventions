@@ -313,9 +313,20 @@ def send_alert(cmd: str, text: str) -> bool:
 
 
 def read_load1() -> float:
-    if IS_DARWIN:
-        return parse_loadavg(_run(["sysctl", "-n", "vm.loadavg"]).strip("{} \n"))[0]
-    return parse_loadavg(_read("/proc/loadavg"))[0]
+    """1-minute load. Never raises: a sysctl that timed out gives "" (see _run),
+    and an IndexError here would end `watch`. -1.0 means unreadable."""
+    try:
+        if IS_DARWIN:
+            text = _run(["sysctl", "-n", "vm.loadavg"]).strip("{} \n")
+        else:
+            text = _read("/proc/loadavg")
+        return parse_loadavg(text)[0]
+    except (IndexError, ValueError, OSError):
+        pass
+    try:
+        return round(os.getloadavg()[0], 2)
+    except OSError:
+        return -1.0
 
 
 def _walk_procs_linux(
@@ -601,11 +612,17 @@ def _sims_running() -> set[str] | None:
 
 
 def _watch_prune_sims(
-    root: Path = md_sims.DEVICES_ROOT,
-    running: Callable[[], set[str] | None] = _sims_running,
+    root: Path | None = None,
+    running: Callable[[], set[str] | None] | None = None,
 ) -> int:
     """One `watch --prune-sims` pass: print what was cleared; never raise.
     Returns KB freed."""
+    # Resolved at call time, not def time, so a test that patches
+    # md_sims.DEVICES_ROOT or _sims_running really redirects this delete.
+    if root is None:
+        root = md_sims.DEVICES_ROOT
+    if running is None:
+        running = _sims_running
     try:
         done = md_sims.prune_all(root, running)
     except Exception as e:  # a cleanup bug must not stop the watcher
