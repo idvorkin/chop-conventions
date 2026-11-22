@@ -1,3 +1,4 @@
+import copy
 import json
 import re
 
@@ -58,6 +59,71 @@ def test_render_escapes_script_close_and_fills_slots():
     ).group(1)
     assert json.loads(blob)["items"][0]["title"] == "Ends </script> here"
     assert "<p>intro</p>" in html
+
+
+def _blob(html):
+    return re.search(
+        r'<script id="outline-data" type="application/json">(.*?)</script>', html, re.S
+    ).group(1)
+
+
+def test_render_html_comment_open_stays_valid_json():
+    title = "A <!-- comment and <script> and </script> & more"
+    d = outline.build_data([("a.md", "## One\n")])
+    d["items"][0]["title"] = title
+    blob = _blob(outline.render(d))
+    assert "<" not in blob  # nothing the HTML parser can act on
+    assert "\\!" not in blob  # not a JSON escape: JSON.parse would throw
+    assert json.loads(blob)["items"][0]["title"] == title
+
+
+def test_validate_reports_missing_top_level_keys():
+    errs = outline.validate({"title": "T"})
+    assert errs == ["missing key: statuses", "missing key: pages", "missing key: items"]
+
+
+def test_validate_reports_entries_without_key_instead_of_raising():
+    # deepcopy: build_data shares DEFAULT_STATUSES with the module
+    d = copy.deepcopy(outline.build_data([("a.md", "## One\n")]))
+    del d["pages"][0]["key"]
+    del d["statuses"][1]["key"]
+    d["items"].append("not an object")
+    errs = outline.validate(d)
+    assert "pages[0]: missing key: key" in errs
+    assert "statuses[1]: missing key: key" in errs
+    assert "items[1]: must be an object" in errs
+
+
+def test_validate_reports_non_list_sections():
+    d = outline.build_data([("a.md", "## One\n")])
+    d["pages"] = {"a": 1}
+    assert outline.validate(d) == ["pages: must be a list"]
+
+
+def test_cli_creates_parent_dirs_and_exits_1_on_invalid(tmp_path):
+    from typer.testing import CliRunner
+
+    app = outline._build_app()
+    md = tmp_path / "a.md"
+    md.write_text("## One\n")
+    html = tmp_path / "new" / "deep" / "out.html"
+    js = tmp_path / "other" / "out.json"
+    ok = CliRunner().invoke(
+        app, ["from-md", str(md), "--html", str(html), "--json", str(js)]
+    )
+    assert ok.exit_code == 0, ok.output
+    assert html.exists() and js.exists()
+
+    bad = tmp_path / "bad.json"
+    bad.write_text(
+        json.dumps({"title": "T", "statuses": [{}], "pages": [], "items": []})
+    )
+    res = CliRunner().invoke(
+        app, ["render", str(bad), "--html", str(tmp_path / "x.html")]
+    )
+    assert res.exit_code == 1
+    assert "missing key: key" in res.output
+    assert not (tmp_path / "x.html").exists()
 
 
 def test_example_outline_is_valid():
