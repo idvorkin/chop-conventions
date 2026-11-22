@@ -77,7 +77,8 @@ A screenshot that shows the change belongs in the human summary at the top, abov
 
 Setting `body` **replaces the whole description** — never PATCH it with only
 the screenshots block. Fetch the current body, prepend the block, and write the
-combined text back:
+combined text back. The `&&` matters: if the fetch fails, the file holds only
+the screenshots block and writing it would clobber the description anyway:
 
 ```bash
 BODY_FILE=$(mktemp)
@@ -85,8 +86,8 @@ BODY_FILE=$(mktemp)
   printf '%s\n\n' "## Screenshots"
   printf '%s\n\n' "![feature](https://gist.githubusercontent.com/$GH_USER/$GIST_ID/raw/feature.png)"
   gh pr view NUMBER --repo OWNER/REPO --json body --jq .body
-} > "$BODY_FILE"
-gh pr edit NUMBER --repo OWNER/REPO --body-file "$BODY_FILE"
+} > "$BODY_FILE" &&
+  gh pr edit NUMBER --repo OWNER/REPO --body-file "$BODY_FILE"
 rm -f "$BODY_FILE"
 ```
 
