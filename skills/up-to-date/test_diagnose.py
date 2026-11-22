@@ -29,11 +29,13 @@ from diagnose import (
     compute_slot_action,
     gh_pr_list_merged_heads,
     is_fork_url,
+    is_patch_absorbed,
     parse_cherry_status,
     parse_left_right_count,
     parse_remotes,
     parse_symbolic_ref_output,
     parse_worktree_list,
+    path_is_within,
     resolve_chop_root,
 )
 
@@ -875,6 +877,138 @@ class TestRunDiagnoseForceAlignOnMain(unittest.TestCase):
             self.assertTrue(branch["can_force_align"])
             self.assertEqual(branch["ahead_patch_unique_commits"], [])
             self.assertEqual(len(branch["ahead_patch_equivalent_commits"]), 1)
+
+
+class TestIsPatchAbsorbed(unittest.TestCase):
+    def test_none_is_not_absorbed(self):
+        self.assertFalse(is_patch_absorbed(None))
+
+    def test_no_commits_beyond_base_is_not_absorbed(self):
+        """Empty `git cherry` output = nothing to prove absorption with."""
+        self.assertFalse(
+            is_patch_absorbed(CherryAnalysis(unique_commits=[], equivalent_commits=[]))
+        )
+
+    def test_only_equivalent_commits_is_absorbed(self):
+        self.assertTrue(
+            is_patch_absorbed(
+                CherryAnalysis(unique_commits=[], equivalent_commits=["abc s"])
+            )
+        )
+
+    def test_any_unique_commit_is_not_absorbed(self):
+        self.assertFalse(
+            is_patch_absorbed(
+                CherryAnalysis(unique_commits=["def s"], equivalent_commits=["abc s"])
+            )
+        )
+
+
+class TestPathIsWithin(unittest.TestCase):
+    def test_same_and_nested_and_sibling(self):
+        with tempfile.TemporaryDirectory() as td:
+            parent = Path(td) / "wt"
+            child = parent / "sub" / "dir"
+            child.mkdir(parents=True)
+            sibling = Path(td) / "wt-other"
+            sibling.mkdir()
+            self.assertTrue(path_is_within(parent, parent))
+            self.assertTrue(path_is_within(child, parent))
+            self.assertFalse(path_is_within(sibling, parent))
+            self.assertFalse(path_is_within(parent, child))
+
+    def test_symlinked_cwd_resolves(self):
+        with tempfile.TemporaryDirectory() as td:
+            parent = Path(td) / "wt"
+            parent.mkdir()
+            link = Path(td) / "link"
+            link.symlink_to(parent)
+            self.assertTrue(path_is_within(link, parent))
+
+
+class TestRunDiagnoseWorktreeAbsorption(TestRunDiagnoseForceAlignOnMain):
+    """A worktree must never be listed prunable just because its branch has
+    no commits yet, nor when the caller is standing in it.
+
+    Reuses the scratch origin+clone helpers; the inherited force-align
+    tests are disabled below so they don't run twice.
+    """
+
+    test_unique_local_commit_on_main_blocks_force_align = None  # type: ignore[assignment]
+    test_patch_equivalent_commit_on_main_allows_force_align = None  # type: ignore[assignment]
+
+    def _worktree(self, data: dict, branch: str) -> dict:
+        matches = [w for w in data["worktrees"] if w["branch"] == branch]
+        self.assertEqual(len(matches), 1, data["worktrees"])
+        return matches[0]
+
+    def test_fresh_worktree_with_no_commits_is_not_absorbed(self):
+        with tempfile.TemporaryDirectory() as td:
+            git_env = self._scrubbed_env()
+            _, local = self._setup_origin_and_clone(td, git_env)
+            self._git(
+                local,
+                "worktree",
+                "add",
+                "-q",
+                ".worktrees/fresh",
+                "-b",
+                "fresh",
+                "origin/main",
+                env=git_env,
+            )
+            # A plain branch with no commits gets the same treatment.
+            self._git(local, "branch", "idle", "origin/main", env=git_env)
+
+            data = self._run_diagnose(local, td, git_env)
+            wt = self._worktree(data, "fresh")
+            self.assertFalse(wt["is_primary"])
+            self.assertFalse(wt["is_current"])
+            self.assertFalse(
+                wt["absorbed"],
+                "a worktree whose branch has zero commits is new work, not "
+                "absorbed work — auto-removing it destroys a fresh checkout",
+            )
+            self.assertNotIn("fresh", data["absorbable_branches"])
+            self.assertNotIn("idle", data["absorbable_branches"])
+
+    def test_patch_equivalent_worktree_is_absorbed_unless_caller_is_in_it(self):
+        with tempfile.TemporaryDirectory() as td:
+            git_env = self._scrubbed_env()
+            origin, local = self._setup_origin_and_clone(td, git_env)
+            wt_path = local / ".worktrees" / "done"
+            self._git(
+                local,
+                "worktree",
+                "add",
+                "-q",
+                str(wt_path),
+                "-b",
+                "done",
+                "origin/main",
+                env=git_env,
+            )
+            self._configure_identity(wt_path, git_env)
+            # Same change lands on both sides under different SHAs.
+            self._commit_file(wt_path, "f.txt", "shared\n", "local copy", git_env)
+            self._commit_file(origin, "f.txt", "shared\n", "upstream copy", git_env)
+
+            # From the primary: genuinely absorbed, so prunable.
+            data = self._run_diagnose(local, td, git_env)
+            wt = self._worktree(data, "done")
+            self.assertTrue(wt["absorbed"])
+            self.assertFalse(wt["is_current"])
+            self.assertIn("done", data["absorbable_branches"])
+
+            # From inside the worktree (a subdirectory, to exercise path
+            # containment): the caller's own cwd is never prunable.
+            sub = wt_path / "sub"
+            sub.mkdir()
+            data = self._run_diagnose(sub, td, git_env)
+            wt = self._worktree(data, "done")
+            self.assertTrue(wt["is_current"])
+            self.assertFalse(wt["absorbed"])
+            self.assertNotIn("done", data["absorbable_branches"])
 
 
 class TestGhPrListMergedHeads(unittest.TestCase):

@@ -251,6 +251,34 @@ def parse_cherry_status(raw: str) -> CherryAnalysis:
     )
 
 
+def is_patch_absorbed(analysis: CherryAnalysis | None) -> bool:
+    """True when `git cherry` PROVES a branch's work is already upstream.
+
+    Requires zero patch-unique commits AND at least one patch-equivalent
+    commit. Empty cherry output is not proof of absorption: a branch with
+    no commits beyond its base (a fresh `git worktree add -b x origin/main`)
+    also prints nothing, and treating that as "absorbed" auto-deletes
+    worktrees someone just created. Such branches are simply kept; a
+    merge-commit-merged branch (also empty output) is still caught by the
+    merged-PR head-SHA signal.
+    """
+    return (
+        analysis is not None
+        and not analysis.unique_commits
+        and bool(analysis.equivalent_commits)
+    )
+
+
+def path_is_within(child: str | Path, parent: str | Path) -> bool:
+    """True when `child` is `parent` or lives under it (symlinks resolved)."""
+    try:
+        child_real = Path(os.path.realpath(child))
+        parent_real = Path(os.path.realpath(parent))
+    except OSError:
+        return False
+    return child_real == parent_real or parent_real in child_real.parents
+
+
 def parse_worktree_list(raw: str) -> list[WorktreeRef]:
     """Parse `git worktree list --porcelain` output into branch-bearing entries.
 
@@ -1119,9 +1147,7 @@ def run_diagnose() -> dict[str, Any]:
         if b == branch_name:
             continue  # never auto-prune the checked-out branch
         analysis_for_b = cherry_by_branch.get(b)
-        patch_absorbed = (
-            analysis_for_b is not None and not analysis_for_b.unique_commits
-        )
+        patch_absorbed = is_patch_absorbed(analysis_for_b)
         merged_head_sha = merged_pr_heads.get(b)
         local_sha = local_branch_shas.get(b)
         if merged_head_sha is not None and local_sha is not None:
@@ -1138,16 +1164,25 @@ def run_diagnose() -> dict[str, Any]:
             squash_diverged.add(b)
 
     # Worktree classification: first entry is primary, rest are linked.
-    # For each linked worktree, flag "absorbed" if its branch has zero
-    # patch-unique commits vs $src/main.
+    # For each linked worktree, flag "absorbed" if its branch's work is
+    # proven to be in $src_default (see is_patch_absorbed / merged-PR SHA).
+    #
+    # The worktree the caller is standing in is never a removal candidate:
+    # removing it deletes the caller's own cwd. Match by branch (git allows
+    # a branch in only one worktree) and by path containment of the cwd.
+    caller_cwd = os.getcwd()
     worktrees_out: list[dict[str, Any]] = []
     for idx, wt in enumerate(worktree_entries):
         is_primary = idx == 0
+        is_current = (bool(branch_name) and wt.branch == branch_name) or (
+            path_is_within(caller_cwd, wt.path)
+        )
         analysis_for_wt = cherry_by_branch.get(wt.branch)
-        if is_primary:
-            # Primary checkout is never a deletion candidate regardless of
-            # absorption state. Expose absorbed=False so any consumer that
-            # only checks `absorbed` still treats it safely.
+        if is_primary or is_current:
+            # The primary checkout and the caller's own worktree are never
+            # deletion candidates regardless of absorption state. Expose
+            # absorbed=False so any consumer that only checks `absorbed`
+            # still treats them safely.
             absorbed = False
             unmerged_count: int | None = None
         elif analysis_for_wt is None:
@@ -1165,7 +1200,7 @@ def run_diagnose() -> dict[str, Any]:
             unmerged_count = 0 if pr_merged_safe else None
         else:
             unique = analysis_for_wt.unique_commits
-            patch_absorbed = len(unique) == 0
+            patch_absorbed = is_patch_absorbed(analysis_for_wt)
             merged_head_sha = merged_pr_heads.get(wt.branch)
             local_sha = local_branch_shas.get(wt.branch)
             pr_merged_safe = (
@@ -1185,6 +1220,7 @@ def run_diagnose() -> dict[str, Any]:
                 "path": wt.path,
                 "branch": wt.branch,
                 "is_primary": is_primary,
+                "is_current": is_current,
                 "absorbed": absorbed,
                 "unmerged_count": unmerged_count,
             }

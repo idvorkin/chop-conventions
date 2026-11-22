@@ -10,17 +10,20 @@ Diagnose and sync the current git repo with upstream.
 
 ## Step 1: Diagnose
 
-Run the versioned helper that lives with this skill — it fetches, queries
-`gh pr view`, and checks remote hygiene in parallel, then prints JSON. In this
-source repo that path is:
+Run the helper that lives next to this `SKILL.md` — it fetches, queries
+`gh pr view`, and checks remote hygiene in parallel, then prints JSON. Call it
+by the skill's install location, **not** a repo-relative path: the skill runs
+in whatever repo the session is in, and `skills/up-to-date/` only exists in
+chop-conventions.
 
 ```bash
-skills/up-to-date/diagnose.py
+SKILL_DIR="$HOME/.claude/skills/up-to-date"   # project-level install: "$(git rev-parse --show-toplevel)/.claude/skills/up-to-date"
+"$SKILL_DIR/diagnose.py"
 ```
 
-When the skill is installed into `~/.claude/skills/` or `<project>/.claude/skills/`,
-that installed path is typically a symlink to this same file. Prefer the
-versioned repo copy when you are editing this repository.
+Run it from the repo being synced (the helper diagnoses the cwd's repo).
+Only when editing chop-conventions itself, run that checkout's
+`skills/up-to-date/diagnose.py` to exercise your changes.
 
 The JSON output has this shape:
 
@@ -35,6 +38,7 @@ The JSON output has this shape:
   "branch": {
     "name": "main",
     "is_main": true,
+    "default_branch_name": "main",
     "behind": 0,
     "ahead": 0,
     "behind_commits": ["abc123 subject", ...],
@@ -48,8 +52,8 @@ The JSON output has this shape:
     "stashes": ["stash@{0}: ...", ...]
   },
   "worktrees": [
-    {"path": "/path/to/repo", "branch": "main", "is_primary": true, "absorbed": false, "unmerged_count": null},
-    {"path": "/path/to/repo/.worktrees/feature", "branch": "feature", "is_primary": false, "absorbed": true, "unmerged_count": 0}
+    {"path": "/path/to/repo", "branch": "main", "is_primary": true, "is_current": true, "absorbed": false, "unmerged_count": null},
+    {"path": "/path/to/repo/.worktrees/feature", "branch": "feature", "is_primary": false, "is_current": false, "absorbed": true, "unmerged_count": 0}
   ],
   "absorbable_branches": ["old-feature", ...],
   "pr": {
@@ -87,10 +91,11 @@ exists at the repo toplevel; symlinked hooks are refused and surface as
 Conventions:
 
 - `remotes.source` is either `"upstream"` (fork workflow) or `"origin"` (single-remote). Use this as `SRC` for all subsequent git commands.
-- `pr` is `null` on main or when no PR exists for the current branch.
-- `branch.ahead_patch_unique_commits` and `branch.ahead_patch_equivalent_commits` come from `git cherry -v source/main HEAD`, so the script tells you whether ahead commits are unique work or already present upstream under different SHAs.
-- `branch.can_force_align` is `true` only on `main` when every ahead commit is patch-equivalent to `source/main`; in that case, re-aligning the fork's `main` loses no unique work.
-- `branch.leftover_commits` lists patch-unique commits on a feature branch that are still missing from `source/main`. Commits already applied upstream under a different SHA are filtered out.
+- `branch.default_branch_name` is the source remote's detected default branch (`main`, `master`, …). Use this as `DEFAULT` for all subsequent git commands — never hardcode `main`. `branch.is_main` means "on `DEFAULT`", whatever it is named.
+- `pr` is `null` on the default branch or when no PR exists for the current branch.
+- `branch.ahead_patch_unique_commits` and `branch.ahead_patch_equivalent_commits` come from `git cherry -v $SRC/$DEFAULT HEAD`, so the script tells you whether ahead commits are unique work or already present upstream under different SHAs.
+- `branch.can_force_align` is `true` only on the default branch when every ahead commit is patch-equivalent to `$SRC/$DEFAULT`; in that case, re-aligning the fork's default branch loses no unique work.
+- `branch.leftover_commits` lists patch-unique commits on a feature branch that are still missing from `$SRC/$DEFAULT`. Commits already applied upstream under a different SHA are filtered out.
 - `errors` contains subprocess failures from fetch and the post-fetch git diagnostics (`rev-list`, `log`, `status`, `stash`, `cherry`) so callers can tell the difference between "no divergence" and "diagnostic failed".
 
 ## Step 2: Report Hygiene
@@ -103,15 +108,15 @@ If `remotes.issues` is non-empty, show them in the output table and offer the `f
 
 ## Step 3: Act
 
-Use `SRC = remotes.source`. After any action on main, surface absorbed branches and prunable worktrees from the diagnose JSON. Absorption is detected by two signals combined: `git cherry` patch-id (catches rebase and cherry-pick merges) **and** `gh pr list --state merged` (catches squash-merges, whose squashed commit has a different patch-id than the branch's commits). The union is what `absorbable_branches` exposes; the squash-only subset is `squash_merged_branches` for callers that want to distinguish.
+Use `SRC = remotes.source` and `DEFAULT = branch.default_branch_name`. After any action on the default branch, surface absorbed branches and prunable worktrees from the diagnose JSON. Absorption is detected by two signals combined: `git cherry` patch-id (catches rebase and cherry-pick merges) **and** `gh pr list --state merged` (catches squash-merges, whose squashed commit has a different patch-id than the branch's commits). The union is what `absorbable_branches` exposes; the squash-only subset is `squash_merged_branches` for callers that want to distinguish.
 
-**Do not use `git branch --merged` for cleanup.** It only catches branches whose tip is an ancestor of main, missing squash and rebase merges — the most common paths for PRs to land. Use `diagnose.py`'s `absorbable_branches` field instead.
+**Do not use `git branch --merged` for cleanup.** It only catches branches whose tip is an ancestor of the default branch, missing squash and rebase merges — the most common paths for PRs to land. Use `diagnose.py`'s `absorbable_branches` field instead.
 
 ### Absorbable branches (`absorbable_branches` in the JSON)
 
-Local branches (excluding `main`, `master`, and the currently checked-out branch) that are either (a) patch-id-equivalent to `$SRC/main` (via `git cherry`), or (b) the head ref of a MERGED PR **whose recorded head SHA still matches the local branch tip** (via `gh pr list --json headRefName,headRefOid`). Safe to delete. Branches matched only by (b) — squash-merges — are also listed in `squash_merged_branches` for callers that want to distinguish absorption source.
+Local branches (excluding the default branch and the currently checked-out branch) that are either (a) patch-id-equivalent to `$SRC/$DEFAULT` (via `git cherry`: at least one commit, every one already upstream — a branch with **no commits beyond its base** proves nothing and is never listed), or (b) the head ref of a MERGED PR **whose recorded head SHA still matches the local branch tip** (via `gh pr list --json headRefName,headRefOid`). Safe to delete. Branches matched only by (b) — squash-merges — are also listed in `squash_merged_branches` for callers that want to distinguish absorption source.
 
-**Auto-delete without prompting** — membership in `absorbable_branches` is the safety check (patch-id equivalence or PR-merge-with-matching-SHA, both conservative). Print the list of deletions so the user sees what went, but do not ask per-branch. Use `-d` first (defensive — refuses if `git` disagrees); fall back to `-D` only for squash-merged branches (listed in `squash_merged_branches`) since `-d` still wants a patch-id match and will refuse there:
+**Auto-delete without prompting** — membership in `absorbable_branches` is the safety check (patch-id equivalence or PR-merge-with-matching-SHA, both conservative). Print the list of deletions so the user sees what went, but do not ask per-branch. Try `-d` first, then fall back to `-D` for **any** branch in the list: `-d` only accepts branches whose tip is a literal ancestor, so it refuses both squash-merged and rebase-merged branches even though their work is upstream. Membership in `absorbable_branches` — not `-d`'s opinion — is the safety signal, so never use `-D` on a branch outside the list:
 
 ```bash
 for b in <absorbable_branches>; do
@@ -127,15 +132,17 @@ Surface this list to the user with a warning ("branch X has commits made after i
 
 **Verification recipe before deletion.** Post-merge commits are often _also_ absorbed via subsequent squash-merges. To check:
 
-1. `git cherry -v $SRC/main <branch>` — `-` rows are already in upstream; `+` rows need investigation.
-2. For each `+` commit, grep upstream for its file additions (`git ls-tree $SRC/main <path>`) and commit subject (`git log --grep=... $SRC/main`). Squash-merges change patch-IDs but preserve file contents and messages.
+1. `git cherry -v $SRC/$DEFAULT <branch>` — `-` rows are already in upstream; `+` rows need investigation.
+2. For each `+` commit, grep upstream for its file additions (`git ls-tree $SRC/$DEFAULT <path>`) and commit subject (`git log --grep=... $SRC/$DEFAULT`). Squash-merges change patch-IDs but preserve file contents and messages.
 3. If every `+` commit is accounted for, the branch is fully absorbed — `git branch -D` is safe.
 
 The check is manual, not automated — judgment is required when commits moved content across files.
 
 ### Prunable worktrees (`worktrees` in the JSON)
 
-Each entry has `{path, branch, is_primary, absorbed, unmerged_count}`. **A worktree is prunable iff `is_primary == false AND absorbed == true`.** The primary checkout is flagged separately and is never a deletion candidate, regardless of its branch's absorption state — removing the primary is destructive.
+Each entry has `{path, branch, is_primary, is_current, absorbed, unmerged_count}`. **A worktree is prunable iff `is_primary == false AND is_current == false AND absorbed == true`.** The primary checkout is flagged separately and is never a deletion candidate, regardless of its branch's absorption state — removing the primary is destructive. `is_current` marks any worktree that holds the checked-out branch or contains the caller's cwd; `diagnose.py` forces `absorbed == false` there, because removing it would delete the directory the session is standing in.
+
+A worktree whose branch has **no commits beyond its base** (a fresh `git worktree add -b x $SRC/$DEFAULT`, possibly another session's) is reported `absorbed == false, unmerged_count == 0` — nothing to absorb is not the same as absorbed. Keep it.
 
 **Auto-remove without prompting** — `absorbed == true` combines patch-id absorption with PR-merge-plus-matching-SHA, so a worktree whose branch advanced past the merge point stays `absorbed == false` and is kept. Print what was removed so the user sees it, but do not ask per-worktree. `git worktree remove` refuses on dirty worktrees, which catches the edge case where the user had uncommitted work locally.
 
@@ -146,7 +153,7 @@ git branch -D <branch>   # branch left behind by worktree remove; safe after abs
 
 If `git worktree remove` fails (dirty worktree), skip that entry and surface the refusal to the user — do not force.
 
-Non-primary worktrees with `absorbed == false` (`unmerged_count > 0`) are **kept silently** — their branch still has work not yet in `$SRC/main`. No prompt, no deletion.
+Non-primary worktrees with `absorbed == false` are **kept silently** — their branch has work not yet in `$SRC/$DEFAULT` (`unmerged_count > 0`), has no commits yet, or is the caller's own. No prompt, no deletion.
 
 ### Claude plugins (`claude_plugins` in the JSON)
 
@@ -157,26 +164,26 @@ uninstall`), marketplaces first, then say what was installed and that a restart 
 absent the checkout predates the manifest. Never install a plugin that is not in the manifest; add it to the
 manifest in a PR instead so every machine gets it.
 
-### On main (`branch.is_main` true)
+### On the default branch (`branch.is_main` true)
 
 If `branch.can_force_align` is true, prefer:
 
 ```bash
-git pull --rebase $SRC main
-[ "$SRC" = "upstream" ] && git push --force-with-lease origin main
+git pull --rebase "$SRC" "$DEFAULT"
+[ "$SRC" = "upstream" ] && git push --force-with-lease origin "$DEFAULT"
 ```
 
 Otherwise:
 
 ```bash
-git pull $SRC main
+git pull "$SRC" "$DEFAULT"
 # Fork workflow: keep fork in sync
-[ "$SRC" = "upstream" ] && git push origin main
+[ "$SRC" = "upstream" ] && git push origin "$DEFAULT"
 ```
 
-If a PR is needed after syncing `main`, derive it from the remotes:
+If a PR is needed after syncing the default branch, derive it from the remotes:
 
-- Fork workflow (`origin` = fork, `upstream` = canonical): if commits are already on fork `main` but not canonical `main`, open a recovery PR from `origin:main` to `upstream:main` with `gh pr create --repo <upstream-owner>/<repo> --head <origin-owner>:main --base main`.
+- Fork workflow (`origin` = fork, `upstream` = canonical): if commits are already on the fork's `$DEFAULT` but not canonical `$DEFAULT`, open a recovery PR from `origin:$DEFAULT` to `upstream:$DEFAULT` with `gh pr create --repo <upstream-owner>/<repo> --head "<origin-owner>:$DEFAULT" --base "$DEFAULT"`.
 - No fork (`origin` is canonical): do **not** use the recovery flow. Create a feature branch from the current commit and open a branch PR instead.
 - Remote hygiene issues present: fix remotes first; do not guess the PR command from a miswired setup.
 
@@ -185,12 +192,12 @@ If a PR is needed after syncing `main`, derive it from the remotes:
 Check `branch.leftover_commits` first:
 
 - Non-empty → **ASK USER**: new PR for leftovers, or discard?
-- Empty → safe to switch to main and delete branch
+- Empty → safe to switch to the default branch and delete branch
 
 ```bash
 BRANCH=$(git branch --show-current)
-git checkout main && git pull $SRC main
-[ "$SRC" = "upstream" ] && git push origin main
+git checkout "$DEFAULT" && git pull "$SRC" "$DEFAULT"
+[ "$SRC" = "upstream" ] && git push origin "$DEFAULT"
 git branch -d "$BRANCH"  # use -D only if user confirmed discarding leftovers
 ```
 
@@ -217,15 +224,15 @@ If `worktree.stashes` is non-empty, list them and inform the user.
 
 ## Output Format
 
-| Check              | Status           | Action                                       |
-| ------------------ | ---------------- | -------------------------------------------- |
-| Remote naming      | pass/fail        | Offer rename commands from issue `fix` field |
-| Workflow           | PR / direct push | Warn if fork org pushing direct              |
-| Branch             | `branch.name`    | —                                            |
-| PR                 | `#N STATE`       | Context-dependent                            |
-| Uncommitted        | N files          | Listed below                                 |
-| Behind source/main | N commits        | Will pull                                    |
-| Stashes            | N stashes        | Listed below                                 |
+| Check         | Status           | Action                                       |
+| ------------- | ---------------- | -------------------------------------------- |
+| Remote naming | pass/fail        | Offer rename commands from issue `fix` field |
+| Workflow      | PR / direct push | Warn if fork org pushing direct              |
+| Branch        | `branch.name`    | —                                            |
+| PR            | `#N STATE`       | Context-dependent                            |
+| Uncommitted   | N files          | Listed below                                 |
+| Behind source | N commits        | Will pull                                    |
+| Stashes       | N stashes        | Listed below                                 |
 
 ## Step 4 — Shared CLAUDE.md setup / resync
 
@@ -291,7 +298,7 @@ when `actions` is empty.
 If `post_up_to_date_path` is non-null, run the hook-trust helper:
 
 ```bash
-skills/up-to-date/hook_trust.py --repo-toplevel $(git rev-parse --show-toplevel) --pretty
+"$HOME/.claude/skills/up-to-date/hook_trust.py" --repo-toplevel "$(git rev-parse --show-toplevel)" --pretty
 ```
 
 The helper returns a JSON object with `status`:
@@ -311,7 +318,7 @@ The helper returns a JSON object with `status`:
      is the same attack surface the enable flow rejects. If it is
      a symlink, abort with the enable-flow error and skip execution.
   2. Run
-     `hook_trust.py --approve --repo-toplevel <toplevel> --expected-sha256 <current_hash>`
+     `"$HOME/.claude/skills/up-to-date/hook_trust.py" --approve --repo-toplevel "<toplevel>" --expected-sha256 <current_hash>`
      to record the hash. **`<current_hash>` is the `current_hash` field
      from the evaluate invocation above** — the exact hash the user
      just approved. Passing it lets the helper abort if the file
@@ -363,7 +370,7 @@ Ask: "Want to `/clear` context for a fresh start?"
 
 ## Safety
 
-- NEVER force push — **except** when syncing a fork's main and either (a) the only divergence is automated backlink commits (`chore: update backlinks [skip ci]`) or (b) the fork-only commits are already present upstream by patch equivalence (`git cherry -v upstream/main main` shows only `-` entries), so resetting local `main` to `upstream/main` and force-pushing `origin/main` loses no unique work. In those cases, force push to the fork is safe and expected.
+- NEVER force push — **except** when syncing a fork's default branch and either (a) the only divergence is automated backlink commits (`chore: update backlinks [skip ci]`) or (b) the fork-only commits are already present upstream by patch equivalence (`git cherry -v upstream/$DEFAULT $DEFAULT` shows only `-` entries), so resetting the local default branch to `upstream/$DEFAULT` and force-pushing `origin/$DEFAULT` loses no unique work. In those cases, force push to the fork is safe and expected.
 - NEVER delete unmerged branches without asking
 - NEVER commit/discard uncommitted changes without user approval
 
@@ -375,11 +382,15 @@ If `diagnose.py` is missing or errors, fall back to running commands directly:
 SRC=$(git remote | grep -q '^upstream$' && echo upstream || echo origin)
 git remote -v
 git fetch --all --prune
+git remote set-head "$SRC" --auto >/dev/null 2>&1   # fetch does not refresh $SRC/HEAD
+DEFAULT=$(git symbolic-ref --short "refs/remotes/$SRC/HEAD" 2>/dev/null)
+DEFAULT=${DEFAULT#"$SRC/"}
+DEFAULT=${DEFAULT:-main}
 git branch --show-current
 git status --porcelain
 git stash list
-git rev-list --left-right --count $SRC/main...HEAD
-git cherry -v $SRC/main HEAD
+git rev-list --left-right --count "$SRC/$DEFAULT...HEAD"
+git cherry -v "$SRC/$DEFAULT" HEAD
 gh pr view --json state,number,title,mergeable,reviewDecision 2>/dev/null
 ```
 
