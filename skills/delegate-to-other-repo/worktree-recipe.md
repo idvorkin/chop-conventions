@@ -168,8 +168,11 @@ if ! grep -qxF '.worktrees/' "$exclude_file" 2>/dev/null; then
 fi
 
 # Sanity check — `.worktrees/` must now be ignored. `check-ignore`
-# respects `.git/info/exclude` as well as `.gitignore`.
-if ! git -C "$T" check-ignore -q .worktrees; then
+# respects `.git/info/exclude` as well as `.gitignore`. Query a subpath:
+# the trailing-slash pattern matches a bare `.worktrees` only once that
+# directory exists, so on a first dispatch the bare form reports "not
+# ignored" for a rule that is fine.
+if ! git -C "$T" check-ignore -q .worktrees/x; then
   echo "STOP: failed to exclude .worktrees/ via $exclude_file."
   echo "This should be impossible; investigate manually."
   exit 1

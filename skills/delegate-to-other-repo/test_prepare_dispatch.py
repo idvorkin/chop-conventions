@@ -495,6 +495,101 @@ class TestRunPrepareDryRun(unittest.TestCase):
         self.assertEqual(result["base_ref"], "origin/main")
         self.assertIsNotNone(result["worktree_path"])
 
+    def _run_real_with_failure(self, *, exclude_err, check_ignore_rc, worktree_rc):
+        """Drive a non-dry-run with every subprocess stubbed; fail one step."""
+        import subprocess
+
+        def is_(*expected):
+            return lambda args: tuple(args[: len(expected)]) == expected
+
+        script = [
+            (is_("rev-parse", "--is-inside-work-tree"), 0, "true\n", ""),
+            (
+                is_("remote", "get-url", "origin"),
+                0,
+                "git@github.com:idvorkin/blog.git\n",
+                "",
+            ),
+            (is_("remote"), 0, "origin\n", ""),
+            (is_("fetch", "origin"), 0, "", ""),
+            (is_("remote", "set-head", "origin", "--auto"), 0, "", ""),
+            (
+                is_("symbolic-ref", "--short", "refs/remotes/origin/HEAD"),
+                0,
+                "origin/main\n",
+                "",
+            ),
+            (is_("rev-parse", "--verify", "--quiet", "origin/main"), 0, "", ""),
+            (is_("rev-parse", "--verify", "--quiet"), 1, "", ""),
+            (is_("rev-parse", "--show-toplevel"), 0, "/home/dev/gits/blog6\n", ""),
+            (is_("check-ignore", "-q", ".worktrees/x"), check_ignore_rc, "", ""),
+        ]
+        worktree_calls: list[tuple] = []
+
+        def fake_worktree_add(*a, **_kw):
+            worktree_calls.append(a)
+            return subprocess.CompletedProcess(
+                args=a, returncode=worktree_rc, stdout="", stderr="fatal: boom\n"
+            )
+
+        with (
+            mock.patch.object(
+                prepare_dispatch, "_git", side_effect=self._fake_git(script)
+            ),
+            mock.patch.object(
+                prepare_dispatch, "_worktree_add", side_effect=fake_worktree_add
+            ),
+            mock.patch.object(
+                prepare_dispatch,
+                "_ensure_exclude",
+                return_value=(exclude_err is None, exclude_err),
+            ),
+        ):
+            with tempfile.TemporaryDirectory() as td:
+                home = Path(td)
+                (home / "gits" / "blog").mkdir(parents=True)
+                result = prepare_dispatch.run_prepare(
+                    target_raw="blog",
+                    slug_raw="my-slug",
+                    task="do the thing",
+                    dry_run=False,
+                    cwd=Path(td),
+                    home=home,
+                )
+        return result, worktree_calls
+
+    def test_worktree_path_is_null_whenever_errors_non_empty(self):
+        """SKILL.md contract: non-empty errors => worktree_path is null.
+
+        Covers the three failures that happen AFTER the path was chosen.
+        Before the fix, the exclude-write and check-ignore failures returned
+        the path of a worktree that was never created.
+        """
+        cases = {
+            "exclude write": dict(
+                exclude_err="could not write exclude", check_ignore_rc=0, worktree_rc=0
+            ),
+            "check-ignore": dict(exclude_err=None, check_ignore_rc=1, worktree_rc=0),
+            "worktree add": dict(exclude_err=None, check_ignore_rc=0, worktree_rc=128),
+        }
+        for name, kwargs in cases.items():
+            with self.subTest(name):
+                result, worktree_calls = self._run_real_with_failure(**kwargs)
+                self.assertTrue(result["errors"])
+                self.assertIsNone(result["worktree_path"])
+                if name != "worktree add":
+                    self.assertEqual(worktree_calls, [])
+
+    def test_real_run_success_keeps_worktree_path(self):
+        result, worktree_calls = self._run_real_with_failure(
+            exclude_err=None, check_ignore_rc=0, worktree_rc=0
+        )
+        self.assertEqual(result["errors"], [])
+        self.assertTrue(
+            result["worktree_path"].endswith("/.worktrees/delegated-my-slug")
+        )
+        self.assertEqual(len(worktree_calls), 1)
+
     def test_owner_repo_slug_error_populates_stable_keys(self):
         """Error paths must still emit the documented top-level keys.
 

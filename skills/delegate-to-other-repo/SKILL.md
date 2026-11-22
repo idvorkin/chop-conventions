@@ -59,8 +59,9 @@ Parent (you)                             Subagent (fresh context)
                                          4. Do the task
                                          5. Detect fork vs direct
                                          6. Commit code, push, PR
-                                         7. Commit reasoning doc
-                                            separately
+                                         7. Write reasoning doc to
+                                            /tmp/agent-notes/ (never
+                                            committed)
                                          8. Reflect on lessons
 6. Receive final message ◄───────────    9. Return PR: / Summary: /
 7. Relay to user                            Notes: / (optional) Lessons:
@@ -172,7 +173,7 @@ Run the helper — it performs Phase 1d validation + Phase 2 worktree
 setup in a single call and returns the inputs Phase 3 needs as JSON:
 
 ```bash
-skills/delegate-to-other-repo/prepare_dispatch.py \
+~/.claude/skills/delegate-to-other-repo/prepare_dispatch.py \
   --target <name|abs-path|rel-path> \
   --slug <task-slug> \
   --task "<task description>" \
@@ -229,6 +230,10 @@ and this skill becomes the rotting one. When reviewing a helper change,
 diff the docstring and the fallback recipe together.
 
 ### Testing
+
+Run from the chop-conventions checkout (worktree) you are editing — the
+installed `~/.claude/skills/` path is a symlink to the primary checkout
+and would test that branch, not your changes:
 
 ```bash
 cd skills/delegate-to-other-repo && python3 -m unittest test_prepare_dispatch
