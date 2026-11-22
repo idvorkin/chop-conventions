@@ -1,6 +1,3 @@
 {
-  "extraPaths": [
-    "skills/up-to-date",
-    "dev-setup/tools"
-  ]
+	"extraPaths": ["skills/up-to-date", "dev-setup/tools"]
 }

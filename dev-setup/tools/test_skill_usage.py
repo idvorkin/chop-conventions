@@ -10,16 +10,32 @@ KNOWN = ["ammon", "up-to-date", "docs"]
 
 def tool_line(name, uuid="u1", session="s1", ts="2026-11-20T01:00:00Z"):
     return json.dumps(
-        {"type": "user", "uuid": uuid, "sessionId": session, "timestamp": ts,
-         "message": {"role": "user", "content": [{"type": "tool_result", "content": ""}]},
-         "toolUseResult": {"success": True, "commandName": name}}
+        {
+            "type": "user",
+            "uuid": uuid,
+            "sessionId": session,
+            "timestamp": ts,
+            "message": {
+                "role": "user",
+                "content": [{"type": "tool_result", "content": ""}],
+            },
+            "toolUseResult": {"success": True, "commandName": name},
+        }
     )
 
 
 def typed_line(name, uuid="t1", session="s1", ts="2026-11-20T02:00:00Z"):
     return json.dumps(
-        {"type": "user", "uuid": uuid, "sessionId": session, "timestamp": ts,
-         "message": {"role": "user", "content": f"<command-name>/{name}</command-name>"}}
+        {
+            "type": "user",
+            "uuid": uuid,
+            "sessionId": session,
+            "timestamp": ts,
+            "message": {
+                "role": "user",
+                "content": f"<command-name>/{name}</command-name>",
+            },
+        }
     )
 
 
@@ -40,18 +56,28 @@ def test_prefixed_and_unknown_names_skipped():
 
 
 def test_assistant_text_mentioning_command_not_counted():
-    rec = {"type": "assistant", "uuid": "a", "message": {"content": [{"type": "text", "text": "<command-name>/ammon</command-name>"}]}}
+    rec = {
+        "type": "assistant",
+        "uuid": "a",
+        "message": {
+            "content": [{"type": "text", "text": "<command-name>/ammon</command-name>"}]
+        },
+    }
     assert uses_in_record(rec, set(KNOWN)) == []
 
 
 def test_duplicate_uuid_across_files_counted_once():
-    report = scan([[tool_line("ammon", uuid="x")], [tool_line("ammon", uuid="x")]], KNOWN)
+    report = scan(
+        [[tool_line("ammon", uuid="x")], [tool_line("ammon", uuid="x")]], KNOWN
+    )
     assert len(report.uses) == 1
     assert report.files == 2
 
 
 def test_window_spans_all_lines_not_just_hits():
-    plain = json.dumps({"type": "assistant", "uuid": "p", "timestamp": "2026-10-01T00:00:00Z"})
+    plain = json.dumps(
+        {"type": "assistant", "uuid": "p", "timestamp": "2026-10-01T00:00:00Z"}
+    )
     report = scan([[plain, tool_line("ammon")]], KNOWN)
     assert report.first_ts == "2026-10-01T00:00:00Z"
     assert report.last_ts == "2026-11-20T01:00:00Z"
@@ -71,7 +97,13 @@ def test_summarize_orders_and_counts_sessions():
     ]
     rows = summarize(scan([lines], KNOWN))
     assert [r["skill"] for r in rows] == ["ammon", "docs", "up-to-date"]
-    assert rows[0] == {"skill": "ammon", "uses": 3, "sessions": 2, "typed": 1, "last_used": "2026-11-21T00:00:00Z"}
+    assert rows[0] == {
+        "skill": "ammon",
+        "uses": 3,
+        "sessions": 2,
+        "typed": 1,
+        "last_used": "2026-11-21T00:00:00Z",
+    }
     assert rows[2]["uses"] == 0 and rows[2]["last_used"] is None
 
 

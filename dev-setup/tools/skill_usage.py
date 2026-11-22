@@ -59,7 +59,11 @@ def _texts(content) -> list[str]:
     if isinstance(content, str):
         return [content]
     if isinstance(content, list):
-        return [b.get("text", "") for b in content if isinstance(b, dict) and b.get("type") == "text"]
+        return [
+            b.get("text", "")
+            for b in content
+            if isinstance(b, dict) and b.get("type") == "text"
+        ]
     return []
 
 
@@ -129,11 +133,16 @@ def summarize(report: Report) -> list[dict]:
 
 def render(report: Report, rows: list[dict]) -> str:
     window = f"{(report.first_ts or '?')[:10]} .. {(report.last_ts or '?')[:10]}"
-    out = [f"Skill usage from {report.files} transcript files, {window} (this machine only)", ""]
+    out = [
+        f"Skill usage from {report.files} transcript files, {window} (this machine only)",
+        "",
+    ]
     out.append(f"{'uses':>5} {'sessions':>8} {'typed':>5}  {'last used':<10}  skill")
     for r in rows:
         last = (r["last_used"] or "-")[:10]
-        out.append(f"{r['uses']:>5} {r['sessions']:>8} {r['typed']:>5}  {last:<10}  {r['skill']}")
+        out.append(
+            f"{r['uses']:>5} {r['sessions']:>8} {r['typed']:>5}  {last:<10}  {r['skill']}"
+        )
     unused = [r["skill"] for r in rows if r["uses"] == 0]
     out += ["", f"{len(unused)} of {len(rows)} skills unused in this window"]
     return "\n".join(out)
@@ -153,9 +162,21 @@ def _read_files(projects_dir: Path):
 
 
 def main(argv: list[str] | None = None) -> int:
-    ap = argparse.ArgumentParser(description="Count how often this repo's skills are used.")
-    ap.add_argument("--projects", type=Path, default=PROJECTS_DIR, help="transcript root (default ~/.claude/projects)")
-    ap.add_argument("--skills", type=Path, default=SKILLS_DIR, help="skills directory whose names count")
+    ap = argparse.ArgumentParser(
+        description="Count how often this repo's skills are used."
+    )
+    ap.add_argument(
+        "--projects",
+        type=Path,
+        default=PROJECTS_DIR,
+        help="transcript root (default ~/.claude/projects)",
+    )
+    ap.add_argument(
+        "--skills",
+        type=Path,
+        default=SKILLS_DIR,
+        help="skills directory whose names count",
+    )
     ap.add_argument("--json", action="store_true", help="emit JSON instead of a table")
     args = ap.parse_args(argv)
     if not args.projects.is_dir():
@@ -164,7 +185,16 @@ def main(argv: list[str] | None = None) -> int:
     report = scan(_read_files(args.projects), known_skills(args.skills))
     rows = summarize(report)
     if args.json:
-        print(json.dumps({"window": [report.first_ts, report.last_ts], "files": report.files, "skills": rows}, indent=2))
+        print(
+            json.dumps(
+                {
+                    "window": [report.first_ts, report.last_ts],
+                    "files": report.files,
+                    "skills": rows,
+                },
+                indent=2,
+            )
+        )
     else:
         print(render(report, rows))
     return 0
