@@ -39,12 +39,14 @@ Extract interval and action from the arguments. If no arguments, use `15m` and `
 Always report the current time first:
 
 ```bash
-echo "PST: $(TZ='America/Los_Angeles' date '+%I:%M %p %Z (%A, %B %d, %Y)')"
+TZ='America/Los_Angeles' date '+%I:%M %p %Z (%A, %B %d, %Y)'
 ```
 
 Tell the user conversationally:
 
-> It's 3:45 PM PST, Monday Mar 17.
+> It's 3:45 PM PDT, Monday Mar 17.
+
+Take the zone abbreviation from the command's `%Z` output (`PST` or `PDT`) — never hardcode it.
 
 Then execute the action right now (this IS the first tick — no separate one-shot needed):
 
@@ -65,25 +67,31 @@ Then execute the action right now (this IS the first tick — no separate one-sh
 
 ### 4. Build the cron prompt
 
+Start every prompt with the marker `[clock:<action>]`, where `<action>` is `time`, the `/skill-name`, or the reminder text. Step 5 uses the marker to find this clock's earlier jobs. Each prompt below starts with it.
+
 **If action is `time`:**
 
 ```
-Report the current time to the user. Run: TZ='America/Los_Angeles' date '+%I:%M %p %Z (%A, %B %d, %Y)' — then tell them the time in one line, e.g. "Clock: It's 4:48 PM PST, Monday Mar 17." Keep it to one line.
+[clock:time] Report the current time to the user. Run: TZ='America/Los_Angeles' date '+%I:%M %p %Z (%A, %B %d, %Y)' — then tell them the time in one line, e.g. "Clock: It's 4:48 PM PDT, Monday Mar 17." — use the zone abbreviation the command printed (PST or PDT), never a fixed one. Keep it to one line.
 ```
 
 **If action is a `/skill-name`:**
 
 ```
-Run the <skill-name> skill now. Use a background Agent subagent (run_in_background: true) so it doesn't block the main conversation.
+[clock:/<skill-name>] Run the <skill-name> skill now. Use a background Agent subagent (run_in_background: true) so it doesn't block the main conversation.
 ```
 
 **If action is custom text:**
 
 ```
-Reminder: <the text>. Also report the current time (run: TZ='America/Los_Angeles' date '+%I:%M %p %Z').
+[clock:<the text>] Reminder: <the text>. Also report the current time (run: TZ='America/Los_Angeles' date '+%I:%M %p %Z').
 ```
 
-### 5. Create the recurring cron job
+### 5. Replace earlier jobs, then create the recurring cron job
+
+Call `CronList` first. `CronDelete` every job whose prompt starts with this action's marker `[clock:<action>]` — the old recurring job and its pending renewal. Otherwise each re-run (including every self-renewal) stacks another schedule that renews itself forever. Also delete unmarked jobs an older `/clock` created for the same action (same prompt text, no marker). Leave jobs with a different marker alone: they are other clocks the user still wants.
+
+Then create the new job:
 
 - **cron**: (from step 3)
 - **recurring**: true
@@ -93,21 +101,21 @@ Reminder: <the text>. Also report the current time (run: TZ='America/Los_Angeles
 
 CronCreate jobs auto-expire after 3 days. Create a one-shot renewal that fires ~70 hours from now and re-invokes `/clock` with the same arguments.
 
-Use `date` to calculate the renewal time reliably. GNU vs BSD `date` differ — use whichever works on the host:
+Use `date` to calculate the renewal time reliably. CronCreate reads cron fields in the host's **local** timezone, so compute it in local time — no `-u`, no `TZ=` override (a UTC time would fire hours late, past the expiry, on a host west of UTC). GNU vs BSD `date` differ — use whichever works on the host:
 
 ```bash
 # Linux / GNU coreutils
-date -u -d '+70 hours' '+%M %H %d %m *'
+date -d '+70 hours' '+%M %H %d %m *'
 
 # macOS / BSD
-date -u -v +70H '+%M %H %d %m *'
+date -v +70H '+%M %H %d %m *'
 ```
 
 Use that output directly as the cron expression.
 
 - **cron**: (output of the date command above)
 - **recurring**: false
-- **prompt**: `The clock cron job is about to expire. Re-invoke: /clock <original arguments>. Run the skill now.`
+- **prompt**: `[clock:<action>] The clock cron job is about to expire. Re-invoke: /clock <original arguments>. Run the skill now.`
 
 ### 7. Confirm
 
@@ -115,7 +123,8 @@ Use that output directly as the cron expression.
 
 ## Notes
 
-- If the user runs `/clock` again with the same or different args, just create new cron jobs — a few hours of overlap is fine.
+- Re-running `/clock` for the same action replaces that action's jobs (step 5), so a new interval takes over cleanly. A different action is a separate clock and runs alongside.
+- To stop a clock: `CronList`, then `CronDelete` the jobs carrying its `[clock:<action>]` marker.
 - All cron minutes are offset to avoid :00/:15/:30/:45 congestion marks.
 - Session-only: all cron jobs die when Claude exits.
 - For `/skill-name` actions, the skill must be available in the session.
