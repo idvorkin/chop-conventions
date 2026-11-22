@@ -19,19 +19,25 @@ import sys
 import unittest
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 _SKILL_DIR = Path(__file__).resolve().parent.parent
 if str(_SKILL_DIR) not in sys.path:
     sys.path.insert(0, str(_SKILL_DIR))
 
+import pr_hygiene  # noqa: E402
 from pr_hygiene import (  # noqa: E402
     classify,
+    current_gh_login,
+    exit_code,
     gather_prs,
+    graphql_pr,
     has_red,
     is_bot,
     is_noise_comment,
     render_markdown,
+    resolve_authors,
+    run_cli,
     search_open_prs,
     sort_rows,
 )
@@ -359,6 +365,269 @@ class TestGhShellOuts(unittest.TestCase):
         run = MagicMock(return_value=MagicMock(returncode=0, stdout=payload, stderr=""))
         prs, _ = gather_prs(["a"], "o/keep", run=run)
         self.assertEqual([p["repo"] for p in prs], ["o/keep"])
+
+
+class TestApproval(unittest.TestCase):
+    def test_human_approval_after_push_is_not_red(self):
+        # Approved 1 day ago, last push 5 days ago, author silent since: an
+        # approval is the reviewer's last word but NOT an ask.
+        pr = _pr(
+            decision="APPROVED",
+            push_days=5,
+            reviews=[_review("alice", state="APPROVED", days_ago=1)],
+        )
+        r = classify(pr, "me")
+        self.assertEqual(r["tier"], "yellow")
+        self.assertEqual(r["approved_by"], "alice")
+        self.assertIn("approved by alice", r["verdict"])
+
+    def test_comment_after_approval_is_still_red(self):
+        # Only the LATEST human event counts: approve, then a follow-up ask.
+        pr = _pr(
+            push_days=5,
+            reviews=[_review("alice", state="APPROVED", days_ago=3)],
+            comments=[_comment("alice", "actually, one more thing", days_ago=1)],
+        )
+        r = classify(pr, "me")
+        self.assertEqual(r["tier"], "red")
+        self.assertIsNone(r["approved_by"])
+
+    def test_approval_does_not_hide_other_reviewers_ask(self):
+        # alice asked 2 days ago, bob approved 1 day ago, author silent:
+        # bob's approval must not mask alice's unanswered ask.
+        pr = _pr(
+            push_days=5,
+            comments=[_comment("alice", "please fix X", days_ago=2)],
+            reviews=[_review("bob", state="APPROVED", days_ago=1)],
+        )
+        r = classify(pr, "me")
+        self.assertEqual(r["tier"], "red")
+        self.assertIn("last word", r["verdict"])
+
+    def test_approval_with_unresolved_thread_is_still_red(self):
+        pr = _pr(
+            push_days=5,
+            reviews=[_review("alice", state="APPROVED", days_ago=1)],
+            threads=[_thread([_comment("bob", "please change X", days_ago=2)])],
+        )
+        self.assertEqual(classify(pr, "me")["tier"], "red")
+
+    def test_approval_with_changes_requested_decision_is_still_red(self):
+        # alice approved last, but bob's CHANGES_REQUESTED still stands.
+        pr = _pr(
+            decision="CHANGES_REQUESTED",
+            reviews=[
+                _review("bob", state="CHANGES_REQUESTED", days_ago=3),
+                _review("alice", state="APPROVED", days_ago=1),
+            ],
+        )
+        self.assertEqual(classify(pr, "me")["tier"], "red")
+
+    def test_commented_review_last_word_is_still_red(self):
+        pr = _pr(push_days=5, reviews=[_review("alice", days_ago=1)])
+        self.assertEqual(classify(pr, "me")["tier"], "red")
+
+
+class TestYellowVerdictMakesNoMergeClaim(unittest.TestCase):
+    def test_no_merge_ready_claim(self):
+        # Mergeability / CI are never queried, so the verdict must not assert
+        # them (CLAUDE.md: Measure, Don't Hardcode).
+        for pr in (
+            _pr(comments=[_comment("github-actions", "CI green", typename="Bot")]),
+            _pr(reviews=[_review("alice", state="APPROVED", days_ago=1)]),
+        ):
+            r = classify(pr, "me")
+            self.assertEqual(r["tier"], "yellow")
+            self.assertNotIn("merge", r["verdict"].lower())
+            self.assertNotIn("CI only", r["verdict"])
+
+
+def _gql(pr):
+    import json as _json
+
+    return MagicMock(
+        returncode=0,
+        stdout=_json.dumps({"data": {"repository": {"pullRequest": pr}}}),
+        stderr="",
+    )
+
+
+def _threads_page(n, has_next, cursor="C1"):
+    return {
+        "pageInfo": {
+            "hasNextPage": has_next,
+            "endCursor": cursor if has_next else None,
+        },
+        "nodes": [_thread([_comment("alice", f"ask {i}")]) for i in range(n)],
+    }
+
+
+class TestThreadPagination(unittest.TestCase):
+    def test_single_page_makes_one_call(self):
+        pr = _pr()
+        pr["reviewThreads"] = _threads_page(2, False)
+        run = MagicMock(return_value=_gql(pr))
+        out = graphql_pr("o/r", 1, run=run)
+        self.assertEqual(run.call_count, 1)
+        self.assertEqual(len(out["reviewThreads"]["nodes"]), 2)
+
+    def test_follows_next_page(self):
+        first = _pr()
+        first["reviewThreads"] = _threads_page(100, True, cursor="CUR")
+        second = {"reviewThreads": _threads_page(3, False)}
+        run = MagicMock(side_effect=[_gql(first), _gql(second)])
+        out = graphql_pr("o/r", 1, run=run)
+        self.assertEqual(len(out["reviewThreads"]["nodes"]), 103)
+        self.assertEqual(run.call_count, 2)
+        self.assertIn("cursor=CUR", run.call_args_list[1].args[0])
+
+    def test_cap_raises_instead_of_truncating(self):
+        page = _pr()
+        page["reviewThreads"] = _threads_page(1, True)
+        run = MagicMock(return_value=_gql(page))
+        with patch.object(pr_hygiene, "MAX_THREAD_PAGES", 3):
+            with self.assertRaises(RuntimeError):
+                graphql_pr("o/r", 1, run=run)
+        self.assertEqual(run.call_count, 3)
+
+    def test_missing_page_info_is_single_page(self):
+        # Older/synthetic payloads without pageInfo must still work.
+        run = MagicMock(return_value=_gql(_pr()))
+        self.assertEqual(graphql_pr("o/r", 1, run=run)["reviewThreads"]["nodes"], [])
+
+
+class TestResolveAuthors(unittest.TestCase):
+    def test_cli_wins(self):
+        run = MagicMock()
+        self.assertEqual(
+            resolve_authors(["x"], env={"PR_HYGIENE_AUTHORS": "e"}, run=run), ["x"]
+        )
+        run.assert_not_called()
+
+    def test_env_beats_gh(self):
+        run = MagicMock()
+        self.assertEqual(
+            resolve_authors(None, env={"PR_HYGIENE_AUTHORS": "a, b,,"}, run=run),
+            ["a", "b"],
+        )
+        run.assert_not_called()
+
+    def test_falls_back_to_gh_user(self):
+        run = MagicMock(
+            return_value=MagicMock(returncode=0, stdout="octocat\n", stderr="")
+        )
+        self.assertEqual(resolve_authors(None, env={}, run=run), ["octocat"])
+        self.assertEqual(run.call_args.args[0][:3], ["gh", "api", "user"])
+
+    def test_gh_failure_raises(self):
+        run = MagicMock(
+            return_value=MagicMock(returncode=1, stdout="", stderr="not logged in")
+        )
+        with self.assertRaises(RuntimeError):
+            current_gh_login(run=run)
+
+    def test_gh_missing_raises_runtime_error(self):
+        run = MagicMock(side_effect=FileNotFoundError("gh"))
+        with self.assertRaises(RuntimeError):
+            current_gh_login(run=run)
+
+    def test_empty_login_raises(self):
+        run = MagicMock(return_value=MagicMock(returncode=0, stdout="\n", stderr=""))
+        with self.assertRaises(RuntimeError):
+            resolve_authors(None, env={}, run=run)
+
+
+class TestExitCode(unittest.TestCase):
+    def test_clean(self):
+        self.assertEqual(exit_code([{"tier": "green"}], [], gate=True), 0)
+
+    def test_red(self):
+        self.assertEqual(exit_code([{"tier": "red"}], [], gate=True), 1)
+
+    def test_errors_fail_closed_even_with_no_rows(self):
+        self.assertEqual(exit_code([], ["search failed"], gate=True), 2)
+
+    def test_errors_take_precedence_over_red(self):
+        self.assertEqual(exit_code([{"tier": "red"}], ["boom"], gate=True), 2)
+
+    def test_no_fail_always_zero(self):
+        self.assertEqual(exit_code([{"tier": "red"}], ["boom"], gate=False), 0)
+
+
+class TestRunCliFailsClosed(unittest.TestCase):
+    """End-to-end through run_cli with subprocess.run patched — no real gh."""
+
+    SEARCH = (
+        '[{"repository":{"nameWithOwner":"o/r"},"number":5,"title":"T",'
+        '"url":"u","updatedAt":"2026-01-01T00:00:00Z"}]'
+    )
+
+    def _run(self, fake, authors=("me",), fail_on_red=True):
+        with (
+            patch.object(pr_hygiene.subprocess, "run", side_effect=fake) as run,
+            patch.object(pr_hygiene.sys, "stdout"),
+            patch.object(pr_hygiene.sys, "stderr") as err,
+            patch.dict(pr_hygiene.os.environ, {}, clear=False),
+        ):
+            pr_hygiene.os.environ.pop("PR_HYGIENE_AUTHORS", None)
+            code = run_cli(
+                list(authors) if authors else None,
+                None,
+                as_json=True,
+                fail_on_red=fail_on_red,
+                max_workers=1,
+            )
+            stderr = "".join(c.args[0] for c in err.write.call_args_list)
+        return code, stderr, run
+
+    def test_search_failure_exits_nonzero(self):
+        fail = MagicMock(returncode=1, stdout="", stderr="gh: not logged in")
+        code, stderr, _ = self._run(lambda *a, **k: fail)
+        self.assertEqual(code, 2)
+        self.assertIn("not logged in", stderr)
+        self.assertIn("INCOMPLETE", stderr)
+
+    def test_partial_search_failure_exits_nonzero(self):
+        ok = MagicMock(returncode=0, stdout="[]", stderr="")
+        fail = MagicMock(returncode=1, stdout="", stderr="boom")
+
+        def fake(cmd, **k):
+            return fail if "--author=bad" in cmd else ok
+
+        code, _, _ = self._run(fake, authors=("good", "bad"))
+        self.assertEqual(code, 2)
+
+    def test_pr_fetch_failure_exits_nonzero(self):
+        search = MagicMock(returncode=0, stdout=self.SEARCH, stderr="")
+        fail = MagicMock(returncode=1, stdout="", stderr="HTTP 502")
+
+        def fake(cmd, **k):
+            return search if cmd[1] == "search" else fail
+
+        code, stderr, _ = self._run(fake)
+        self.assertEqual(code, 2)
+        self.assertIn("o/r#5", stderr)
+
+    def test_author_lookup_failure_exits_nonzero(self):
+        fail = MagicMock(returncode=1, stdout="", stderr="gh: not logged in")
+        code, stderr, run = self._run(lambda *a, **k: fail, authors=None)
+        self.assertEqual(code, 2)
+        self.assertIn("could not determine author", stderr)
+        self.assertEqual(run.call_count, 1)  # no search attempted
+
+    def test_no_fail_overrides_errors(self):
+        fail = MagicMock(returncode=1, stdout="", stderr="boom")
+        code, _, _ = self._run(lambda *a, **k: fail, fail_on_red=False)
+        self.assertEqual(code, 0)
+
+    def test_clean_run_exits_zero(self):
+        search = MagicMock(returncode=0, stdout=self.SEARCH, stderr="")
+
+        def fake(cmd, **k):
+            return search if cmd[1] == "search" else _gql(_pr())
+
+        code, _, _ = self._run(fake)
+        self.assertEqual(code, 0)
 
 
 if __name__ == "__main__":

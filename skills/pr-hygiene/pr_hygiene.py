@@ -7,17 +7,19 @@
 
 Why this exists
 ---------------
-`git-safe-push`'s sibling footgun: leaving PRs open with review comments that
-were never resolved or replied to. They pile up silently — GitHub gives no
+A quiet PR footgun: leaving PRs open with review comments that were never
+resolved or replied to. They pile up silently — GitHub gives no
 nudge, and a naive "the last comment isn't mine" filter over-flags ~3x because
 it can't tell a CodeRabbit auto-summary or a CI bot ping from a real ask.
 
 What it does
 ------------
-1. Enumerates open PRs authored by the user across BOTH GitHub identities
-   (`idvorkin` and `idvorkin-ai-tools` by default) via `gh search prs`, deduped
-   by repo#number. (Bitbucket repos like igor2 are invisible to `gh` — noted,
-   not an error.)
+1. Enumerates open PRs authored by the user via `gh search prs`, deduped by
+   repo#number. Authors come from `--author` (repeatable), else the
+   `PR_HYGIENE_AUTHORS` env var (comma-separated — use it to cover several
+   GitHub identities), else the logged-in `gh` user (`gh api user`).
+   (Non-GitHub hosts such as Bitbucket are invisible to `gh` — noted, not an
+   error.)
 2. For each PR, one GraphQL round-trip pulls review threads (isResolved /
    isOutdated / comments), reviewDecision, reviews, and issue comments.
 3. Classifies each PR into a tier — this filtering is the whole point:
@@ -25,23 +27,29 @@ What it does
                             (human reviewer, or a bot *finding* that isn't an
                             auto-summary), OR reviewDecision == CHANGES_REQUESTED,
                             OR a human reviewer's comment is the last word and
-                            post-dates our last push.
-     YELLOW awaiting merge — flagged only because a CodeRabbit auto-summary or a
-                            github-actions/CI comment is the last event, with NO
-                            open threads. Not stale, just merge-ready.
+                            the author hasn't responded since. A human
+                            APPROVED review as the last word is NOT an ask.
+     YELLOW no open asks  — there was review activity (bot auto-summary / CI
+                            comment, resolved threads, an approval, or an ask
+                            the author already answered) but nothing is
+                            waiting on the author. Mergeability and CI status
+                            are NOT checked — this is not a "merge-ready" claim.
      GREEN  clean         — no review activity at all.
    CodeRabbit walkthrough/summary comments and CI-bot (github-actions) comments
    are treated as NOISE, never as asks.
 4. Prints a ranked markdown table (RED first). `--json` for machines. Exit code
-   is nonzero when any RED PR exists, so it can gate a session-close check.
+   is 1 when any RED PR exists, and 2 when anything could not be queried (author
+   lookup, a `gh search`, or any per-PR fetch failed) — the gate fails CLOSED:
+   "couldn't check" is never reported as "clean".
 
 Usage
 -----
-    pr-hygiene                          # markdown table across both identities
+    pr-hygiene                          # markdown table for the logged-in gh user
     pr-hygiene --json                   # machine-readable JSON
     pr-hygiene --author octocat         # override author (repeatable)
     pr-hygiene --repo idvorkin/chop-conventions   # filter to one repo
-    pr-hygiene --no-fail                # always exit 0 (don't gate on RED)
+    PR_HYGIENE_AUTHORS=me,my-bot pr-hygiene   # several identities
+    pr-hygiene --no-fail                # always exit 0 (advisory; errors still printed)
 
 Dependencies: gh (GitHub CLI, authenticated), python>=3.13. Typer for the CLI.
 
@@ -51,14 +59,22 @@ lazy-imported inside `_build_app()`.
 """
 
 import json
+import os
 import subprocess
 import sys
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
 from typing import Callable
 
-DEFAULT_AUTHORS = ["idvorkin", "idvorkin-ai-tools"]
+AUTHORS_ENV = "PR_HYGIENE_AUTHORS"
 DEFAULT_MAX_WORKERS = 8
+# Safety cap on reviewThreads pagination (100 threads/page). Hitting it raises,
+# so the PR lands in the error tier rather than being judged on partial data.
+MAX_THREAD_PAGES = 20
+
+EXIT_OK = 0
+EXIT_RED = 1
+EXIT_ERROR = 2
 
 # Bot logins that post *auto-summaries* / walkthroughs / CI status — NOISE, never
 # an ask. CodeRabbit's real findings arrive as review *threads*, handled
@@ -182,8 +198,8 @@ def classify(pr: dict, author_login: str | None) -> dict:
     identity — e.g. idvorkin reviewing an idvorkin-ai-tools PR — correctly
     counts as a real ask).
 
-    Returns a dict: {tier, unresolved, human_ask, changes_requested, verdict,
-    last_actor, last_days}."""
+    Returns a dict: {tier, unresolved, human_ask, changes_requested,
+    approved_by, verdict, last_actor, last_days}."""
     threads = ((pr.get("reviewThreads") or {}).get("nodes")) or []
     reviews = ((pr.get("reviews") or {}).get("nodes")) or []
     icomments = ((pr.get("comments") or {}).get("nodes")) or []
@@ -220,13 +236,15 @@ def classify(pr: dict, author_login: str | None) -> dict:
     # or submitted a review — any of those clears the flag (the reviewer no
     # longer has the last word). Comparing only against the last *push* wrongly
     # keeps PRs where the author already replied in a comment.
-    human_events: list[tuple[datetime, str]] = []
+    # Each event carries the review state (None for plain comments) so an
+    # APPROVED review as the last word isn't mistaken for an ask.
+    human_events: list[tuple[datetime, str, str | None]] = []
     for r in reviews:
         lg, tn = _login(r), _typename(r)
         if lg and lg != author_login and not is_bot(lg, tn):
             dt = _parse_dt(r.get("submittedAt"))
             if dt:
-                human_events.append((dt, lg))
+                human_events.append((dt, lg, r.get("state")))
     for c in icomments:
         lg, tn = _login(c), _typename(c)
         if (
@@ -237,7 +255,7 @@ def classify(pr: dict, author_login: str | None) -> dict:
         ):
             dt = _parse_dt(c.get("createdAt"))
             if dt:
-                human_events.append((dt, lg))
+                human_events.append((dt, lg, None))
 
     author_events: list[datetime] = []
     if last_push:
@@ -268,11 +286,23 @@ def classify(pr: dict, author_login: str | None) -> dict:
                     author_events.append(dt)
     author_latest = max(author_events) if author_events else None
 
+    # An approval is a human's last word but not an ask. Unresolved real-ask
+    # threads and CHANGES_REQUESTED still force red independently below.
     human_last_word = False
-    if human_events:
-        latest_human = max(human_events, key=lambda e: e[0])[0]
-        if author_latest is None or latest_human > author_latest:
+    # Judged per reviewer, on each one's LATEST event: a reviewer whose latest
+    # is APPROVED is settled, but one reviewer's approval must not hide
+    # another reviewer's unanswered ask.
+    latest_by_human: dict[str, tuple[datetime, str | None]] = {}
+    for dt, lg, state in human_events:
+        if lg not in latest_by_human or dt > latest_by_human[lg][0]:
+            latest_by_human[lg] = (dt, state)
+    approvers: list[str] = []
+    for lg, (dt, state) in latest_by_human.items():
+        if state == "APPROVED":
+            approvers.append(lg)
+        elif author_latest is None or dt > author_latest:
             human_last_word = True
+    approved_by = ", ".join(sorted(approvers)) or None
 
     needs_action = bool(real_ask_threads) or changes_requested or human_last_word
 
@@ -318,7 +348,10 @@ def classify(pr: dict, author_login: str | None) -> dict:
         verdict = "; ".join(bits)
     elif had_review_activity:
         tier = "yellow"
-        verdict = "auto-summary / CI only, no open threads — merge-ready"
+        # Only what was measured: no mergeability / CI claim (never queried).
+        verdict = "no open asks"
+        if approved_by:
+            verdict = f"approved by {approved_by}; " + verdict
     else:
         tier = "green"
         verdict = "no review activity"
@@ -328,6 +361,7 @@ def classify(pr: dict, author_login: str | None) -> dict:
         "unresolved": len(unresolved),
         "human_ask": human_ask,
         "changes_requested": changes_requested,
+        "approved_by": approved_by,
         "verdict": verdict,
         "last_actor": last_actor,
         "last_days": last_days,
@@ -346,6 +380,7 @@ query($owner:String!,$repo:String!,$number:Int!){
       updatedAt
       commits(last:1){nodes{commit{committedDate pushedDate}}}
       reviewThreads(first:100){
+        pageInfo{hasNextPage endCursor}
         nodes{
           isResolved
           isOutdated
@@ -358,6 +393,68 @@ query($owner:String!,$repo:String!,$number:Int!){
   }
 }
 """
+
+# Follow-up pages of reviewThreads only (the rest came with the first page).
+_GRAPHQL_THREADS_PAGE = """
+query($owner:String!,$repo:String!,$number:Int!,$cursor:String!){
+  repository(owner:$owner,name:$repo){
+    pullRequest(number:$number){
+      reviewThreads(first:100, after:$cursor){
+        pageInfo{hasNextPage endCursor}
+        nodes{
+          isResolved
+          isOutdated
+          comments(first:20){ nodes{ author{login __typename} body createdAt } }
+        }
+      }
+    }
+  }
+}
+"""
+
+
+def current_gh_login(*, run: Callable | None = None) -> str:
+    """Login of the authenticated `gh` user. Raises RuntimeError when gh is
+    missing, not logged in, or returns nothing."""
+    if run is None:
+        run = subprocess.run
+    try:
+        result = run(
+            ["gh", "api", "user", "--jq", ".login"],
+            capture_output=True,
+            text=True,
+            timeout=60,
+        )
+    except (OSError, subprocess.SubprocessError) as exc:
+        raise RuntimeError(f"could not run gh: {exc}") from exc
+    if result.returncode != 0:
+        raise RuntimeError(
+            (result.stderr or "").strip() or f"gh exited {result.returncode}"
+        )
+    login = (result.stdout or "").strip()
+    if not login:
+        raise RuntimeError("gh api user returned no login")
+    return login
+
+
+def resolve_authors(
+    cli_authors: list[str] | None,
+    *,
+    env: dict | None = None,
+    run: Callable | None = None,
+) -> list[str]:
+    """Authors to search, by precedence: `--author` flags, then the
+    `PR_HYGIENE_AUTHORS` env var (comma-separated), then the logged-in gh
+    user. Raises RuntimeError when none can be determined — an empty author
+    list would search nothing and look clean."""
+    if cli_authors:
+        return list(cli_authors)
+    if env is None:
+        env = os.environ
+    from_env = [a.strip() for a in (env.get(AUTHORS_ENV) or "").split(",") if a.strip()]
+    if from_env:
+        return from_env
+    return [current_gh_login(run=run)]
 
 
 def search_open_prs(author: str, *, run: Callable | None = None) -> list[dict]:
@@ -399,18 +496,16 @@ def search_open_prs(author: str, *, run: Callable | None = None) -> list[dict]:
     return out
 
 
-def graphql_pr(repo: str, number: int, *, run: Callable | None = None) -> dict:
-    """Fetch one PR's review state via GraphQL. Returns the pullRequest dict.
-    Raises RuntimeError on gh/GraphQL failure."""
-    if run is None:
-        run = subprocess.run
+def _graphql_pr_page(repo: str, number: int, cursor: str | None, run: Callable) -> dict:
+    """One GraphQL round-trip: the full PR (cursor None) or a follow-up page of
+    reviewThreads. Returns the pullRequest dict; raises RuntimeError on failure."""
     owner, name = repo.split("/", 1)
     cmd = [
         "gh",
         "api",
         "graphql",
         "-f",
-        f"query={_GRAPHQL}",
+        f"query={_GRAPHQL if cursor is None else _GRAPHQL_THREADS_PAGE}",
         "-f",
         f"owner={owner}",
         "-f",
@@ -418,6 +513,8 @@ def graphql_pr(repo: str, number: int, *, run: Callable | None = None) -> dict:
         "-F",
         f"number={number}",
     ]
+    if cursor is not None:
+        cmd += ["-f", f"cursor={cursor}"]
     result = run(cmd, capture_output=True, text=True, timeout=60)
     if result.returncode != 0:
         raise RuntimeError(
@@ -429,6 +526,33 @@ def graphql_pr(repo: str, number: int, *, run: Callable | None = None) -> dict:
     pr = ((payload.get("data") or {}).get("repository") or {}).get("pullRequest")
     if pr is None:
         raise RuntimeError("PR not found (null pullRequest)")
+    return pr
+
+
+def graphql_pr(repo: str, number: int, *, run: Callable | None = None) -> dict:
+    """Fetch one PR's review state via GraphQL, following reviewThreads
+    pagination so a PR with >100 threads isn't judged on its first page.
+    Returns the pullRequest dict. Raises RuntimeError on gh/GraphQL failure or
+    when the thread count exceeds the pagination cap."""
+    if run is None:
+        run = subprocess.run
+    pr = _graphql_pr_page(repo, number, None, run)
+    threads = pr.get("reviewThreads") or {}
+    nodes = list(threads.get("nodes") or [])
+    page_info = threads.get("pageInfo") or {}
+    pages = 1
+    while page_info.get("hasNextPage"):
+        cursor = page_info.get("endCursor")
+        if pages >= MAX_THREAD_PAGES or not cursor:
+            raise RuntimeError(
+                f"review threads truncated after {len(nodes)} "
+                f"({pages} page(s)) — cannot classify on partial data"
+            )
+        more = _graphql_pr_page(repo, number, cursor, run).get("reviewThreads") or {}
+        nodes.extend(more.get("nodes") or [])
+        page_info = more.get("pageInfo") or {}
+        pages += 1
+    pr["reviewThreads"] = {"nodes": nodes}
     return pr
 
 
@@ -521,7 +645,7 @@ def render_markdown(rows: list[dict], errors: list[str]) -> str:
     out.append("")
     out.append(
         f"{TIER_EMOJI['red']} {counts['red']} needs action · "
-        f"{TIER_EMOJI['yellow']} {counts['yellow']} awaiting merge · "
+        f"{TIER_EMOJI['yellow']} {counts['yellow']} no open asks · "
         f"{TIER_EMOJI['green']} {counts['green']} clean"
         + (
             f" · {TIER_EMOJI['error']} {counts['error']} unqueryable"
@@ -553,7 +677,7 @@ def render_markdown(rows: list[dict], errors: list[str]) -> str:
     out.append("")
     out.append(
         f"_{len(rows)} open PR(s) queried. "
-        f"Bitbucket repos (e.g. igor2) are invisible to `gh` and not included._"
+        f"Non-GitHub hosts (e.g. Bitbucket) are invisible to `gh` and not included._"
     )
     if errors:
         out.append("")
@@ -570,15 +694,38 @@ def has_red(rows: list[dict]) -> bool:
 # --------------------------------------------------------------------------- #
 # CLI                                                                          #
 # --------------------------------------------------------------------------- #
+def exit_code(rows: list[dict], errors: list[str], gate: bool) -> int:
+    """Gate exit code. Fails CLOSED: any error (author lookup, search, per-PR
+    fetch) is EXIT_ERROR, taking precedence over EXIT_RED — a run that couldn't
+    see everything must never pass as clean. `gate=False` (--no-fail) is the
+    explicit advisory opt-out and always returns 0."""
+    if not gate:
+        return EXIT_OK
+    if errors:
+        return EXIT_ERROR
+    return EXIT_RED if has_red(rows) else EXIT_OK
+
+
 def run_cli(
-    authors: list[str],
+    authors: list[str] | None,
     repo_filter: str | None,
     as_json: bool,
     fail_on_red: bool,
     max_workers: int,
 ) -> int:
-    log(f"[pr-hygiene] searching open PRs for: {', '.join(authors)}")
-    prs, search_errors = gather_prs(authors, repo_filter, run=None)
+    try:
+        authors = resolve_authors(authors)
+    except RuntimeError as exc:
+        prs, search_errors = (
+            [],
+            [
+                f"could not determine author (gh api user): {exc} — "
+                f"run `gh auth login`, or pass --author / set {AUTHORS_ENV}"
+            ],
+        )
+    else:
+        log(f"[pr-hygiene] searching open PRs for: {', '.join(authors)}")
+        prs, search_errors = gather_prs(authors, repo_filter, run=None)
     log(f"[pr-hygiene] {len(prs)} PR(s) after dedupe; querying review state…")
     rows = _parallel(prs, lambda m: analyze_pr(m, run=None), max_workers)
     query_errors = [
@@ -601,7 +748,14 @@ def run_cli(
     else:
         sys.stdout.write(render_markdown(rows, all_errors) + "\n")
 
-    return 1 if (fail_on_red and has_red(rows)) else 0
+    if all_errors:
+        log(
+            f"[pr-hygiene] ERROR: {len(all_errors)} query failure(s) — result is "
+            "INCOMPLETE, not clean:"
+        )
+        for e in all_errors:
+            log(f"[pr-hygiene]   - {e}")
+    return exit_code(rows, all_errors, gate=fail_on_red)
 
 
 def _build_app():  # pragma: no cover — thin Typer wrapper
@@ -618,7 +772,11 @@ def _build_app():  # pragma: no cover — thin Typer wrapper
         author: list[str] = typer.Option(
             None,
             "--author",
-            help=f"GitHub author to search (repeatable). Default: {', '.join(DEFAULT_AUTHORS)}.",
+            help=(
+                "GitHub author to search (repeatable). Default: the "
+                f"{AUTHORS_ENV} env var (comma-separated), else the logged-in "
+                "gh user."
+            ),
         ),
         repo: str = typer.Option(
             None, "--repo", help="Filter to a single repo (owner/name)."
@@ -627,7 +785,9 @@ def _build_app():  # pragma: no cover — thin Typer wrapper
             False, "--json", help="Emit machine-readable JSON instead of markdown."
         ),
         no_fail: bool = typer.Option(
-            False, "--no-fail", help="Always exit 0 (don't gate on 🔴)."
+            False,
+            "--no-fail",
+            help="Always exit 0 (don't gate on 🔴 or on query errors).",
         ),
         max_workers: int = typer.Option(
             DEFAULT_MAX_WORKERS, "--max-workers", min=1, help="Parallel gh calls."
@@ -635,10 +795,13 @@ def _build_app():  # pragma: no cover — thin Typer wrapper
     ) -> None:
         if ctx.invoked_subcommand is not None:
             return
-        authors = author or DEFAULT_AUTHORS
         raise typer.Exit(
             run_cli(
-                authors, repo, as_json, fail_on_red=not no_fail, max_workers=max_workers
+                author or None,
+                repo,
+                as_json,
+                fail_on_red=not no_fail,
+                max_workers=max_workers,
             )
         )
 
