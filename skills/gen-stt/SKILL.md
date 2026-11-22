@@ -31,6 +31,8 @@ Parse the user's input for:
 - **`--output path`**: Single-mode transcript destination. Defaults to
   `<input>.txt` (or `.json`) alongside the input.
 - **`--output-dir DIR`**: Batch-mode transcript destination dir.
+  Batch inputs that would share a transcript name (`a.wav` + `a.mp3`)
+  keep their audio suffix instead: `a.wav.txt`, `a.mp3.txt`.
 - **`--json`**: Emit `{text, duration_s, model, elapsed_s}` JSON
   instead of plain text.
 - **`--keep-wav`**: Retain the intermediate transcoded WAV for
@@ -73,6 +75,9 @@ Parse the user's input for:
 nice -n 19 ionice -c 3 env OMP_NUM_THREADS=2 ORT_NUM_THREADS=2 MKL_NUM_THREADS=2 <cmd>
 ```
 
+`ionice -c 3` is included only where `ionice` exists (Linux); macOS has
+no `ionice`, so there the prefix is `nice -n 19 env …`.
+
 The prefix is baked into a single `_niced_run()` helper in
 `parakeet-stt.py`; there is no code path that invokes ffmpeg or
 onnx-asr without it. Rationale:
@@ -85,7 +90,7 @@ onnx-asr without it. Rationale:
   fastembed without the cap.)
 - Leaves 6 cores for interactive work on dev VMs.
 
-Verify on a live run with `awk '{print $19}' /proc/<pid>/stat` (nice
+Verify on a live Linux run with `awk '{print $19}' /proc/<pid>/stat` (nice
 level) and `ionice -p <pid>` (IO class `idle`).
 
 ## Usage

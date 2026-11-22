@@ -7,7 +7,7 @@
 # ///
 # ABOUTME: Local speech-to-text via NVIDIA Parakeet TDT 0.6B ONNX — single file or batch.
 # ABOUTME: Auto-transcodes non-16kHz/non-mono audio via ffmpeg; wraps every subprocess
-# ABOUTME: with `nice -n 19 ionice -c 3 env OMP_NUM_THREADS=2 ORT_NUM_THREADS=2 MKL_NUM_THREADS=2`.
+# ABOUTME: with `nice -n 19 [ionice -c 3] env OMP_NUM_THREADS=2 ORT_NUM_THREADS=2 MKL_NUM_THREADS=2`.
 # ABOUTME: No API key — uses the local nemo-parakeet-tdt-0.6b-v2 ONNX model via onnx-asr.
 #
 # Subcommands:
@@ -19,13 +19,16 @@
 #
 # Mandatory nice-wrap (BAKED IN — there is no code path that skips it):
 #   nice -n 19 ionice -c 3 env OMP_NUM_THREADS=2 ORT_NUM_THREADS=2 MKL_NUM_THREADS=2 <cmd>
+# `ionice -c 3` is included only where `ionice` exists (Linux); macOS has none.
 # Rationale: `nice` alone does NOT cap CPU; thread caps are the real knob.
 # Empirically 2 threads is FASTER than onnxruntime's default on consumer CPUs
 # because the default thrashes.
 
 import json
+import shutil
 import subprocess
 import sys
+import tempfile
 import time
 import wave
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -36,16 +39,29 @@ AUDIO_EXTS = {".wav", ".ogg", ".oga", ".mp3", ".m4a", ".flac", ".aac", ".opus"}
 
 DEFAULT_MODEL = "nemo-parakeet-tdt-0.6b-v2"
 
+def build_nice_prefix(which=None) -> list[str]:
+    """Return the nice/thread-cap prefix, with ionice only where it exists.
+
+    ionice is Linux-only (util-linux). On macOS it is absent, and a prefix
+    that names it makes every wrapped command exit 127.
+    """
+    if which is None:
+        which = shutil.which
+    prefix = ["nice", "-n", "19"]
+    if which("ionice"):
+        prefix += ["ionice", "-c", "3"]
+    prefix += [
+        "env",
+        "OMP_NUM_THREADS=2",
+        "ORT_NUM_THREADS=2",
+        "MKL_NUM_THREADS=2",
+    ]
+    return prefix
+
+
 # Prefix applied to EVERY subprocess that touches ffmpeg / onnx-asr. Baked in
 # so callers cannot accidentally skip it.
-NICE_PREFIX: list[str] = [
-    "nice", "-n", "19",
-    "ionice", "-c", "3",
-    "env",
-    "OMP_NUM_THREADS=2",
-    "ORT_NUM_THREADS=2",
-    "MKL_NUM_THREADS=2",
-]
+NICE_PREFIX: list[str] = build_nice_prefix()
 
 
 @dataclass
@@ -207,13 +223,16 @@ def transcribe_one(job: STTJob, work_root: Path) -> STTResult:
     print(f"Transcribing: {job.input_path}", file=sys.stderr)
     t0 = time.monotonic()
 
-    # Per-job work dir so parallel jobs don't collide on the intermediate WAV.
-    work_dir = work_root / f"job-{job.input_path.stem}-{int(t0 * 1000)}"
-    work_dir.mkdir(parents=True, exist_ok=True)
-
-    wav_file: Path
+    wav_file = job.input_path
+    work_dir: Path | None = None
     transcoded = False
     try:
+        # Per-job work dir so parallel jobs don't collide on the intermediate
+        # WAV. mkdtemp guarantees uniqueness; a stem + timestamp name did not
+        # (a.wav and a.mp3 started in the same millisecond shared a dir).
+        work_dir = Path(
+            tempfile.mkdtemp(prefix=f"job-{job.input_path.stem}-", dir=work_root)
+        )
         if job.input_path.suffix.lower() == ".wav" and _is_16k_mono_wav(job.input_path):
             wav_file = job.input_path
         else:
@@ -253,30 +272,31 @@ def transcribe_one(job: STTJob, work_root: Path) -> STTResult:
             elapsed_s=elapsed_s,
             duration_s=duration_s,
         )
-    except RuntimeError as e:
+    except (RuntimeError, OSError) as e:
+        # OSError covers a missing binary, an unwritable output dir and a full
+        # disk: one such file must not abort the rest of a batch.
         elapsed_s = round(time.monotonic() - t0, 1)
         return STTResult(
             input_path=job.input_path,
             output_path=job.output_path,
             success=False,
             text=None,
-            error=str(e),
+            error=str(e) if isinstance(e, RuntimeError) else f"{type(e).__name__}: {e}",
             elapsed_s=elapsed_s,
             duration_s=None,
         )
     finally:
-        if transcoded:
-            if job.keep_wav:
-                print(f"  [{label}] Kept intermediate WAV: {wav_file}", file=sys.stderr)
-            else:
-                try:
-                    if wav_file.exists():
-                        wav_file.unlink()
-                    # Remove work_dir if now empty.
-                    if work_dir.exists() and not any(work_dir.iterdir()):
-                        work_dir.rmdir()
-                except OSError:
-                    pass
+        if transcoded and job.keep_wav:
+            print(f"  [{label}] Kept intermediate WAV: {wav_file}", file=sys.stderr)
+        else:
+            try:
+                if transcoded and wav_file.exists():
+                    wav_file.unlink()
+                # Remove work_dir if now empty.
+                if work_dir and work_dir.exists() and not any(work_dir.iterdir()):
+                    work_dir.rmdir()
+            except OSError:
+                pass
 
 
 def discover_audio_files(dir_path: Path) -> list[Path]:
@@ -299,6 +319,35 @@ def default_output_path(
     suffix = ".json" if json_mode else ".txt"
     target_dir = output_dir if output_dir is not None else input_path.parent
     return target_dir / f"{input_path.stem}{suffix}"
+
+
+def assign_output_paths(
+    inputs: list[Path], json_mode: bool, output_dir: Path | None
+) -> list[Path]:
+    """Give every input its own transcript path, in input order.
+
+    Inputs whose default path collides (a.wav + a.mp3 both map to a.txt)
+    keep the audio suffix instead: a.wav.txt, a.mp3.txt. Anything still
+    colliding (same name from two dirs under --output-dir) gets -2, -3, ...
+    Non-colliding inputs keep the plain <stem>.txt default.
+    """
+    suffix = ".json" if json_mode else ".txt"
+    defaults = [default_output_path(p, json_mode, output_dir) for p in inputs]
+    counts: dict[Path, int] = {}
+    for d in defaults:
+        counts[d] = counts.get(d, 0) + 1
+    taken: set[Path] = set()
+    out: list[Path] = []
+    for p, d in zip(inputs, defaults):
+        candidate = d if counts[d] == 1 else d.parent / f"{p.name}{suffix}"
+        n = 2
+        while candidate in taken:
+            base = p.stem if counts[d] == 1 else p.name
+            candidate = d.parent / f"{base}-{n}{suffix}"
+            n += 1
+        taken.add(candidate)
+        out.append(candidate)
+    return out
 
 
 def _run_batch(
@@ -327,12 +376,14 @@ def _run_batch(
         jobs: list[STTJob] = [
             STTJob(
                 input_path=p,
-                output_path=default_output_path(p, json_mode, output_dir),
+                output_path=out,
                 json_mode=json_mode,
                 keep_wav=keep_wav,
                 model=model,
             )
-            for p in inputs
+            for p, out in zip(
+                inputs, assign_output_paths(inputs, json_mode, output_dir)
+            )
         ]
 
         print(
