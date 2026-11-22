@@ -158,8 +158,8 @@ Six level-2 sections in the file, in order:
 1. `## User request` — brief intent summary in your own words.
    Plus a pointer to the source (parent session jsonl path,
    Telegram msg id in inbound.db, PR review comment). Verbatim
-   quotes are fine here — the file lives on Igor's local box, not
-   a public repo.
+   quotes are fine here — the file stays on the parent's local box
+   and is never committed.
 2. `## Parent's interpretation` — scope decision + why delegated.
    Pull from the `# Task` section above.
 3. `## Subagent's plan` — pre-execution. Written before touching
@@ -242,8 +242,9 @@ separated by a blank line.
 - No `gh pr merge` — opening the PR is the terminal action
 - No committing CLAUDE.md edits derived from Lessons reflection to
   the work PR
-- No squashing the reasoning doc commit into a code commit, no
-  amending it in. It ships as its own commit in the same PR.
+- No committing the reasoning doc, in any commit. It stays in
+  `/tmp/agent-notes/` (it may quote the user); the `Reasoning:`
+  trailer on the code commit is the only trace in the repo.
 - No skipping the root CLAUDE.md read at the top of this brief.
   Missing CLAUDE.md means STOP and ask; it does not mean proceed.
 

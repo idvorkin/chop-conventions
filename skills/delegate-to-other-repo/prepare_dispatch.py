@@ -394,8 +394,10 @@ def run_prepare(
 ) -> dict[str, Any]:
     """Execute all prepare phases and return a JSON-serializable dict.
 
-    On any pre-mutation error, returns early with a populated `errors` list
-    and an unpopulated `worktree_path`. When `dry_run=True`, skips the
+    On any error, returns early with a populated `errors` list and
+    `worktree_path` set to None — the parent gates dispatch on that, so it
+    holds for every error, including ones raised after the path was chosen
+    (exclude write, check-ignore, worktree add). When `dry_run=True`, skips the
     mutation steps (worktree add, exclude write) but still returns the
     JSON that would have been emitted.
     """
@@ -520,6 +522,7 @@ def run_prepare(
     _, exclude_err = _ensure_exclude(target_str)
     if exclude_err:
         errors.append(exclude_err)
+        result["worktree_path"] = None  # nothing was created
         return result
 
     # Sanity-check that .worktrees/ is now actually ignored. `check-ignore`
@@ -534,6 +537,7 @@ def run_prepare(
             f".worktrees/ is not ignored in {target_str} after writing "
             "to .git/info/exclude; investigate manually"
         )
+        result["worktree_path"] = None  # nothing was created
         return result
 
     wt_proc = _worktree_add(target_str, worktree_path, branch, base_ref)
