@@ -231,8 +231,12 @@ diff the docstring and the fallback recipe together.
 
 ### Testing
 
+Run from the chop-conventions checkout (worktree) you are editing — the
+installed `~/.claude/skills/` path is a symlink to the primary checkout
+and would test that branch, not your changes:
+
 ```bash
-cd ~/.claude/skills/delegate-to-other-repo && python3 -m unittest test_prepare_dispatch
+cd skills/delegate-to-other-repo && python3 -m unittest test_prepare_dispatch
 ```
 
 Pure functions (slug sanitization, default-branch chain, base-ref
