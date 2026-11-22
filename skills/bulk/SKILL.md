@@ -80,13 +80,15 @@ never partial-fails.
 Input: `owner/repo#N` specs. Output per PR:
 
 ```json
-{"repo": "idvorkin/chop-conventions",
- "number": 169,
- "title": "feat(packaging): migrate ...",
- "state": "OPEN",
- "mergeable": "MERGEABLE",
- "mergeStateStatus": "CLEAN",
- "url": "https://github.com/idvorkin/chop-conventions/pull/169"}
+{
+  "repo": "idvorkin/chop-conventions",
+  "number": 169,
+  "title": "feat(packaging): migrate ...",
+  "state": "OPEN",
+  "mergeable": "MERGEABLE",
+  "mergeStateStatus": "CLEAN",
+  "url": "https://github.com/idvorkin/chop-conventions/pull/169"
+}
 ```
 
 ### `bulk-gh-prs-open`
@@ -94,10 +96,16 @@ Input: `owner/repo#N` specs. Output per PR:
 Input: `owner/repo` slugs. Output per repo:
 
 ```json
-{"repo": "idvorkin/chop-conventions",
- "open_prs": [
-   {"number": 169, "title": "feat(packaging)...", "headRefName": "feat/uv-tool-packaging"}
- ]}
+{
+  "repo": "idvorkin/chop-conventions",
+  "open_prs": [
+    {
+      "number": 169,
+      "title": "feat(packaging)...",
+      "headRefName": "feat/uv-tool-packaging"
+    }
+  ]
+}
 ```
 
 ### `bulk-bd-show`
@@ -105,14 +113,16 @@ Input: `owner/repo` slugs. Output per repo:
 Input: bead IDs. Output per bead:
 
 ```json
-{"id": "igor2-bgt",
- "title": "Telegram Infrastructure",
- "status": "open",
- "priority": 1,
- "type": "epic",
- "parent": null,
- "blocks": [],
- "blocked_by": []}
+{
+  "id": "igor2-bgt",
+  "title": "Telegram Infrastructure",
+  "status": "open",
+  "priority": 1,
+  "type": "epic",
+  "parent": null,
+  "blocks": [],
+  "blocked_by": []
+}
 ```
 
 Handles the `bd show --json` array-vs-object gotcha internally —
@@ -151,10 +161,12 @@ accidental big-file globs.
 - **Shared `common.py`** owns input parsing, the ThreadPoolExecutor
   wiring, and the "never partial-fail" contract. The abstraction is
   justified at N=5 (the "wait for N=2" rule from CLAUDE.md).
-- **Subprocess injection for tests.** Each worker fn takes a
-  `run=subprocess.run` kwarg so tests mock it without patching the
-  module global. Matches the `test_diagnose.py` and
-  `test_telegram_debug.py` style in this repo.
+- **Subprocess injection for tests.** Each worker fn takes a `run=None`
+  kwarg and resolves it in the body (`if run is None: run =
+subprocess.run`). Tests either pass a fake `run` or patch
+  `chop_bulk.<module>.subprocess.run`; both work because the lookup
+  happens at call time. Never write `run=subprocess.run` as the default:
+  it binds at def-time and silently ignores the patch.
 
 ## Tests
 
@@ -164,8 +176,8 @@ python3 -m unittest discover -s skills/bulk/tests -p 'test_*.py'
 
 Covered: `bulk-gh-pr-details` spec parsing + fetch + fan-out, and
 `bulk-bd-show` normalization of the array-vs-object JSON + dependency
-slicing. Other tools use the same `common.py` plumbing; the two tested
-paths validate the shared contract.
+slicing, `bulk-file-read` size/special-file/bad-input handling, and
+`bulk-up-to-date` call-time resolution of its injected helpers.
 
 ## Related
 

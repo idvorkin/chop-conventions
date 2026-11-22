@@ -8,7 +8,9 @@ Output: JSON mapping path -> metadata:
 Files larger than `--max-bytes` (default 1 MB) are NOT loaded: the
 entry carries `{size_bytes, content_utf8_or_null: null,
 error: "skipped: exceeds max-bytes"}`. Non-UTF-8 files emit
-`content_utf8_or_null: null` with the decode error.
+`content_utf8_or_null: null` with the decode error. Anything that is
+not a regular file (FIFO, device, directory) is skipped unread, and no
+read ever pulls more than `max-bytes + 1` bytes, whatever stat said.
 
 Purpose: quick multi-file text inventory without individual `Read`
 calls. Skip-rather-than-load on big files keeps the output JSON sane.
@@ -16,6 +18,7 @@ calls. Skip-rather-than-load on big files keeps the output JSON sane.
 
 import json
 import os
+import stat as stat_mod
 from pathlib import Path
 
 from .common import DEFAULT_MAX_WORKERS, emit_json, log, parallel_map, read_inputs
@@ -34,27 +37,40 @@ def _read_one(
         "content_utf8_or_null": None,
         "error_or_null": None,
     }
-    try:
-        p = Path(path_str)
-    except TypeError as exc:
-        result["error_or_null"] = f"invalid path: {exc}"
+    if not isinstance(path_str, str):
+        result["error_or_null"] = (
+            f"invalid path: expected a string, got {type(path_str).__name__}"
+        )
         return result
+    p = Path(path_str)
     try:
         stat = os.stat(p)
-    except OSError as exc:
+    except (OSError, ValueError) as exc:  # ValueError: embedded NUL
         result["error_or_null"] = f"stat failed: {exc}"
         return result
     result["size_bytes"] = stat.st_size
+    # st_size is 0 for FIFOs and devices, so the size gate below would wave
+    # them through: open() on a FIFO blocks, read() on /dev/zero never ends.
+    if not stat_mod.S_ISREG(stat.st_mode):
+        result["error_or_null"] = "skipped: not a regular file"
+        return result
     if stat.st_size > max_bytes:
         result["error_or_null"] = (
             f"skipped: exceeds max-bytes ({stat.st_size} > {max_bytes})"
         )
         return result
     try:
+        # Bounded even for regular files: st_size can lie (procfs reports 0)
+        # and the file can grow between stat and read.
         with open(p, "rb") as f:
-            raw = f.read()
+            raw = f.read(max_bytes + 1)
     except OSError as exc:
         result["error_or_null"] = f"read failed: {exc}"
+        return result
+    if len(raw) > max_bytes:
+        result["error_or_null"] = (
+            f"skipped: exceeds max-bytes (read more than {max_bytes})"
+        )
         return result
     try:
         result["content_utf8_or_null"] = raw.decode("utf-8")
@@ -95,8 +111,10 @@ def run_cli(
     out: dict[str, dict] = {}
     for entry in results:
         path = entry.get("path")
-        if path is None:
-            # Worker-raise fallback path: common.parallel_map wrapped it.
+        if not isinstance(path, str):
+            # Worker-raise fallback path (common.parallel_map wrapped it), or
+            # a non-string input element: it cannot be a key of the output
+            # mapping (a list or dict is unhashable), so it goes here.
             out.setdefault("_error", []).append(entry)  # type: ignore[arg-type]
             continue
         trimmed = {
@@ -132,14 +150,20 @@ def _build_app():  # pragma: no cover
             None, "--input-file", help="JSON file: array of absolute file paths."
         ),
         max_workers: int = typer.Option(
-            DEFAULT_MAX_WORKERS, "--max-workers", min=1,
+            DEFAULT_MAX_WORKERS,
+            "--max-workers",
+            min=1,
             help="Max parallel file reads.",
         ),
         max_bytes: int = typer.Option(
-            DEFAULT_MAX_BYTES, "--max-bytes", min=1,
+            DEFAULT_MAX_BYTES,
+            "--max-bytes",
+            min=1,
             help="Skip (don't load) files larger than this. Default 1 MB.",
         ),
-        pretty: bool = typer.Option(False, "--pretty", help="Pretty-print JSON output."),
+        pretty: bool = typer.Option(
+            False, "--pretty", help="Pretty-print JSON output."
+        ),
     ) -> None:
         if ctx.invoked_subcommand is not None:
             return

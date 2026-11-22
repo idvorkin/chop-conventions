@@ -247,7 +247,9 @@ class TestFetchBead(unittest.TestCase):
         self.assertNotIn("error", out)
         mock_run.assert_called_once()
         cmd = mock_run.call_args[0][0]
-        self.assertEqual(cmd[:3], ["bd", "show", "abc-1"])
+        self.assertEqual(cmd[:2], ["bd", "show"])
+        # `--` then the id last: an id starting with "-" is not a bd flag.
+        self.assertEqual(cmd[-2:], ["--", "abc-1"])
         self.assertIn("--json", cmd)
         # Without --include-dependents, `blocks` could never populate.
         self.assertIn("--include-dependents", cmd)
@@ -309,7 +311,7 @@ class TestRunCli(unittest.TestCase):
 
         def fake_run(cmd, **kwargs):
             # cmd = ['bd', 'show', '<id>', '--json']
-            bid = cmd[2]
+            bid = cmd[-1]
             return _mk_result(stdout=json.dumps(responses[bid]))
 
         captured = io.StringIO()
@@ -326,7 +328,7 @@ class TestRunCli(unittest.TestCase):
 
     def test_partial_failure_inlined(self):
         def fake_run(cmd, **kwargs):
-            bid = cmd[2]
+            bid = cmd[-1]
             if bid == "b-2":
                 return _mk_result(stdout="", stderr="not found", returncode=1)
             return _mk_result(
