@@ -1,6 +1,6 @@
 ---
 name: learn-from-session
-description: Extract durable lessons from a completed Claude session and codify them in the right CLAUDE.md files or skills. Use at the end of a long session, after a bug hunt that surfaced a non-obvious constraint, or when the user asks "what can we learn from this session". Discovers CLAUDE.md files dynamically, routes lessons by generic scope (project / shared conventions / environment / machine-local), enforces neutral voice, and asks for approval before editing.
+description: Extract durable lessons from a completed Claude session and codify them in the right CLAUDE.md files or skills. Use at the end of a long session, after a bug hunt that surfaced a non-obvious constraint, or when the user asks "what can we learn from this session". Discovers CLAUDE.md files dynamically, routes lessons by generic scope (project / shared conventions / environment / machine-local), enforces neutral voice, and asks for approval before editing and again before any commit, push, or PR.
 allowed-tools: Bash, Read, Edit, Glob, Grep
 ---
 
@@ -25,13 +25,15 @@ Target: **≤5 lines per addition**, bullets preferred. One concept per line. Sk
 
 ## Step 0: Discover CLAUDE.md Files
 
-Find every CLAUDE.md and `.claude.local.md` that could be a target. Start from repos actually touched in this session, then broaden.
+Find every `CLAUDE.md` and `CLAUDE.local.md` that could be a target. Start from repos actually touched in this session, then broaden.
 
 ```bash
 # Active working dirs from this session (infer from git contexts you've used)
-# Then find CLAUDE.md / .claude.local.md under each + under $HOME
+# Then find CLAUDE.md / CLAUDE.local.md under each + under $HOME.
+# ~/Library is pruned: on macOS it is huge and holds no CLAUDE.md worth targeting.
 find <repo-1> <repo-2> "$HOME" -maxdepth 4 \
-    \( -name CLAUDE.md -o -name .claude.local.md \) 2>/dev/null
+    -path "$HOME/Library" -prune -o \
+    \( -name CLAUDE.md -o -name CLAUDE.local.md \) -print 2>/dev/null
 ```
 
 For each file found, **Read its opening section** to understand what scope it covers. Do not infer scope from the path — names and layouts differ across machines. A file named `settings/CLAUDE.md` might be dotfiles on one machine and a project's user-facing settings docs on another.
@@ -71,7 +73,7 @@ Use **generic scope categories**, most-specific-wins. Do not route by repo name 
 1. **Project-local** — specific to the repo you're actively working in (its layout, conventions, PR flow, domain rules). Goes in that repo's `CLAUDE.md`.
 2. **Shared conventions** — general coding / skill / PR / safety rules that apply across multiple projects. Goes in whichever repo holds cross-project conventions (varies by environment — could be a `conventions/`, `shared/`, or similar repo).
 3. **Environment / machine / shell** — OS quirks, tool aliases, boot mechanisms, path surprises, shell patterns. Goes in the repo that owns dotfiles / machine setup for this environment.
-4. **Truly personal or machine-only** — applies to one machine only and should not be committed. Goes in `.claude.local.md` (must be gitignored).
+4. **Truly personal or machine-only** — applies to one machine only and should not be committed. Goes in `CLAUDE.local.md` at the project root (the name Claude Code loads; must be gitignored).
 
 If a lesson spans scopes, pick the most specific. If you're unsure which file owns a lesson, show the user both options and ask.
 
@@ -108,7 +110,9 @@ Surface these proposals in the Step 6 diff batch alongside CLAUDE.md changes so 
 
 ## Step 6: Present and Approve
 
-Show all proposed changes in one message, grouped by target file. Include CLAUDE.md diffs, skill updates, and new-skill proposals side by side. End with a single explicit ask: "Apply these?" Wait for explicit approval before editing any file. Do not partial-apply unless the user picks specific items.
+Show all proposed changes in one message, grouped by target file. Include CLAUDE.md diffs, skill updates, and new-skill proposals side by side. End with a single explicit ask: "Apply these edits?" Wait for explicit approval before editing any file. Do not partial-apply unless the user picks specific items.
+
+This approval covers **file edits only**. Committing, pushing, and opening a PR need their own approval — see Step 7.
 
 ## Step 6.5: Cross-repo routing check
 
@@ -124,9 +128,9 @@ TARGET_REPO=$(git -C "$(dirname <target-path>)" rev-parse --show-toplevel 2>/dev
 
 Route each target:
 
-- **Same repo** (`SESSION_REPO == TARGET_REPO`) → apply in-session as Step 7 describes. No prompt needed.
-- **No git context** (e.g. `~/.claude/CLAUDE.md` with `TARGET_REPO` empty) → machine-local, apply in-place. No prompt needed.
-- **Different repo** (`SESSION_REPO != TARGET_REPO`, both non-empty) → **STOP and ask the user**. Do not edit. Do not auto-delegate.
+- **Same repo** (`SESSION_REPO == TARGET_REPO`, both non-empty) → apply in-session as Step 7 describes. No extra prompt needed for the edit.
+- **No git context** (`TARGET_REPO` empty, e.g. `~/.claude/CLAUDE.md`) → machine-local, apply in-place. No prompt needed. This holds whether or not `SESSION_REPO` is empty.
+- **Different repo** (`TARGET_REPO` non-empty and not equal to `SESSION_REPO`) → **STOP and ask the user**. Do not edit. Do not auto-delegate. This includes a session started outside any repo (`SESSION_REPO` empty) whose target sits inside one: the session owns no repo, so every in-repo target is cross-repo.
 
 The most common different-repo case is a lesson routing to `chop-conventions`' shared fragments (`claude-md/global.md`, `claude-md/dev-machine.md`, `claude-md/machines/<name>.md` — e.g. `claude-md/machines/orbstack-dev.md`). Symlinks under `~/.claude/skills/` and `~/.claude/claude-md/` resolve back into `chop-conventions`, so a lesson about a skill's behavior lands here too — the toplevel check catches this correctly as long as you resolve symlinks first (`realpath <target>` before the `git -C` call).
 
@@ -152,13 +156,21 @@ Never auto-delegate. The prompt is load-bearing — `delegate-to-other-repo` ope
 On approval and after Step 6.5 has been resolved for every target:
 
 0. Same-repo and machine-local targets proceed here. Cross-repo targets have already been handled by `delegate-to-other-repo` (or dropped), so skip them in this phase — do not try to edit them inline.
-1. **Create a feature branch per repo** — naming: `claude-md-<short-topic>` or `session-learnings-<date>`
-2. **Apply edits** using the Edit tool (not Write — these are targeted insertions)
-3. **Commit per repo** with a descriptive message that cites the lesson itself, not "update CLAUDE.md". Include the standard `Co-Authored-By` trailer.
-4. **Push** and **create a PR** if the repo uses a PR workflow — check `gh auth status` and `git remote -v` first to detect fork vs direct-push flow. Otherwise commit locally and inform the user.
-5. **Report** PR URLs with `/files` appended so the user can skim diffs directly.
+1. **Machine-local targets** (no git context, or a gitignored `CLAUDE.local.md`) — edit in place with the Edit tool. Nothing to branch or commit; skip to the report.
+2. **Same-repo targets: create a worktree on a new branch** off the repo's default branch — never switch branches or edit tracked files in the session checkout, which may hold in-flight work or be shared with other sessions. Branch naming: `claude-md-<short-topic>` or `session-learnings-<date>`. Put the worktree where the repo's own convention says (e.g. `.worktrees/<branch>`); with no convention, use a sibling directory outside the repo:
 
-If the user says "just commit locally, no PR" or "just do it on main", follow that instead — but ask if unclear.
+   ```bash
+   git -C "$SESSION_REPO" fetch -q
+   git -C "$SESSION_REPO" worktree add <worktree-dir> -b <branch> <remote>/<default-branch>
+   ```
+
+3. **Apply edits** in the worktree using the Edit tool (not Write — these are targeted insertions).
+4. **Ask before committing.** The Step 6 approval covered the edits, not shipping them. Show `git -C <worktree-dir> diff --stat` and ask: "Commit and open a PR, commit locally only, or leave the edits uncommitted in the worktree?" Skip the question only if the user already answered it explicitly in this session (e.g. "apply and open a PR"). Without an answer, leave the edits uncommitted and report the worktree path.
+5. **Commit** (if approved) with a descriptive message that cites the lesson itself, not "update CLAUDE.md". Include the standard `Co-Authored-By` trailer.
+6. **Push and create a PR** only if the user approved that — check `gh auth status` and `git remote -v` first to detect fork vs direct-push flow.
+7. **Report** what was edited where, what was committed, and any PR URLs with `/files` appended so the user can skim diffs directly.
+
+If the user says "just do it on main" or names another flow, follow that instead — but ask if unclear.
 
 ## Anti-patterns
 
@@ -171,7 +183,7 @@ Red flags that you're adding noise to CLAUDE.md:
 - **Entries longer than 5 lines** without a strong reason
 - **Verbatim code blocks longer than ~10 lines** — link to the real file instead
 - **Trivial discoverables** — `ls`, `pwd`, `git status`, anything one tool call could surface
-- **Machine-only paths or secrets** — these belong in `.claude.local.md`, not the shared `CLAUDE.md`
+- **Machine-only paths or secrets** — these belong in `CLAUDE.local.md`, not the shared `CLAUDE.md`
 
 ## Related
 
