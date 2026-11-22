@@ -40,9 +40,16 @@ SCRIPT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/$(basename "${BASH_SOURCE[
 pending_dump="" # snapshot taken at WillSleep, awaiting its sleep reason
 
 # Agent tmux servers carry credentials in argv (`-e ANTHROPIC_API_KEY=sk-...`);
-# mirrors md_probe.SECRET_ENV_RE so nothing written here holds a secret.
+# mirrors md_probe._REDACT_RULES, rule for rule, so nothing written here holds a
+# secret. test_md_probe.py runs both over the same lines and compares.
 redact() {
-    sed -E 's/(-e[[:space:]]+[A-Z0-9_]*(API_KEY|TOKEN|SECRET|PASSWORD)[A-Z0-9_]*)=[^[:space:]]+/\1=<redacted>/g'
+    sed -E \
+        -e 's/(^|[[:space:]])([A-Z0-9_]*(KEY|TOKEN|SECRET|PASSWORD|PASS|AUTH)[A-Z0-9_]*)=[^[:space:]]+/\1\2=<redacted>/g' \
+        -e 's/(^|[[:space:]])(--[A-Za-z0-9_-]*([Pp]assword|[Pp]asswd|[Tt]oken|[Ss]ecret|[Aa]pi[-_]?[Kk]ey|[Aa]ccess[-_]?[Kk]ey)[A-Za-z0-9_-]*)(=|[[:space:]]+)[^-[:space:]][^[:space:]]*/\1\2\4<redacted>/g' \
+        -e 's/([Aa]uthorization:[[:space:]]*)(([Bb]earer|[Bb]asic|[Tt]oken)[[:space:]]+)?[^[:space:]]+/\1\2<redacted>/g' \
+        -e 's/(^|[[:space:]])(Bearer)[[:space:]]+[^[:space:]]+/\1\2 <redacted>/g' \
+        -e 's#(://[^/[:space:]:@]+:)[^@[:space:]/]+@#\1<redacted>@#g' \
+        -e 's/(^|[^A-Za-z0-9])(sk-[A-Za-z0-9_-]{10,}|gh[pousr]_[A-Za-z0-9]{10,}|github_pat_[A-Za-z0-9_]{10,}|xox[a-z]-[A-Za-z0-9-]{10,})/\1<redacted>/g'
 }
 
 log() {

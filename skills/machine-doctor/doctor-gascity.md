@@ -24,10 +24,10 @@ $ pgrep -x gc ; pgrep -x dolt
 
 Two offenders, both verified:
 
-| Leak | What it is | Survives |
-|---|---|---|
-| `gc __gc-managed-dolt-scope-watchdog` | Keeps a managed `dolt sql-server` alive. Anchors liveness on the scope's config file existing, so it never self-exits while the city dir exists. | `gc supervisor stop`, city unregistration |
-| Per-city `tmux: server` | Holds agent sessions (`-L <city> ... -s <agent>`). | City unregistration; outlived its supervisor by **2d5h** in one observed case |
+| Leak                                  | What it is                                                                                                                                       | Survives                                                                      |
+| ------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------ | ----------------------------------------------------------------------------- |
+| `gc __gc-managed-dolt-scope-watchdog` | Keeps a managed `dolt sql-server` alive. Anchors liveness on the scope's config file existing, so it never self-exits while the city dir exists. | `gc supervisor stop`, city unregistration                                     |
+| Per-city `tmux: server`               | Holds agent sessions (`-L <city> ... -s <agent>`).                                                                                               | City unregistration; outlived its supervisor by **2d5h** in one observed case |
 
 **A read-only `gc doctor` is enough to create the first one.** Running it against a
 stopped, unregistered city starts a dolt server plus watchdog that persist after the
@@ -37,8 +37,8 @@ the persistence mechanism is [#4679](https://github.com/gastownhall/gascity/issu
 ## Step 1: Diagnose with the tool, not by eye
 
 ```bash
-skills/machine-doctor/tools/machine_doctor.py snapshot --profile gascity     # what's running now
-skills/machine-doctor/tools/machine_doctor.py snapshot --profile gascity --json
+~/.claude/skills/machine-doctor/tools/machine_doctor.py snapshot --profile gascity     # what's running now
+~/.claude/skills/machine-doctor/tools/machine_doctor.py snapshot --profile gascity --json
 ```
 
 Exits nonzero if it finds a city-scoped leak. It distinguishes **city-scoped** dolt
@@ -48,7 +48,7 @@ an ordinary repo (not gc's problem — do not kill these blind; see Step 4).
 To keep watching, poll for transitions only:
 
 ```bash
-skills/machine-doctor/tools/machine_doctor.py watch --interval 60
+~/.claude/skills/machine-doctor/tools/machine_doctor.py watch --interval 60
 ```
 
 `watch` prints a baseline line and then **stays silent until something changes** —
@@ -103,7 +103,7 @@ tool's `redact()` does this for you.
 - **Load average is not CPU.** A box reading load 26 was **92% idle, 0 steal, 0 D-state** —
   the load was short-lived process churn plus other tenants, not Gas City. Always read
   `vmstat`'s `id`/`st` columns before blaming a city. `snapshot` prints both and says so.
-- **`ps` may be a pager-wrapper alias** on these boxes and fails *silently* with positional
+- **`ps` may be a pager-wrapper alias** on these boxes and fails _silently_ with positional
   args — `ps -p <pid>` prints nothing and you conclude the process is gone. Use `/bin/ps`.
 - **`pkill -f 'supervisor run'` matches its own shell** and kills the command running it
   (exit 144). Resolve PIDs with `pgrep -x`, then `kill` them by number.

@@ -61,10 +61,12 @@ Set these aliases for the rest of the skill:
 | Top CPU processes | `ps aux -r \| head -20`                                                                                    | `procs --sortd cpu \| head -20` (falls back to `ps aux --sort=-%cpu \| head -20`) |
 | Memory overview   | `sysctl kern.memorystatus_vm_pressure_level vm.swapusage` + `top -l 1 -o mem -n 15 -stats pid,command,mem` | `free -h` or `cat /proc/meminfo \| head -5`                                       |
 | Disk usage        | `df -h / /System/Volumes/Data`                                                                             | `df -h /`                                                                         |
-| Process search    | `pgrep -af '<pattern>'`                                                                                    | `pgrep -af '<pattern>'`                                                           |
+| Process search    | `/bin/ps -eo pid=,args= \| grep '[p]attern'`                                                               | `/bin/ps -eo pid=,args= \| grep '[p]attern'`                                      |
 | Process tree      | `ps -o pid,ppid,comm -p <PID>`                                                                             | `/usr/bin/ps -o pid,ppid,comm -p <PID>`                                           |
 
-**Linux note:** Many machines alias `ps` to `procs` and `top` to `btm`. Use `/usr/bin/ps` when you need standard flags like `--ppid` or `-o`.
+**`ps` note:** Many machines alias `ps` to `procs` and `top` to `btm`. Use `/bin/ps` when you need standard flags like `-o` — it exists on macOS and Linux; `/usr/bin/ps` is Linux only.
+
+**Process search note:** do not use `pgrep -af`. On macOS `-a` means "include my ancestors", so the calling shell always matches and `pgrep -af X || echo Clean` never prints Clean; on Linux `pgrep -f` matches the calling shell too whenever the pattern is in its command line. Bracket the first letter (`'[p]attern'`) so neither `grep` nor the shell running the command matches itself, and keep the bare pattern out of the rest of that command, comments included.
 
 ### Environment Detection
 
@@ -99,7 +101,7 @@ zombies, VM memory caps, thermal limits, recent thermal sleeps (macOS; forced on
 and per-container usage, on both Linux and macOS:
 
 ```bash
-skills/machine-doctor/tools/machine_doctor.py snapshot     # exit 1 on any failure
+~/.claude/skills/machine-doctor/tools/machine_doctor.py snapshot     # exit 1 on any failure
 ```
 
 Use the manual commands below to dig into what it flags, and present a summary
@@ -120,7 +122,7 @@ procs --sortd cpu | head -20
 
 Flag Claude processes, node processes, and dolt/jekyll servers specifically.
 
-**Load far above `nproc` with high `%sy` and lots of niced CPU is a fan-out, not one hog.** No single row looks guilty, so attribute by parent chain: `/usr/bin/ps -o pid,ppid,etime,args -p <PID>` and walk `ppid` up until you hit the thing that started it. Typical culprits: a pre-commit hook running `pytest -n N` plus a JS test runner, or a loop of `bd` calls hammering the repo's `dolt sql-server` — for the latter, find who is calling `bd` rather than blaming dolt.
+**Load far above `nproc` with high `%sy` and lots of niced CPU is a fan-out, not one hog.** No single row looks guilty, so attribute by parent chain: `/bin/ps -o pid,ppid,etime,args -p <PID>` and walk `ppid` up until you hit the thing that started it. Typical culprits: a pre-commit hook running `pytest -n N` plus a JS test runner, or a loop of `bd` calls hammering the repo's `dolt sql-server` — for the latter, find who is calling `bd` rather than blaming dolt.
 
 ### 1b. Memory
 
@@ -131,9 +133,9 @@ sysctl vm.swapusage
 /usr/bin/top -l 1 -o mem -n 15 -stats pid,command,mem  # `top` is often aliased to btm
 
 # Both: memory grouped by app, top rows + "everything else" + TOTAL
-skills/machine-doctor/tools/machine_doctor.py mem
+~/.claude/skills/machine-doctor/tools/machine_doctor.py mem
 # History: apps by peak memory over a window (needs `watch`)
-skills/machine-doctor/tools/machine_doctor.py report --mem --since 6h
+~/.claude/skills/machine-doctor/tools/machine_doctor.py report --mem --since 6h
 ```
 
 Flag Linux if available memory is under 500MB; flag macOS on pressure warn or
@@ -168,7 +170,7 @@ Flag if any data filesystem is above 90%.
 
 ```bash
 # Zombie processes (both platforms)
-/usr/bin/ps aux | awk '$8 ~ /Z/'
+/bin/ps aux | awk '$8 ~ /Z/'
 ```
 
 ### 1e. CPU Guards
@@ -215,9 +217,8 @@ Gas Town is a multi-agent orchestration system that runs many Claude processes, 
 ### 2a. Detect Gas Town
 
 ```bash
-# Check for ANY Gas Town processes
-pgrep -af 'GAS TOWN' 2>&1
-pgrep -af 'gastown' 2>&1
+# Check for ANY Gas Town processes (agent argv, or the binary's name)
+/bin/ps -eo pid=,args= | grep -e '[G]AS TOWN' -e '[g]astown'
 
 # Check for gt workspace
 ls ~/gt/rigs.json 2>/dev/null && echo "Gas Town workspace found at ~/gt"
@@ -239,7 +240,7 @@ gt estop --reason "doctor: system health"
 gt down --all --force --polecats
 
 # Step 3: Verify
-pgrep -af 'GAS TOWN' 2>&1 || echo "All Gas Town processes stopped"
+/bin/ps -eo pid=,args= | grep '[G]AS TOWN' || echo "All Gas Town processes stopped"
 ```
 
 ### 2c. Rogue Tmux Sockets (if processes survive)
@@ -266,27 +267,56 @@ tmux -L <socket-name> kill-server
 
 ### 2d. Scorched Earth (if still alive)
 
-If processes survive after killing tmux sockets:
+If processes survive after killing tmux sockets, signal **only Gas Town's own
+processes, by pid number, after reading the list**. Never pipe a pattern match
+into `kill`: `pgrep -f` also matches the shell running it, a tmux server that
+merely has the name in its argv (a lifeline), and every per-repo `dolt
+sql-server` that `bd` runs for ordinary repos.
+
+**Agents.** List them first. The comm filter drops lifelines — tmux servers are
+stopped by socket in 2c, never by pid:
 
 ```bash
-# Force kill all GAS TOWN claude processes
-pgrep -f 'GAS TOWN' | xargs -r kill -9
-
-# Kill any remaining gastown binaries
-pgrep -f 'gastown' | xargs -r kill -9
-
-# Kill orphaned dolt servers
-pgrep -f 'dolt sql-server' | xargs -r kill -9
+/bin/ps -eo pid=,ucomm=,args= | grep -e '[G]AS TOWN' -e '[g]astown' |
+  awk '$2 !~ /^(tmux:?|sshd|tailscaled|etserver|etterminal|sh|init|systemd|launchd)$/'
 ```
+
+Then, with the pids from that list:
+
+```bash
+kill -TERM <pid> [<pid> ...]   # graceful first
+sleep 5                        # then re-run the listing above
+kill -KILL <pid> [<pid> ...]   # only the pids still listed
+```
+
+**Dolt.** Classify each server by its working directory, the way `snapshot`
+does. Only one under the Gas Town workspace is Gas Town's; a `.beads/` store
+belongs to `bd` and a live Claude session may be using it
+([`doctor-gascity.md`](./doctor-gascity.md) Step 4):
+
+```bash
+for pid in $(pgrep -x dolt); do
+  cwd=$(readlink /proc/$pid/cwd 2>/dev/null || lsof -a -p $pid -d cwd -Fn 2>/dev/null | sed -n 's/^n//p')
+  case "$cwd" in
+    */.beads/*)   echo "KEEP  $pid $cwd  (bd repo store)" ;;
+    "$HOME"/gt/*) echo "GT    $pid $cwd" ;;
+    *)            echo "ASK   $pid $cwd  (unknown scope)" ;;
+  esac
+done
+```
+
+`kill -TERM <pid>` the `GT` rows only (dolt shuts down cleanly on TERM). Leave
+`KEEP` rows alone and show `ASK` rows to the user.
 
 ### 2e. Final Verification
 
 ```bash
-pgrep -af 'GAS TOWN' 2>&1 || echo "Clean"
-pgrep -af 'gastown' 2>&1 || echo "Clean"
-pgrep -af 'dolt sql-server' 2>&1 || echo "Clean"
+/bin/ps -eo pid=,args= | grep -e '[G]AS TOWN' -e '[g]astown' || echo "Clean"
 find /tmp/tmux-$(id -u) -type s -name "gt*" 2>/dev/null || echo "No rogue sockets"
 ```
+
+Re-run the dolt loop from 2d: no `GT` row should remain. `KEEP` rows are
+expected and are not a failure.
 
 Report results. If anything survived, escalate to user — something unexpected is respawning them.
 
@@ -306,14 +336,14 @@ while it runs (SQLite samples + full-tree spike dumps under
 `~/.local/state/machine-doctor/`) and answers retroactively:
 
 ```bash
-skills/machine-doctor/tools/machine_doctor.py watch                 # 30s samples; spike -> full process tree dump
-skills/machine-doctor/tools/machine_doctor.py report --since 6h     # who has been hot, grouped by comm
-skills/machine-doctor/tools/machine_doctor.py at 07:16              # what was running then
-skills/machine-doctor/tools/machine_doctor.py snapshot              # right now + generic leak checks
-skills/machine-doctor/tools/machine_doctor.py mem                   # RSS by app with TOTAL (Tier 1b)
-skills/machine-doctor/tools/machine_doctor.py sleeps --since 24h    # macOS: why it slept, who asked for it
-skills/machine-doctor/tools/machine_doctor.py sims [--prune]        # macOS: simulator wallpaper caches (doctor-macos.md §2)
-skills/machine-doctor/tools/machine_doctor.py watch --prune-sims 10m  # also clear shut-down sims' wallpaper caches every 10 min
+~/.claude/skills/machine-doctor/tools/machine_doctor.py watch                 # 30s samples; spike -> full process tree dump
+~/.claude/skills/machine-doctor/tools/machine_doctor.py report --since 6h     # who has been hot, grouped by comm
+~/.claude/skills/machine-doctor/tools/machine_doctor.py at 07:16              # what was running then
+~/.claude/skills/machine-doctor/tools/machine_doctor.py snapshot              # right now + generic leak checks
+~/.claude/skills/machine-doctor/tools/machine_doctor.py mem                   # RSS by app with TOTAL (Tier 1b)
+~/.claude/skills/machine-doctor/tools/machine_doctor.py sleeps --since 24h    # macOS: why it slept, who asked for it
+~/.claude/skills/machine-doctor/tools/machine_doctor.py sims [--prune]        # macOS: simulator wallpaper caches (doctor-macos.md §2)
+~/.claude/skills/machine-doctor/tools/machine_doctor.py watch --prune-sims 10m  # also clear shut-down sims' wallpaper caches every 10 min
 ```
 
 Linux and macOS both work. Linux reads `/proc`; macOS reads Mach CPU ticks,
@@ -363,7 +393,7 @@ Diagnose with the vendored tool rather than by eye — it separates city-scoped 
 `.beads/` repo servers that `bd` legitimately starts on demand:
 
 ```bash
-skills/machine-doctor/tools/machine_doctor.py snapshot --profile gascity   # exits nonzero on a leak
+~/.claude/skills/machine-doctor/tools/machine_doctor.py snapshot --profile gascity   # exits nonzero on a leak
 ```
 
 **The runbook lives in a separate file to keep SKILL.md lean.** When the user invokes
