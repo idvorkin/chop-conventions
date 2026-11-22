@@ -162,6 +162,31 @@ read-only system snapshot (tens of percent); user data lives on the Data volume.
 `df -h /` alone reports a healthy disk on a full machine. `snapshot` checks the
 Data volume and every top-level `/Volumes/<drive>`.
 
+**First step: Plonge** ([mattt/plonge](https://github.com/mattt/plonge), MIT,
+`brew install mattt/tap/plonge`). It finds the caches that dev tools and agent
+worktrees leave behind (`node_modules`, `.build`, `DerivedData`, `target`,
+`.venv`) and deletes only the ones that pass its Git checks: Git-ignored, no
+tracked files, no nested repository with unpushed work, not used by a running
+process, and in a project quiet for 24 hours. `clean` without `--apply` only
+lists what it would delete.
+
+```bash
+plonge scan --no-mise $(for r in ~/gits/*/; do printf -- '--root %s ' "$r"; done)
+plonge clean --no-mise --root ~/gits/<repo>            # report only
+plonge clean --no-mise --root ~/gits/<repo> --apply    # after the user approves the list
+plonge scan --global                                   # shared package-manager caches
+```
+
+By default it scans only projects that mise has loaded, so pass `--no-mise` and
+one `--root` per repo unless the machine uses mise. A root must be inside a Git
+work tree. Show the user the `clean` list and get a yes before `--apply`.
+Activity comes from the Git HEAD log and Claude Code transcripts, so an
+uncommitted build in progress can still look quiet; the `xcodebuild` check below
+still applies. On macOS it runs `lsof` once per scan, so if `lsof` is already
+hanging on a wedged file system (see the deleted-cwd note in `snapshot`), a scan
+will hang too; clear that first. The tool is new (Nov 2026), so the manual steps below stay the
+fallback and cover what it skips.
+
 Usually safe to clear (re-downloaded or rebuilt on demand) — still list sizes
 and ask:
 
