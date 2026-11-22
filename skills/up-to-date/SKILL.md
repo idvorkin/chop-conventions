@@ -359,8 +359,8 @@ time, not only at session close. `--no-fail` keeps the tool's
 nonzero-on-🔴 exit from aborting the sync.
 
 This complements Step 1's `pr` field, which covers only the **current
-branch's** PR — `pr-hygiene` sweeps **all** the user's open PRs across
-both GitHub identities, filtering out CodeRabbit auto-summaries and
+branch's** PR — `pr-hygiene` sweeps **all** the user's open PRs (the
+logged-in `gh` user, or every identity in `PR_HYGIENE_AUTHORS`), filtering out CodeRabbit auto-summaries and
 CI-bot noise so only real asks surface. Skip silently if `pr-hygiene`
 is not installed.
 

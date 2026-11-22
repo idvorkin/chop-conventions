@@ -6,25 +6,24 @@ allowed-tools: Bash, Read
 
 # PR Hygiene
 
-`git-safe-push` guards one PR footgun (pushing to a merged branch). This guards
-its sibling: **open PRs quietly piling up with review comments you never
-resolved or replied to.** GitHub gives no nudge, and a naive "the last comment
+This guards a quiet PR footgun: **open PRs piling up with review comments you
+never resolved or replied to.** GitHub gives no nudge, and a naive "the last comment
 isn't mine" filter over-flags ~3× — it can't tell a CodeRabbit auto-summary or a
 CI-bot ping from a real ask.
 
-`pr-hygiene` enumerates your open PRs across GitHub identities and sorts them
-into three tiers so you act only on the ones that need it.
+`pr-hygiene` enumerates your open PRs and sorts them into three tiers so you act only on the ones that need it.
 
 ## When to use
 
 - **Before ending a work session** — run it, resolve/reply to anything 🔴.
 - "Which of my PRs need attention?" / "Do I have stale review comments?"
-- As a close-out gate: it exits nonzero when any 🔴 remains.
+- As a close-out gate: it exits 1 when any 🔴 remains and 2 when anything could
+  not be queried (it fails closed — "couldn't check" is never "clean").
 
 ## Install
 
 It is a single self-bootstrapping `uv run --script` file — no packaging needed.
-Symlink it onto `$PATH` the same way as `git-safe-push`:
+Symlink it onto `$PATH`:
 
 ```bash
 ln -sf ~/gits/chop-conventions/skills/pr-hygiene/pr_hygiene.py ~/.local/bin/pr-hygiene
@@ -39,12 +38,19 @@ pr-hygiene                        # ranked markdown table (🔴 first)
 pr-hygiene --json                 # machine-readable JSON (+ counts, errors)
 pr-hygiene --repo idvorkin/chop-conventions   # filter to one repo
 pr-hygiene --author octocat       # override author (repeatable)
-pr-hygiene --no-fail              # always exit 0 (don't gate on 🔴)
+PR_HYGIENE_AUTHORS=me,my-bot pr-hygiene   # several GitHub identities
+pr-hygiene --no-fail              # always exit 0 (advisory; errors still printed)
 ```
 
-Default authors are `idvorkin` and `idvorkin-ai-tools`. Bitbucket repos (e.g.
-`igor2`) are invisible to `gh` and simply aren't listed. Per-PR GraphQL failures
-are reported inline (tier `error`), never crash the run.
+Authors, by precedence: `--author` flags, then the `PR_HYGIENE_AUTHORS` env var
+(comma-separated — set it if you work under more than one GitHub identity),
+then the logged-in `gh` user (`gh api user`). Non-GitHub hosts (e.g. Bitbucket)
+are invisible to `gh` and simply aren't listed.
+
+Exit codes: `0` nothing needs action, `1` at least one 🔴, `2` something could
+not be queried — the author lookup, a `gh search` (e.g. not logged in), or any
+per-PR fetch (reported inline as tier `error`). Errors never crash the run, but
+they do fail the gate; `--no-fail` is the explicit opt-out.
 
 ## How it classifies — the whole point
 
@@ -54,10 +60,12 @@ For each PR one GraphQL round-trip pulls review threads (`isResolved`),
 - **🔴 needs action** — ≥1 **unresolved** review thread that is a real ask
   (a human reviewer, **or** a bot _finding_ that isn't an auto-summary), OR
   `reviewDecision == CHANGES_REQUESTED`, OR a human reviewer has the last word
-  and the author hasn't responded since (push, comment, or review).
-- **🟡 awaiting merge** — flagged only because a CodeRabbit auto-summary or a
-  github-actions/CI comment is the last event, with no open threads. Merge-ready,
-  not stale.
+  and the author hasn't responded since (push, comment, or review). A human
+  **APPROVED** review as the last word is not an ask.
+- **🟡 no open asks** — there was review activity (a CodeRabbit auto-summary or
+  CI comment, resolved threads, an approval, or an ask you already answered) but
+  nothing is waiting on you. Mergeability and CI status are **not** checked, so
+  this is not a "merge-ready" claim.
 - **🟢 clean** — no review activity at all.
 
 Two noise rules make this work:
