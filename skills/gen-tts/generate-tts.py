@@ -59,7 +59,9 @@ class TTSJob:
     output: str
     voice: str
     style_prompt: str | None = None  # Director's-notes prefix; see resolve_style()
-    speed: float = 1.0  # Post-process tempo multiplier via ffmpeg atempo. 1.0 = no change.
+    speed: float = (
+        1.0  # Post-process tempo multiplier via ffmpeg atempo. 1.0 = no change.
+    )
 
 
 @dataclass
@@ -250,9 +252,7 @@ def _format_api_error(response: dict) -> str | None:
 
     # finishReason check — only error on the abnormal ones.
     if finish_reason and finish_reason not in ("STOP", "MAX_TOKENS"):
-        msg = (
-            f"Gemini TTS refused to generate audio (finishReason={finish_reason})"
-        )
+        msg = f"Gemini TTS refused to generate audio (finishReason={finish_reason})"
         if block_reason:
             msg += f"\n  promptFeedback.blockReason={block_reason}"
         msg += (
@@ -272,7 +272,9 @@ def _format_api_error(response: dict) -> str | None:
     return None
 
 
-def _post_tts(api_url: str, payload: bytes, api_key: str, timeout: float) -> tuple[int, bytes]:
+def _post_tts(
+    api_url: str, payload: bytes, api_key: str, timeout: float
+) -> tuple[int, bytes]:
     """POST JSON payload, return (http_status, body_bytes).
 
     Auth via x-goog-api-key header (not ?key= query string) so the key never
@@ -478,9 +480,15 @@ def post_process_speed(wav_path: str, speed: float) -> None:
         return
     tmp_path = wav_path + ".speed.tmp.wav"
     cmd = [
-        "ffmpeg", "-y", "-nostdin", "-loglevel", "error",
-        "-i", wav_path,
-        "-filter:a", atempo_filter_chain(speed),
+        "ffmpeg",
+        "-y",
+        "-nostdin",
+        "-loglevel",
+        "error",
+        "-i",
+        wav_path,
+        "-filter:a",
+        atempo_filter_chain(speed),
         tmp_path,
     ]
     try:
@@ -694,7 +702,9 @@ def _build_app():
 
     @app.command()
     def batch(
-        json_file: str = typer.Argument(help="JSON file with jobs to generate in parallel"),
+        json_file: str = typer.Argument(
+            help="JSON file with jobs to generate in parallel"
+        ),
         voice: Optional[str] = typer.Option(
             None,
             help=(
@@ -786,9 +796,7 @@ def _build_app():
         job_by_output = {d["output"]: d for d in raw_jobs}
         jobs: list[TTSJob] = []
         try:
-            cli_style = resolve_style(
-                skill_dir, style_prompt, style_preset, style_file
-            )
+            cli_style = resolve_style(skill_dir, style_prompt, style_preset, style_file)
         except FileNotFoundError as e:
             print(f"Error: {e}", file=sys.stderr)
             raise typer.Exit(2)
@@ -829,9 +837,7 @@ def _build_app():
         batch_t0 = time.monotonic()
         workers = min(max_workers, len(jobs))
         with ThreadPoolExecutor(max_workers=workers) as pool:
-            futures = {
-                pool.submit(generate_one, j, api_url, api_key): j for j in jobs
-            }
+            futures = {pool.submit(generate_one, j, api_url, api_key): j for j in jobs}
             for future in as_completed(futures):
                 result = future.result()
                 if result.output in job_by_output:
