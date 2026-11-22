@@ -156,7 +156,9 @@ one `--root` per repo unless the machine uses mise. A root must be inside a Git
 work tree. Show the user the `clean` list and get a yes before `--apply`.
 Activity comes from the Git HEAD log and Claude Code transcripts, so an
 uncommitted build in progress can still look quiet; the `xcodebuild` check below
-still applies. The tool is new (Nov 2026), so the manual steps below stay the
+still applies. On macOS it runs `lsof` once per scan, so if `lsof` is already
+hanging on a wedged file system (see the deleted-cwd note in `snapshot`), a scan
+will hang too; clear that first. The tool is new (Nov 2026), so the manual steps below stay the
 fallback and cover what it skips.
 
 Usually safe to clear (re-downloaded or rebuilt on demand) — still list sizes

@@ -82,3 +82,11 @@ tools:
     check: cass --version
     why: Trial — full-text search across Claude/Codex/Gemini session logs; current-session search is broken.
     status: trial
+
+  - name: plonge
+    kind: binary
+    source: https://github.com/mattt/plonge
+    install: brew install mattt/tap/plonge
+    check: plonge --version
+    why: Proposed; first macOS disk-cleanup step in machine-doctor (doctor-macos.md §4), not yet run on this setup.
+    status: proposed
