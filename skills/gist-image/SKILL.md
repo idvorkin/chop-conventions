@@ -10,11 +10,19 @@ Host binary images on GitHub via gists. Gists are git repos — you can clone th
 
 ## Setup
 
-Ensure `.tmp/` is gitignored in the project (gist clones live here):
+Ensure `.tmp/` is ignored in the project (gist clones live here). Use the
+local-only `.git/info/exclude`, not the tracked `.gitignore` — this is a
+per-machine scratch dir and must not land in the project's branch history.
+`--git-common-dir` resolves the shared git dir, so it also works from a linked
+worktree:
 
 ```bash
-grep -q '^\.tmp/' .gitignore 2>/dev/null || echo '.tmp/' >> .gitignore
+EXCLUDE="$(git rev-parse --path-format=absolute --git-common-dir)/info/exclude"
+mkdir -p "$(dirname "$EXCLUDE")"
+grep -qxF '.tmp/' "$EXCLUDE" 2>/dev/null || echo '.tmp/' >> "$EXCLUDE"
 ```
+
+Skip this if the project's `.gitignore` already covers `.tmp/`.
 
 ## Quick Reference
 
@@ -29,7 +37,11 @@ GH_USER=$(gh api user --jq '.login')
 # 2. Clone into .tmp/<name>, add images, push
 git clone "$GIST_URL" ".tmp/$GIST_NAME"
 cp /path/to/*.png ".tmp/$GIST_NAME/"
-cd ".tmp/$GIST_NAME" && git add *.png && git commit -m "add images" && git push && cd -
+# git -C keeps the shell in the project root even when a step fails;
+# the quoted pathspec is matched by git inside the clone, not by the shell
+git -C ".tmp/$GIST_NAME" add -- '*.png' &&
+  git -C ".tmp/$GIST_NAME" commit -m "add images" &&
+  git -C ".tmp/$GIST_NAME" push
 
 # 3. Use raw URLs (permanent as long as gist exists)
 # https://gist.githubusercontent.com/$GH_USER/$GIST_ID/raw/FILENAME.png
@@ -63,11 +75,20 @@ One `gh gist delete` removes them all. One `rm -rf .tmp/pr-135-row-selection` cl
 
 A screenshot that shows the change belongs in the human summary at the top, above the folded agent write-up (the details-summary rule in `claude-md/global.md`).
 
+Setting `body` **replaces the whole description** — never PATCH it with only
+the screenshots block. Fetch the current body, prepend the block, and write the
+combined text back. The `&&` matters: if the fetch fails, the file holds only
+the screenshots block and writing it would clobber the description anyway:
+
 ```bash
-gh api repos/OWNER/REPO/pulls/NUMBER -X PATCH -f body="
-## Screenshots
-![feature](https://gist.githubusercontent.com/$GH_USER/$GIST_ID/raw/feature.png)
-"
+BODY_FILE=$(mktemp)
+{
+  printf '%s\n\n' "## Screenshots"
+  printf '%s\n\n' "![feature](https://gist.githubusercontent.com/$GH_USER/$GIST_ID/raw/feature.png)"
+  gh pr view NUMBER --repo OWNER/REPO --json body --jq .body
+} > "$BODY_FILE" &&
+  gh pr edit NUMBER --repo OWNER/REPO --body-file "$BODY_FILE"
+rm -f "$BODY_FILE"
 ```
 
 ## Cleanup
@@ -82,4 +103,6 @@ rm -rf ".tmp/$GIST_NAME"
 - **Forgetting to push** — images only exist locally until you `git push`
 - **Using gist web URL instead of raw** — `gist.github.com/...` shows the HTML page, not the image. Use `gist.githubusercontent.com/.../raw/...`
 - **Creating public gists for private repos** — use `gh gist create` without `--public` (default is secret)
-- **Forgetting `cd -`** — always return to the project root after pushing to the gist clone
+- **Treating "secret" as private** — a secret gist is only _unlisted_. Its raw URLs need no authentication, so anyone with the link (including anyone who can read the PR or issue it is pasted into) can fetch the image. Don't host screenshots containing credentials, customer data, or other sensitive content this way
+- **`cd`-ing into the gist clone** — a failed `cd dir && … && cd -` chain leaves the shell inside the clone; use `git -C` as above so the project root stays the cwd
+- **Overwriting the PR description** — `-f body=` / `--body` replace the whole text; combine with the existing body first
