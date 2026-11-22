@@ -57,9 +57,10 @@ session (one server + one socket; default ~/.config/herdr/herdr.sock)
 ## Recipe: workspace → agent → prompt → read → clean up
 
 ```bash
-# 1. Create a workspace; capture the root pane id from the JSON envelope
-PANE=$(herdr workspace create --cwd ~/gits/myrepo --label myrepo --no-focus \
-       | jq -r .result.root_pane.pane_id)                      # e.g. "w6:p1"
+# 1. Create a workspace ONCE; capture both ids from the JSON envelope
+CREATED=$(herdr workspace create --cwd ~/gits/myrepo --label myrepo --no-focus)
+WS=$(jq -r .result.workspace.workspace_id <<<"$CREATED")       # e.g. "w6"
+PANE=$(jq -r .result.root_pane.pane_id <<<"$CREATED")          # e.g. "w6:p1"
 
 # 2. Start an agent in that pane. Since 0.8.2 `agent start` waits for the pane
 #    shell and any first-run agent prompt to be ready instead of racing them,
@@ -67,8 +68,8 @@ PANE=$(herdr workspace create --cwd ~/gits/myrepo --label myrepo --no-focus \
 #    timeout). If the agent is blocked during startup it returns
 #    `agent_not_ready` immediately, but the name still works for `agent read`
 #    and `agent send-keys` — wait for idle before prompting.
-#    `herdr agent start --help` is the authority on --kind (22 values in 0.8.2:
-#    claude, codex, gemini, cursor, copilot, opencode, qwen, grok, amp, ...).
+#    `herdr agent start --help` is the authority on --kind (the list grows
+#    per release: claude, codex, gemini, cursor, copilot, opencode, qwen, ...).
 #    Agent CLI args go after --  e.g. `... -- --model opus`
 herdr agent start myagent --kind claude --pane "$PANE" --timeout 60000
 
@@ -80,14 +81,16 @@ herdr agent prompt "$PANE" "summarize the repo layout" \
 # 4. Read the answer (raw text, no JSON envelope)
 herdr agent read "$PANE" --source recent-unwrapped --lines 200
 
-# 5. Clean up — only what you created
-herdr workspace close w6
+# 5. Clean up — only what you created: the captured id, never a literal
+herdr workspace close "$WS"
 ```
 
 Worktree-backed variant: `herdr worktree create --cwd ~/gits/myrepo
---branch feature/x --base main --no-focus --json` returns `worktree_created`
-with `workspace`/`tab`/`root_pane`/`worktree`; remove with
-`herdr worktree remove --workspace w6 --force`.
+--branch feature/x --base main --no-focus` returns the usual envelope with
+`result.type == "worktree_created"` and
+`workspace`/`tab`/`root_pane`/`worktree` under `result`. Capture
+`.result.workspace.workspace_id` the same way as step 1 and remove with
+`herdr worktree remove --workspace "$WS" --force`.
 
 Plain shell work in a pane (no agent): `herdr pane run <pane> <command>`, then
 `herdr pane wait-output <pane> --regex '<done-marker>' --timeout 60000` and
@@ -126,7 +129,8 @@ decision (e.g. a permission prompt) — surface it to the human or answer with
 
 Three distinct conventions — don't assume one envelope:
 
-1. **API-backed commands** (`workspace/tab/pane/agent list|get|create|...`)
+1. **API-backed commands** (`workspace/tab/pane/agent list|get|create|...`,
+   `worktree list|create|open|remove`)
    print a single-line envelope. Branch on `result` vs `error` (errors also
    exit 1), discriminate on `result.type`:
    `{"id":"cli:agent:get","result":{"type":"agent_info",...}}` /
@@ -135,8 +139,9 @@ Three distinct conventions — don't assume one envelope:
    herdr agent get "$PANE" | jq -e '.result.agent.agent_status'
    ```
 2. **`agent read` / `pane read`** print raw terminal text — no JSON, no `--json`.
-3. **`--json` flags** (`session list --json`, `worktree * --json`,
+3. **`--json` flags** (`session list --json`,
    `agent explain --format json`) print bare JSON with no envelope.
+   `worktree` subcommands document no `--json` flag — they are convention 1.
 
 CLI flag values use hyphens (`--source recent-unwrapped`); the raw socket API
 uses underscores (`recent_unwrapped`). Don't copy CLI strings into socket
