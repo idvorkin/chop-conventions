@@ -175,6 +175,17 @@ def validate(data: dict) -> list[str]:
             errs.append(f"missing key: {k}")
     if errs:
         return errs
+    for name in ("statuses", "pages", "items"):
+        if not isinstance(data[name], list):
+            errs.append(f"{name}: must be a list")
+            continue
+        for i, entry in enumerate(data[name]):
+            if not isinstance(entry, dict):
+                errs.append(f"{name}[{i}]: must be an object")
+            elif name != "items" and "key" not in entry:
+                errs.append(f"{name}[{i}]: missing key: key")
+    if errs:
+        return errs
     pages = {p["key"] for p in data["pages"]}
     statuses = {s["key"] for s in data["statuses"]}
     seen = set()
@@ -198,8 +209,11 @@ def render(data: dict, template: str | None = None) -> str:
     if template is None:
         template = TEMPLATE.read_text()
     blob = json.dumps(data, ensure_ascii=False, indent=1)
-    # keep the JSON from closing its <script> element early
-    blob = blob.replace("</", "<\\/").replace("<!--", "<\\!--")
+    # Keep the JSON from closing its <script> element early, or opening an
+    # HTML comment inside it: write every "<" as its JSON unicode escape,
+    # which JSON.parse reads back as "<" and the HTML parser ignores.
+    # (Backslash-bang is not a JSON escape; JSON.parse throws on it.)
+    blob = blob.replace("<", "\\u003c")
     title = data["title"].replace("&", "&amp;").replace("<", "&lt;")
     subs = {
         "__TITLE__": title,
@@ -222,8 +236,10 @@ def _build_app():
                 typer.echo(f"error: {e}", err=True)
             raise typer.Exit(1)
         if json_out:
+            json_out.parent.mkdir(parents=True, exist_ok=True)
             json_out.write_text(json.dumps(data, ensure_ascii=False, indent=2) + "\n")
             typer.echo(f"wrote {json_out}")
+        html.parent.mkdir(parents=True, exist_ok=True)
         html.write_text(render(data))
         typer.echo(
             f"wrote {html} ({len(data['items'])} sections, {len(data['pages'])} pages)"
