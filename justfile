@@ -9,6 +9,10 @@ fast-test:
 
 test: fast-test
 
+# How often each skill in skills/ was used, from ~/.claude/projects transcripts. Pass --json for JSON.
+skill-usage *args:
+    ./dev-setup/tools/skill_usage.py {{args}}
+
 # Install the bulk-parallel CLIs (`bulk-gh-pr-details`, `bulk-bd-show`, etc.)
 # via `uv tool install`. Pre-PR-169: standalone entry point. Once #169 lands
 # `install-tools.py` will cover this too.

@@ -87,10 +87,14 @@ Machine-level skills go in `~/.claude/skills/` and are available everywhere. Pro
 | `background-usage`       | machine | Check Claude Code plan usage without blocking the session                                                            |
 | `build-bd-static`        | machine | Build a static `bd` fallback when Homebrew is unavailable or not portable enough                                     |
 | `bulk`                   | machine | Bulk-parallel CLIs — fan out N `gh`/`bd`/`up-to-date`/file calls in one command                                      |
+| `cartoonist`             | machine | Wake Gutter, the cartoonist seat, for raccoon art on the blog                                                        |
 | `clock`                  | machine | Schedule recurring session tasks (time checks, reminders)                                                            |
 | `delegate-to-other-repo` | machine | Delegate cross-repo work to a subagent with an isolated context; ends with a PR                                      |
 | `docs`                   | machine | Fetch fresh library/framework docs via Context7 (`ctx7`)                                                             |
+| `explainers`             | machine | Build an interactive explainer page that teaches one concept by play                                                 |
 | `gen-image`              | machine | Generate illustrations via OpenRouter (Muse Image default, GPT Image opt-in) + per-panel comic recipe                |
+| `gen-stt`                | machine | Transcribe audio locally via Parakeet TDT ONNX (single or batch)                                                     |
+| `gen-tts`                | machine | Synthesize speech via Gemini Flash TTS with voice and style presets                                                  |
 | `gist-image`             | machine | Host images on GitHub gists for PRs/issues                                                                           |
 | `herdr`                  | machine | Drive herdr workspaces/agents headlessly; keep claude/codex integrations healthy                                     |
 | `image-explore`          | machine | Brainstorm and compare visual directions                                                                             |
@@ -103,6 +107,11 @@ Machine-level skills go in `~/.claude/skills/` and are available everywhere. Pro
 | `pr-hygiene`             | machine | Surface open PRs with unaddressed review feedback (filters CodeRabbit/CI noise)                                      |
 | `showboat`               | machine | Create executable demo documents with screenshots                                                                    |
 | `up-to-date`             | machine | Sync git repo with upstream                                                                                          |
+| `yolo`                   | machine | What `--dangerously-skip-permissions` does and does not bypass                                                       |
+
+### Skill Usage
+
+`just skill-usage` counts how often each skill here was invoked (Skill tool calls and typed slash commands), from this machine's Claude Code transcripts in `~/.claude/projects`. Claude Code prunes transcripts (`cleanupPeriodDays`, 30 days by default), so the report prints the window it covers. Add `--json` for machine-readable output.
 
 ## Usage
 

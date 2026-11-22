@@ -1,6 +1,3 @@
 {
-  "extraPaths": [
-    "skills/up-to-date",
-    "skills/cost-impact"
-  ]
+	"extraPaths": ["skills/up-to-date", "dev-setup/tools"]
 }
