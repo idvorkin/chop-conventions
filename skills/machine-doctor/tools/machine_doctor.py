@@ -53,6 +53,12 @@ import md_sims
 import md_store as store
 from md_probe import (
     CpuTotals,
+    DevServer,
+    fmt_age,
+    parse_lsof_fields,
+    parse_lsof_listeners,
+    parse_ss_listeners,
+    parse_status_mem,
     MemInfo,
     ProcSample,
     mem_by_app,
@@ -95,7 +101,16 @@ from md_probe import (
     thermal_name,
     top_n,
 )
-from profiles import PROFILES, USER_SOCKETS, HostFacts, is_deleted_cwd, is_jekyll_server
+from profiles import (
+    PROFILES,
+    USER_SOCKETS,
+    HostFacts,
+    dev_server_findings,
+    fold_wrappers,
+    is_deleted_cwd,
+    server_kind,
+    server_target,
+)
 
 OK = "✓"
 WARN = "⚠"
@@ -537,6 +552,116 @@ def read_containers() -> list[str]:
     return [ln for ln in out.splitlines() if ln.strip()]
 
 
+def _listen_ports(pids: list[int]) -> dict[int, list[int]]:
+    """{pid: listening TCP ports} for these pids, in one call."""
+    if IS_DARWIN:
+        csv = ",".join(map(str, pids))
+        out = _run(
+            ["lsof", "-nP", "-a", "-p", csv, "-iTCP", "-sTCP:LISTEN", "-F", "pn"]
+        )
+        return parse_lsof_listeners(out)
+    # ponytail: no ss (minimal containers) means no ports; /proc/net/tcp plus
+    # fd inode matching is the upgrade if that ever matters.
+    if not shutil.which("ss"):
+        return {}
+    return parse_ss_listeners(_run(["ss", "-ltnpH"]))
+
+
+def _cwds(pids: list[int]) -> dict[int, str]:
+    """Batched on macOS (one lsof, not one per process)."""
+    if not IS_DARWIN:
+        return {pid: _cwd(pid) for pid in pids}
+    out = _run(["lsof", "-a", "-p", ",".join(map(str, pids)), "-d", "cwd", "-F", "pn"])
+    return {pid: names[0] for pid, names in parse_lsof_fields(out).items() if names}
+
+
+def _git_where(path: str) -> tuple[str, str]:
+    """(toplevel, branch) of the repo holding path; ("", "") outside one."""
+    if not path or is_deleted_cwd(path) or not os.path.isdir(path):
+        return "", ""
+    out = _run(
+        ["git", "-C", path, "rev-parse", "--show-toplevel", "--abbrev-ref", "HEAD"],
+        timeout=5,
+    ).splitlines()
+    if len(out) < 2:
+        return "", ""
+    return out[0], "(detached)" if out[1] == "HEAD" else out[1]
+
+
+def read_dev_servers(procs: list[ProcSample]) -> list[DevServer]:
+    """Jekyll previews, lavish servers and pollers, http.server and serve.py:
+    port, age, memory with swap, and the repo/branch each serves. Oldest first."""
+    cmdlines = _cmdlines([p.pid for p in procs])
+    hits = [
+        (p, kind)
+        for p in procs
+        if p.pid != SELF_PID and (kind := server_kind(p.comm, cmdlines.get(p.pid, "")))
+    ]
+    if not hits:
+        return []
+    pids = [p.pid for p, _ in hits]
+    ports = _listen_ports(pids)
+    cwds = _cwds(pids)
+    servers = []
+    for p, kind in hits:
+        rss, swap = p.rss_kb, 0  # macOS footprint already counts compressed pages
+        if not IS_DARWIN:
+            st_rss, swap = parse_status_mem(_read(f"/proc/{p.pid}/status"))
+            rss = st_rss or rss
+        servers.append(
+            DevServer(
+                pid=p.pid,
+                kind=kind,
+                etime_s=p.etime_s,
+                rss_kb=rss,
+                swap_kb=swap,
+                ports=tuple(ports.get(p.pid, ())),
+                cwd=cwds.get(p.pid, ""),
+                cmdline=redact(cmdlines.get(p.pid, "")),
+            )
+        )
+    servers = fold_wrappers(servers, {p.pid: p.ppid for p in procs})
+    seen: dict[str, tuple[str, str]] = {}
+    out = []
+    for s in servers:
+        target = server_target(s.kind, s.cmdline, s.cwd)
+        if target not in seen:
+            seen[target] = _git_where(target)
+        repo, branch = seen[target]
+        out.append(dataclasses.replace(s, repo=repo, branch=branch))
+    return sorted(out, key=lambda s: -s.etime_s)
+
+
+def render_dev_servers(servers: list[DevServer]) -> list[str]:
+    """Summary line plus one row per server, oldest first."""
+    if not servers:
+        return ["dev servers: none"]
+    kinds: dict[str, int] = {}
+    for s in servers:
+        kinds[s.kind] = kinds.get(s.kind, 0) + 1
+    mix = ", ".join(f"{k} {n}" for k, n in sorted(kinds.items(), key=lambda kv: -kv[1]))
+    rss = sum(s.rss_kb for s in servers) // 1024
+    swap = sum(s.swap_kb for s in servers) // 1024
+    swap_s = "" if IS_DARWIN else f" + {swap}MB swap"
+    lines = [
+        f"dev servers: {len(servers)} ({mix}) — {rss}MB {MEM_LABEL}{swap_s}",
+        f"{'KIND':<12} {'PID':>8} {'PORT':>6} {'AGE':>7} {MEM_LABEL:>7} {'SWAP':>7}  "
+        "BRANCH  WHERE",
+    ]
+    home = str(Path.home())
+    for s in servers:
+        port = str(s.ports[0]) if s.ports else "-"
+        loc = s.repo or s.cwd or "?"
+        if loc.startswith(home):
+            loc = "~" + loc[len(home) :]
+        swap_col = "-" if IS_DARWIN else f"{s.swap_kb // 1024}MB"
+        lines.append(
+            f"{s.kind:<12} {s.pid:>8} {port:>6} {fmt_age(s.etime_s):>7} "
+            f"{s.rss_kb // 1024:>5}MB {swap_col:>7}  {s.branch or '-'}  {loc}"
+        )
+    return lines
+
+
 def collect_facts(
     procs: list[ProcSample],
     zombies: list[int],
@@ -571,6 +696,7 @@ def collect_facts(
             for d in md_sims.read_devices()
             if d.poster_kb
         }
+        facts.sim_mem_kb = sum(p.rss_kb for p in procs if p.app == "iOS Simulator")
 
     facts.cmdlines = {pid: _cmdline(pid) for pid in _pids_named("gc")}
     for p in procs:
@@ -582,8 +708,7 @@ def collect_facts(
             cwd = _cwd(p.pid)  # unreadable for other users' procs: "" -> skipped
             if is_deleted_cwd(cwd):
                 facts.deleted_cwds[p.pid] = cwd
-        if is_jekyll_server(p.comm, _cmdline(p.pid)):
-            facts.jekyll_pids.append(p.pid)
+    facts.dev_servers = read_dev_servers(procs)
     facts.dolt_cwds = {pid: _cwd(pid) for pid in _pids_named("dolt")}
 
     sock_dir = _tmux_socket_dir()
@@ -1181,6 +1306,10 @@ def _build_app():
                         "swap_free_kb": mem.swap_free_kb,
                         "disks": facts.disks,
                         "containers": containers,
+                        "dev_servers": [
+                            dataclasses.asdict(s) | {"mem_kb": s.mem_kb}
+                            for s in facts.dev_servers
+                        ],
                         "nproc": len(procs),
                         "top": [
                             {
@@ -1225,12 +1354,43 @@ def _build_app():
             cl = redact(_cmdline(p.pid))[:80] or p.comm
             print(f"{p.pid:>8} {cpu:>6} {p.rss_kb // 1024:>6}MB  {cl}")
         print()
+        for line in render_dev_servers(facts.dev_servers):
+            print(line)
+        print()
         if not findings:
             print(f"{OK} no findings")
         for f in findings:
             mark = {"fail": BAD, "warn": WARN}.get(f.severity, NOTE)
             print(f"{mark} {f.message}")
         raise t.Exit(1 if failures else 0)
+
+    @app.command()
+    def servers(as_json: bool = typer.Option(False, "--json")) -> None:
+        """Dev servers (jekyll, lavish, http.server, serve.py): port, age,
+        memory with swap, branch served. Report only; never stops anything."""
+        procs, _, _, _ = walk_procs({}, None)
+        found = read_dev_servers(procs)
+        findings = dev_server_findings(found, read_mem().mem_total_kb)
+        if as_json:
+            print(
+                json.dumps(
+                    {
+                        "dev_servers": [
+                            dataclasses.asdict(s) | {"mem_kb": s.mem_kb} for s in found
+                        ],
+                        "findings": [
+                            {"severity": f.severity, "message": f.message}
+                            for f in findings
+                        ],
+                    },
+                    indent=2,
+                )
+            )
+            return
+        for line in render_dev_servers(found):
+            print(line)
+        for f in findings:
+            print(f"{WARN if f.severity == 'warn' else NOTE} {f.message}")
 
     @app.command()
     def sleeps(

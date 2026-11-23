@@ -824,3 +824,95 @@ def parse_catcher_log(text: str) -> dict[str, str]:
         else:
             current = None
     return out
+
+
+# ---------------------------------------------------------------------------
+# Dev servers: who is listening, on what port, and what memory (swap included)
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class DevServer:
+    """One preview/dev server. Memory is RSS plus swap: an idle preview gets
+    swapped out, so RSS alone makes a box full of them look nearly empty.
+    On macOS swap is always 0 because rss_kb is the footprint, which already
+    counts compressed pages."""
+
+    pid: int
+    kind: str  # jekyll | lavish | lavish-poll | http.server | serve.py
+    etime_s: int
+    rss_kb: int
+    swap_kb: int = 0
+    ports: tuple[int, ...] = ()
+    cwd: str = ""
+    repo: str = ""  # git toplevel of what it serves; "" when not in a repo
+    branch: str = ""  # "" when unknown; "(detached)" for a detached HEAD
+    cmdline: str = ""
+
+    @property
+    def mem_kb(self) -> int:
+        return self.rss_kb + self.swap_kb
+
+
+def parse_status_mem(text: str) -> tuple[int, int]:
+    """/proc/<pid>/status -> (VmRSS KB, VmSwap KB); 0 for a missing field
+    (kernel threads have neither)."""
+    vals = {"VmRSS": 0, "VmSwap": 0}
+    for line in text.splitlines():
+        key, _, rest = line.partition(":")
+        if key in vals:
+            parts = rest.split()
+            if parts and parts[0].isdigit():
+                vals[key] = int(parts[0])
+    return vals["VmRSS"], vals["VmSwap"]
+
+
+def _port_of(addr: str) -> int | None:
+    """'0.0.0.0:4000', '[::1]:8080', '*:4000', '127.0.0.1%lo:53' -> port."""
+    _, _, port = addr.rpartition(":")
+    return int(port) if port.isdigit() else None
+
+
+def parse_ss_listeners(text: str) -> dict[int, list[int]]:
+    """`ss -ltnpH` -> {pid: sorted listening TCP ports}. A socket shared by
+    several pids (a forked server) counts for each."""
+    out: dict[int, set[int]] = {}
+    for line in text.splitlines():
+        f = line.split()
+        if len(f) < 4 or f[0] != "LISTEN":
+            continue
+        port = _port_of(f[3])
+        if port is None:
+            continue
+        for pid in re.findall(r"pid=(\d+)", line):
+            out.setdefault(int(pid), set()).add(port)
+    return {pid: sorted(ports) for pid, ports in out.items()}
+
+
+def parse_lsof_fields(text: str) -> dict[int, list[str]]:
+    """`lsof -F pn` output -> {pid: [name, ...]} (the `n` fields in order)."""
+    out: dict[int, list[str]] = {}
+    pid: int | None = None
+    for line in text.splitlines():
+        if line.startswith("p") and line[1:].isdigit():
+            pid = int(line[1:])
+            out.setdefault(pid, [])
+        elif line.startswith("n") and pid is not None:
+            out[pid].append(line[1:])
+    return out
+
+
+def parse_lsof_listeners(text: str) -> dict[int, list[int]]:
+    """`lsof -nP -iTCP -sTCP:LISTEN -F pn` -> {pid: sorted ports}."""
+    return {
+        pid: sorted({p for n in names if (p := _port_of(n)) is not None})
+        for pid, names in parse_lsof_fields(text).items()
+    }
+
+
+def fmt_age(seconds: int) -> str:
+    if seconds >= 86400:
+        return f"{seconds // 86400}d{seconds % 86400 // 3600}h"
+    if seconds >= 3600:
+        return f"{seconds // 3600}h{seconds % 3600 // 60:02d}m"
+    return f"{seconds // 60}m"

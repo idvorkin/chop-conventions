@@ -32,6 +32,12 @@ column is labelled `MEM`, not `RSS`).
 pressure eases (8 GB → 6 GB → 4 GB), so free swap drops with it. Trust the
 pressure level and swap _used_, not free.
 
+**Per-process `top` hides fan-out.** An iOS Simulator spreads 10+ GB over 200+
+small processes; none ranks in `top`, but `mem` shows it as one row. On macOS `mem`
+groups by the outermost `.app` bundle (Edge and CapCut helpers count toward their
+app) and puts everything under `CoreSimulator` in one `iOS Simulator` row;
+`xcrun simctl shutdown <udid>` returns it, so check first that no agent is using it.
+
 Symptoms of memory pressure look like CPU trouble: high `sys` CPU (the kernel
 compressing and swapping), load averages in the dozens or hundreds, and
 beach-balls, while no single user process is especially hot.
@@ -98,7 +104,9 @@ Each booted simulator is a whole OS — its own `launchd_sim` and a copy of ever
 daemon (healthd, assistantd, siriactionsd…). Eight booted sims meant 2,400
 processes, 665 runnable, load ~980 and swap full; no single row in `ps -r` looks
 guilty. Signature: dozens of `xpcproxy_sim` / `SimMetalHost` in a count by name.
-`snapshot` warns at 3 or more booted simulators and names them.
+`snapshot` warns at 3 or more booted simulators and names them, or when
+everything under `CoreSimulator` holds 6 GB or more of footprint (`mem` shows
+it as one `iOS Simulator` row).
 
 ```bash
 /bin/ps -Ao comm | awk -F/ '{print $NF}' | sort | uniq -c | sort -rn | head
