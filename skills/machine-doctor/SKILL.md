@@ -28,22 +28,31 @@ Always start with **Step 0: Platform Detection**, then run the requested tier.
 Every row is checked by `machine_doctor.py snapshot` unless marked. The runbook
 column is where the fix lives.
 
-| Area                  | Healthy                                               | Usual culprit                                            | Fix in                               |
-| --------------------- | ----------------------------------------------------- | -------------------------------------------------------- | ------------------------------------ |
-| CPU                   | idle ≥25%; no process >300% for long                  | agent swarms, builds, a VM's host process                | Tier 1, `doctor-deep.md` 3f          |
-| Memory                | Linux MemAvailable ≥10%; macOS pressure `normal`      | a VM allowed most of host RAM; browsers; leaks           | Tier 1b, `doctor-macos.md` §1–3      |
-| Swap                  | not near full; no sustained swap-out                  | memory pressure (swap is the symptom)                    | same as memory                       |
-| Disk                  | data volumes <90%                                     | caches, VM images, build output                          | Tier 1c, `doctor-macos.md` §4        |
-| VMs / containers      | VM memory cap ≤ half of host RAM; no stale servers    | OrbStack/Docker defaults; forgotten dev servers inside   | `doctor-macos.md` §2                 |
-| Simulators (macOS)    | only the sims a running build uses are booted         | test pipelines that boot a device per run, never shut it | `doctor-macos.md` §2                 |
-| Sim wallpaper caches  | under 5 GB across devices                             | iOS 27 keeps ~300 MB of snapshots per boot, never evicts | `sims --prune`, `doctor-macos.md` §2 |
-| Thermal               | no CPU speed limit                                    | sustained load                                           | find the load                        |
-| Sleep / wake          | no thermal sleeps; forced ones named (often the user) | heat; a script calling `pmset sleepnow`                  | `sleeps`, `doctor-macos.md` §5       |
-| Zombies               | none                                                  | a parent not reaping                                     | Tier 1d                              |
-| Agent orchestrators   | none running unless intended                          | Gas Town / Gas City leftovers                            | Tier 2, `doctor-gascity.md`          |
-| CPU guards            | watchdog running, VM CPU cap set (_manual_)           | shell never opened since boot                            | Tier 1e, `doctor-guards.md`          |
-| Dev servers, MCP, npm | responsive or gone (_manual, deep_)                   | days-old servers                                         | `doctor-deep.md` 3c–3e               |
-| Git state             | no stale locks or orphaned worktrees (_manual, deep_) | crashed git processes                                    | `doctor-deep.md` 3a–3b               |
+**Shared — Linux and macOS:**
+
+| Area                | Healthy                                                    | Usual culprit                                               | Fix in                          |
+| ------------------- | ---------------------------------------------------------- | ----------------------------------------------------------- | ------------------------------- |
+| CPU                 | idle ≥25%; no process >300% for long                       | agent swarms, builds, a VM's host process                   | Tier 1, `doctor-deep.md` 3f     |
+| Memory              | Linux MemAvailable ≥10%; macOS pressure `normal`           | a VM allowed most of host RAM; browsers; leaks              | Tier 1b, `doctor-macos.md` §1–3 |
+| Swap                | not near full; no sustained swap-out                       | idle dev servers swapped out (Linux); memory pressure       | Tier 1b, `servers`              |
+| Disk                | data volumes <90%                                          | caches, VM images, build output                             | Tier 1c, `doctor-macos.md` §4   |
+| Dev servers         | under 10 listening, under 2 GB (RSS + swap), none over 1 d | jekyll / `serve.py` / `http.server` previews nobody stopped | `servers`, `doctor-deep.md` 3c  |
+| Containers          | no stale servers inside                                    | forgotten dev servers in a container                        | `doctor-macos.md` §2            |
+| Zombies             | none                                                       | a parent not reaping                                        | Tier 1d                         |
+| Agent orchestrators | none running unless intended                               | Gas Town / Gas City leftovers                               | Tier 2, `doctor-gascity.md`     |
+| CPU guards          | watchdog running, VM CPU cap set (_manual_, OrbStack VM)   | shell never opened since boot                               | Tier 1e, `doctor-guards.md`     |
+| MCP, npm, git state | responsive or gone; no stale locks (_manual, deep_)        | days-old processes, crashed git                             | `doctor-deep.md` 3a–3e          |
+
+**macOS only** (read [`doctor-macos.md`](./doctor-macos.md)):
+
+| Area                 | Healthy                                               | Usual culprit                                            | Fix in        |
+| -------------------- | ----------------------------------------------------- | -------------------------------------------------------- | ------------- |
+| Memory pressure      | `normal`; rank by footprint, not RSS                  | the compressor holding a VM's guest memory               | §1            |
+| VM memory cap        | ≤ half of host RAM                                    | OrbStack/Docker defaults                                 | §2            |
+| Simulators           | only sims a running build uses; under 6 GB footprint  | test pipelines that boot a device per run, never shut it | §2            |
+| Sim wallpaper caches | under 5 GB across devices                             | iOS 27 keeps ~300 MB of snapshots per boot, never evicts | §2, `sims`    |
+| Thermal              | no CPU speed limit or thermal pressure                | sustained load                                           | find the load |
+| Sleep / wake         | no thermal sleeps; forced ones named (often the user) | heat; a script calling `pmset sleepnow`                  | §5, `sleeps`  |
 
 ---
 
@@ -97,7 +106,7 @@ echo "ENV=$ENV"
 ## Tier 1: Quick Vitals (`/machine-doctor`)
 
 Run the vendored snapshot first — it checks CPU, memory/pressure, swap, disks,
-zombies, VM memory caps, thermal limits, recent thermal sleeps (macOS; forced ones are a neutral note)
+zombies, dev servers (jekyll, lavish, `http.server`, `serve.py`), VM memory caps, thermal limits, recent thermal sleeps (macOS; forced ones are a neutral note)
 and per-container usage, on both Linux and macOS:
 
 ```bash
@@ -144,16 +153,14 @@ compressed memory, which is exactly where a VM's guest memory ends up. If the
 top footprint is a VM (OrbStack Helper, Docker), go to
 [`doctor-macos.md`](./doctor-macos.md) §2.
 
-**Per-process `top` hides fan-out.** An iOS Simulator spreads 10+ GB over 200+
-small processes; none ranks in `top`, but `mem` shows it as one row. On macOS `mem`
-groups by the outermost `.app` bundle (Edge and CapCut helpers count toward their
-app) and puts everything under `CoreSimulator` in one `iOS Simulator` row;
-`xcrun simctl shutdown <udid>` returns it, so check first that no agent is using it.
-`watch` stores these per-app totals and the pressure level every sample, so `at`
-and `report --mem` answer "who ate memory at 7:13" after the fact.
+**Per-process `top` hides fan-out.** `mem` groups by app, so a simulator's 200+
+small processes or an app's helpers show as one row ([`doctor-macos.md`](./doctor-macos.md) §1).
+`watch` stores these per-app totals every sample, so `at` and `report --mem`
+answer "who ate memory at 7:13" after the fact.
 
 On Linux, when asked "what's using memory", answer **by app, not by PID**, with a TOTAL row: `mem` collapses claude sessions, pytest workers, jekyll previews and `dolt sql-server`s into one row each and names bare interpreters by their script (`python3:serve.py`).
 
+- **On Linux, swap is where idle previews hide: read swap by process before trusting RSS.** A jekyll preview untouched for a day shows ~1 MB RSS and 200–400 MB in swap, so an RSS ranking (`mem`, `top`) calls the box empty while swap is full. `servers` shows RSS and swap per dev server; for everything else: `grep VmSwap /proc/[0-9]*/status | sort -k2 -n | tail`.
 - **`used` in `free -h` exceeding summed RSS is kernel memory, not a leak** — mostly `SReclaimable` slab (dentry/inode cache), which the kernel drops under pressure. `mem` prints the gap and the slab size side by side.
 - **"Can we compact memory?" — not from inside an OrbStack container.** `/proc/sys` is mounted read-only, so `compact_memory` / `drop_caches` fail even with sudo, and `swapoff`/`swapon` are restricted too. The only in-VM lever is stopping processes; returning memory to the Mac is OrbStack's job. Swap still in use after a spike has passed is harmless residue.
 
@@ -341,6 +348,7 @@ while it runs (SQLite samples + full-tree spike dumps under
 ~/.claude/skills/machine-doctor/tools/machine_doctor.py at 07:16              # what was running then
 ~/.claude/skills/machine-doctor/tools/machine_doctor.py snapshot              # right now + generic leak checks
 ~/.claude/skills/machine-doctor/tools/machine_doctor.py mem                   # RSS by app with TOTAL (Tier 1b)
+~/.claude/skills/machine-doctor/tools/machine_doctor.py servers               # dev servers: port, age, RSS+swap, branch served
 ~/.claude/skills/machine-doctor/tools/machine_doctor.py sleeps --since 24h    # macOS: why it slept, who asked for it
 ~/.claude/skills/machine-doctor/tools/machine_doctor.py sims [--prune]        # macOS: simulator wallpaper caches (doctor-macos.md §2)
 ~/.claude/skills/machine-doctor/tools/machine_doctor.py watch --prune-sims 10m  # also clear shut-down sims' wallpaper caches every 10 min

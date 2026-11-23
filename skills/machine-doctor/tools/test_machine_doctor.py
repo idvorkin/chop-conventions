@@ -190,5 +190,49 @@ class TestWatchPruneSimsDefaults(unittest.TestCase):
         prune.assert_called_once_with(fake_root, fake_running)
 
 
+try:
+    from typer.testing import CliRunner
+except ImportError:  # system python3; `just test` runs with typer
+    CliRunner = None
+
+
+@unittest.skipIf(CliRunner is None, "typer not installed")
+class TestMemCommand(unittest.TestCase):
+    """Regression: `mem` once called walk_procs({}, 0.0, _uptime_s()) after the
+    signature dropped to (prev, prev_t) and crashed with TypeError. autospec
+    holds every call to the real signature."""
+
+    def _invoke(self, cmd, *, darwin):
+        procs = [md.ProcSample(1, 0, "jekyll", None, 200 * 1024, 60, app="jekyll")]
+        meminfo = (
+            "MemTotal: 1000 kB\nMemAvailable: 500 kB\nSwapTotal: 0 kB\nSwapFree: 0 kB\n"
+        )
+        with (
+            mock.patch.object(md, "IS_DARWIN", darwin),
+            mock.patch.object(
+                md, "walk_procs", autospec=True, return_value=(procs, {}, [], 0.0)
+            ) as walk,
+            mock.patch.object(md, "_cmdline", lambda pid: "jekyll serve"),
+            mock.patch.object(md, "_cmdlines", lambda pids: {p: "x" for p in pids}),
+            mock.patch.object(md, "_read", lambda path: meminfo),
+            mock.patch.object(md, "read_mem", lambda: md.parse_meminfo(meminfo)),
+            mock.patch.object(md, "read_dev_servers", lambda procs: []),
+        ):
+            result = CliRunner().invoke(md._build_app(), cmd)
+        self.assertIsNone(result.exception, result.output)
+        self.assertEqual(result.exit_code, 0, result.output)
+        walk.assert_called()
+        return result.output
+
+    def test_mem_linux(self):
+        self.assertIn("TOTAL", self._invoke(["mem"], darwin=False))
+
+    def test_mem_darwin(self):
+        self.assertIn("TOTAL", self._invoke(["mem"], darwin=True))
+
+    def test_servers(self):
+        self.assertIn("dev servers: none", self._invoke(["servers"], darwin=False))
+
+
 if __name__ == "__main__":
     unittest.main()

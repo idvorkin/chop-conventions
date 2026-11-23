@@ -39,18 +39,22 @@ Report any worktrees and whether their branch still exists. Offer `git worktree 
 ### 3c. Stale Dev Servers
 
 ```bash
-# Jekyll servers
-pgrep -af 'jekyll serve' 2>&1
-# Check if they're actually responding
-for port in 4000 4001; do
-  curl -s -o /dev/null -w "localhost:$port → %{http_code}" http://localhost:$port/ 2>/dev/null || echo "localhost:$port → dead"
-done
+~/.claude/skills/machine-doctor/tools/machine_doctor.py servers          # add --json for a caller
+```
 
-# Dolt servers
-pgrep -af 'dolt sql-server' 2>&1
+One row per jekyll preview, lavish server or poller, `http.server` and
+`serve.py` (a `uv run` wrapper folds into its python child): pid, port, age,
+RSS **and swap**, and the git branch and worktree it serves. Check whether that
+branch's PR has merged before stopping anything; `servers` itself never stops a
+process. `snapshot` prints the same table and warns at 10 or more listening
+servers, 2 GB or more across them (swap included), or any older than a day.
 
-# Node dev servers (webpack, vite, etc.)
-pgrep -af 'node.*serve' 2>&1
+```bash
+# Is it actually answering?
+curl -s -o /dev/null -w "%{http_code}\n" http://localhost:<port>/
+
+# Dolt servers and other node dev servers are not in the census
+/bin/ps -eo pid=,etime=,args= | grep -e '[d]olt sql-server' -e '[n]ode.*serve'
 ```
 
 Report running servers and whether they're responding. Offer to kill unresponsive ones. `snapshot` flags the first two leak patterns below automatically:

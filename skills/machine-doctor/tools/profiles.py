@@ -5,9 +5,19 @@ collection I/O that fills HostFacts lives in machine_doctor.py. Two profiles is
 a dict, not a plugin framework (N=2).
 """
 
-from dataclasses import dataclass, field
+import os
+import re
+from dataclasses import dataclass, field, replace
 
-from md_probe import JEKYLL_RE, ProcSample, SleepEvent, thermal_name
+from md_probe import (
+    JEKYLL_RE,
+    DevServer,
+    ProcSample,
+    SleepEvent,
+    app_name,
+    fmt_age,
+    thermal_name,
+)
 
 # The human's own tmux sockets. Never a Gas City leak — flagging these trains
 # the reader to ignore the tool.
@@ -15,9 +25,16 @@ USER_SOCKETS = frozenset({"default", "ssh"})
 
 HOT_CPU_PCT = 300.0
 MEM_AVAIL_FAIL_PCT = 10
-# A jekyll preview older than this was started by an agent that moved on:
-# one per blog worktree, 100-250MB each, and nothing ever stops them.
-STALE_JEKYLL_S = 24 * 3600
+# A dev server older than this was started by an agent that moved on: one
+# jekyll preview per blog worktree, 100-250MB each, and nothing stops them.
+# 47 of them once held 7.4GB of a 13GB swap on a 12GB VM.
+STALE_DEV_SERVER_S = 24 * 3600
+# More listening previews than this at once is a pile-up, not a workflow
+# (lavish pollers hold no port and are not counted).
+DEV_SERVERS_WARN = 10
+# RSS + swap across every dev server.
+DEV_SERVER_MEM_WARN_KB = 2 * 1024 * 1024
+DEV_SERVER_MEM_WARN_PCT = 15
 # Interactive holders of a deleted cwd are a person's pane, not a leak; and
 # wrappers (just, bash -c) carry the server's argv without being the server.
 SHELL_COMMS = frozenset(
@@ -37,6 +54,9 @@ BOOTED_SIMS_WARN = 3
 # iOS 27 simulators keep ~300 MB of wallpaper snapshots per boot and never evict
 # them; 26 GB across two test-ladder devices in a month.
 SIM_POSTERS_WARN_KB = 5 * 1024 * 1024
+# Footprint of everything under CoreSimulator. It spreads over hundreds of
+# small processes, so no per-process sort shows it; 10+ GB has been seen.
+SIM_MEM_WARN_KB = 6 * 1024 * 1024
 
 
 @dataclass(frozen=True)
@@ -58,7 +78,7 @@ class HostFacts:
     # pid -> cwd for processes whose cwd was deleted (worktree removed under
     # a still-running server).
     deleted_cwds: dict[int, str] = field(default_factory=dict)
-    jekyll_pids: list[int] = field(default_factory=list)
+    dev_servers: list[DevServer] = field(default_factory=list)
     load1: float = 0.0
     idle_pct: int | None = None
     mem_total_kb: int = 0
@@ -74,6 +94,7 @@ class HostFacts:
     sleeps: list[SleepEvent] = field(default_factory=list)  # macOS, recent window
     booted_sims: list[str] = field(default_factory=list)  # macOS simulator names
     sim_posters_kb: dict[str, int] = field(default_factory=dict)  # sim name -> KB
+    sim_mem_kb: int = 0  # macOS: footprint of everything under CoreSimulator
 
 
 def classify_dolt(cwd: str) -> str:
@@ -98,6 +119,122 @@ def is_watchdog(cmdline: str) -> bool:
 def is_jekyll_server(comm: str, cmdline: str) -> bool:
     m = JEKYLL_RE.search(cmdline)
     return comm not in SHELL_COMMS and bool(m) and m.group(2) != "build"
+
+
+_LAVISH_RE = re.compile(r"lavish-axi\S*\s+(server|poll)\b")
+
+
+def server_kind(comm: str, cmdline: str) -> str | None:
+    """Classify a dev/preview server, or None. Shell wrappers carry the
+    server's argv without being it; `uv run serve.py` is folded into its
+    python child later by fold_wrappers."""
+    if comm in SHELL_COMMS:
+        return None
+    if is_jekyll_server(comm, cmdline):
+        return "jekyll"
+    m = _LAVISH_RE.search(cmdline)
+    if m:
+        return "lavish" if m.group(1) == "server" else "lavish-poll"
+    app = app_name(comm, cmdline)
+    for kind in ("http.server", "serve.py"):
+        if app.endswith(":" + kind):
+            return kind
+    return None
+
+
+def server_target(kind: str, cmdline: str, cwd: str) -> str:
+    """The directory whose git branch the server serves: the script's own dir
+    for an absolute `serve.py`, the reviewed file's dir for a lavish poller,
+    else the working directory (jekyll and http.server serve their cwd)."""
+    argv = cmdline.split()
+    if kind == "serve.py":
+        for a in argv:
+            if a.endswith("serve.py") and a.startswith("/"):
+                return os.path.dirname(a)
+    if kind == "lavish-poll" and "poll" in argv:
+        i = argv.index("poll")
+        if i + 1 < len(argv):
+            target = os.path.join(cwd, argv[i + 1]) if cwd else argv[i + 1]
+            if target.startswith("/"):
+                return os.path.dirname(target)
+    return cwd
+
+
+def fold_wrappers(servers: list[DevServer], ppid_of: dict[int, int]) -> list[DevServer]:
+    """`uv run --script serve.py` forks the python that holds the port; both
+    classify as serve.py. Count one server: the child, carrying the parent's
+    memory and ports."""
+    by_pid = {s.pid: s for s in servers}
+    merged = dict(by_pid)
+    for s in servers:
+        parent = by_pid.get(ppid_of.get(s.pid, 0))
+        if parent is None or parent.kind != s.kind or parent.pid not in merged:
+            continue
+        child = merged[s.pid]
+        merged[s.pid] = replace(
+            child,
+            rss_kb=child.rss_kb + parent.rss_kb,
+            swap_kb=child.swap_kb + parent.swap_kb,
+            ports=tuple(sorted(set(child.ports) | set(parent.ports))),
+            etime_s=max(child.etime_s, parent.etime_s),
+        )
+        del merged[parent.pid]
+    return [merged[s.pid] for s in servers if s.pid in merged]
+
+
+def where(s: DevServer) -> str:
+    """`repo@branch` for a finding; the cwd when it is not in a repo."""
+    if s.repo:
+        return f"{os.path.basename(s.repo)}@{s.branch or '?'}"
+    return s.cwd or "?"
+
+
+def dev_server_findings(servers: list[DevServer], mem_total_kb: int) -> list[Finding]:
+    """Report only: never a fail, never a kill. Each finding names the branch,
+    so the reader can check whether its PR merged before stopping anything."""
+    out: list[Finding] = []
+    listening = [s for s in servers if s.kind != "lavish-poll"]
+    if len(listening) >= DEV_SERVERS_WARN:
+        kinds: dict[str, int] = {}
+        for s in listening:
+            kinds[s.kind] = kinds.get(s.kind, 0) + 1
+        mix = ", ".join(
+            f"{k} {n}" for k, n in sorted(kinds.items(), key=lambda kv: -kv[1])
+        )
+        out.append(Finding("warn", f"{len(listening)} dev servers running ({mix})"))
+    total = sum(s.mem_kb for s in servers)
+    swap = sum(s.swap_kb for s in servers)
+    if total >= DEV_SERVER_MEM_WARN_KB or (
+        mem_total_kb and total * 100 >= mem_total_kb * DEV_SERVER_MEM_WARN_PCT
+    ):
+        out.append(
+            Finding(
+                "warn",
+                f"dev servers hold {total // 1024}MB (of which {swap // 1024}MB in swap) "
+                "— idle previews get swapped out, so RSS alone undercounts them",
+            )
+        )
+    old = sorted(
+        (s for s in servers if s.etime_s > STALE_DEV_SERVER_S), key=lambda s: -s.etime_s
+    )
+    if old:
+        shown = ", ".join(
+            f"{s.kind} pid={s.pid} {fmt_age(s.etime_s)} {where(s)}" for s in old[:5]
+        )
+        more = f" (+{len(old) - 5} more)" if len(old) > 5 else ""
+        hint = (
+            "; jekyll stops on SIGINT, not SIGTERM"
+            if any(s.kind == "jekyll" for s in old)
+            else ""
+        )
+        out.append(
+            Finding(
+                "warn",
+                f"{len(old)} dev server(s) up over {STALE_DEV_SERVER_S // 3600}h: "
+                f"{shown}{more} — stop the ones whose branch has merged{hint}",
+            )
+        )
+    return out
 
 
 def is_deleted_cwd(link: str) -> bool:
@@ -145,16 +282,7 @@ def generic_findings(facts: HostFacts) -> list[Finding]:
                 "nothing can reach its worktree any more; strong kill candidate",
             )
         )
-    for pid in sorted(facts.jekyll_pids):
-        p = by_pid.get(pid)
-        if p and p.etime_s > STALE_JEKYLL_S:
-            out.append(
-                Finding(
-                    "warn",
-                    f"stale jekyll preview pid={pid} up {p.etime_s // 3600}h, "
-                    f"{p.rss_kb // 1024}MB — stop with SIGINT (it ignores SIGTERM)",
-                )
-            )
+    out += dev_server_findings(facts.dev_servers, facts.mem_total_kb)
     out += memory_findings(facts)
     out += disk_findings(facts)
     out += vm_findings(facts)
@@ -237,12 +365,17 @@ def sim_findings(facts: HostFacts) -> list[Finding]:
     down are the usual source."""
     out: list[Finding] = []
     n = len(facts.booted_sims)
-    if n >= BOOTED_SIMS_WARN:
-        names = ", ".join(facts.booted_sims)
+    if n >= BOOTED_SIMS_WARN or facts.sim_mem_kb >= SIM_MEM_WARN_KB:
+        names = ", ".join(facts.booted_sims) or "none listed"
+        mem = (
+            f", {facts.sim_mem_kb / 1048576:.1f}GB in memory"
+            if facts.sim_mem_kb
+            else ""
+        )
         out.append(
             Finding(
                 "warn",
-                f"{n} simulators booted ({names}) — each is a whole OS; "
+                f"{n} simulators booted ({names}){mem} — each is a whole OS; "
                 "`xcrun simctl shutdown <udid>` the ones no build is using",
             )
         )

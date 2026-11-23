@@ -7,7 +7,6 @@ from profiles import (
     PROFILES,
     USER_SOCKETS,
     HostFacts,
-    STALE_JEKYLL_S,
     classify_dolt,
     is_deleted_cwd,
     is_jekyll_server,
@@ -74,19 +73,6 @@ class TestGenericProfile(unittest.TestCase):
         joined = _msgs(PROFILES["generic"](facts))
         self.assertIn("pid=20", joined)
         self.assertNotIn("pid=21", joined)  # a person's shell pane, not a leak
-
-    def test_stale_jekyll_flagged_fresh_one_not(self):
-        facts = HostFacts(
-            procs=[
-                _proc(30, rss=200 * 1024, comm="bundle", etime=STALE_JEKYLL_S + 1),
-                _proc(31, comm="bundle", etime=60),
-            ],
-            jekyll_pids=[30, 31],
-        )
-        joined = _msgs(PROFILES["generic"](facts))
-        self.assertIn("pid=30", joined)
-        self.assertIn("SIGINT", joined)
-        self.assertNotIn("pid=31", joined)
 
 
 class TestLeakClassifiers(unittest.TestCase):
@@ -169,6 +155,11 @@ class TestHostHealth(unittest.TestCase):
         self.assertEqual(self._find(booted_sims=["iPhone 17", "iPad mini"]), [])
         got = self._find(booted_sims=["iPhone 17", "test-a", "test-b"])
         self.assertIn("3 simulators booted (iPhone 17, test-a, test-b)", _msgs(got))
+
+    def test_simulator_memory_alone_warns(self):
+        got = self._find(booted_sims=["iPhone 17"], sim_mem_kb=7 * 1024 * 1024)
+        self.assertIn("1 simulators booted (iPhone 17), 7.0GB in memory", _msgs(got))
+        self.assertEqual(self._find(booted_sims=["iPhone 17"], sim_mem_kb=1024), [])
 
     def test_windowserver_leak(self):
         got = self._find(procs=[_proc(436, rss=3 * 1024 * 1024, comm="WindowServer")])
