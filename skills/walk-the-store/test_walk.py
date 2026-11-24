@@ -174,6 +174,8 @@ def test_file_level_ref_is_the_worst_of_its_cases_and_parametrized_cases_match()
         walk.match_outcome("pytest:*::test_two", checks)[0] == "fail"
     )  # any file, parametrized
     assert walk.match_outcome("pytest:*::test_three", checks)[0] == "missing"
+    checks["pytest:test_a.py::test_two[x]"] = {"outcome": "flaky"}
+    assert walk.match_outcome("pytest:test_a.py", checks)[0] == "flaky"
 
 
 def run_for(outcomes: dict, kinds=("pytest", "landmark")):
@@ -313,3 +315,18 @@ def test_report_renders_counts_and_sections():
     md = walk.render_report(walk.judge(stories(), walk.Manifest(), run, None))
     assert "0 green · 1 red (0 known) · 1 skipped · 1 untestable" in md
     assert "## New reds" in md and "First walk" in md
+
+
+def test_a_check_that_passed_its_retry_is_flaky_and_counts_as_passing():
+    run = run_for(
+        {
+            "pytest:test_cards.py::test_tap_opens": "flaky",
+            "pytest:test_cards.py::test_tap_twice": "pass",
+            "pytest:test_other.py::test_swipe_away": "pass",
+            "landmark:route_smoke.cjs#card-open": "pass",
+        }
+    )
+    w = walk.judge(stories(), walk.Manifest(), run, None)
+    v = w["stories"][0]
+    assert v["verdict"] == "green" and v["flaky"]
+    assert "## Flaky" in walk.render_report(w)

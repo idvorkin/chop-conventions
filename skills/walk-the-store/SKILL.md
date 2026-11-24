@@ -102,7 +102,7 @@ as `rungs` claims but are not checks: the walk cannot rerun an eye.
 
 - `kinds` is what ran. A ref whose kind is absent is **skipped**, not red: that is how one report covers a VM walk
   and a Mac walk honestly.
-- `outcome` is `pass`, `fail`, `known-red` or `skip`. A ref the stories name that the runner never reports is judged
+- `outcome` is `pass`, `flaky` (failed, then passed a serial retry), `fail`, `known-red` or `skip`. A ref the stories name that the runner never reports is judged
   `missing`, which is red.
 - Key pytest results by both `path/test_x.py::…` and `test_x.py::…`, since stories name the bare file.
 - Exit codes: 0 no new red, 1 new red, 2 the walk could not run (no browser, no toolchain). A scheduler alerts on 2
@@ -113,6 +113,8 @@ as `rungs` claims but are not checks: the walk cannot rerun an eye.
   runner's setup builds or links it before any check runs, or every check that needs it times out as a false red.
   The Cockpit's first dry run lost ~20 ink audits that way.
 - Under load: `-n 2` at most, everything under `nice -n 19` (and `ionice -c 3` on Linux). A walk is batch work.
+- Retry each failed check once, serially, and report one that passes as `flaky`: it counts as passing and is
+  listed in its own section, so load never files a bug.
 - Cap every check and every stage, so one stuck story can't stall the walk: a per-test timeout (`pytest-timeout`,
   `--timeout 300`; longer for browser audits) makes a hung check a red with `detail: Timeout`, and a stage cap kills
   the stage's whole process group (servers and browsers it started) and makes the walk exit 2. A runner idling at
@@ -248,17 +250,31 @@ walk. Their high untestable counts are stories verified "on the phone" or "on th
 
 ### Worked example: the Cockpit, 2026-11-24
 
-A dry run on the VM, at `-n 2` under `nice`, on a detached worktree of main. The runner was the reference shape for
-a `just walk`: the fast rung and the browser rung once each with `--junitxml`, the route smoke on its fixture stage
-with `--max-fails 0`, and `node:` audits resolved to their pytest wrappers. It took 4 min for the fast rung, 9 min for
-the browser rung and 40 s for the smoke.
+A dry run on the VM, at `-n 2` under `nice`, on a detached worktree of main. The runner followed the reference
+shape for a `just walk`:
+
+- the fast and browser rungs once each, with `--junitxml`;
+- the route smoke on its fixture stage, with `--max-fails 0`;
+- `node:` audits resolved to the pytest wrapper that executes them;
+- one serial retry of every failed test.
+
+Times: 4 min for the fast rung, 9 min for the browser rung (35 min while the wasm was missing and every ink audit
+timed out), 37 s for the smoke and 3 min for the retry.
 
 | Walk | Green | Red (known) | Skipped | Untestable | What changed                                                            |
 | ---- | ----- | ----------- | ------- | ---------- | ----------------------------------------------------------------------- |
-| 1    | 197   | 74 (2)      | 0       | 5          | first walk; the board's untracked WebAssembly was missing from the tree |
-| 2    | 225   | 46 (2)      | 0       | 5          | wasm linked in; diff: 29 fixed, 1 new red, 45 still red                 |
+| 1    | 199   | 72 (3)      | 0       | 5          | first walk; the board's untracked WebAssembly was missing from the tree |
+| 2    | 233   | 38 (3)      | 0       | 5          | wasm linked in, reds retried; 34 fixed, 0 new, 8 stories flaky          |
 
-Of the 46 reds in walk 2, 12 are stories whose only failure is a **missing** check: the Status names a test that has
-since been deleted, renamed or moved to another file. Those are bugs in the stories, and no test run would have
-found them. Most of the other 34 trace to a handful of audits (one WebKit chat-resize audit is cited by 13 stories),
-plus a timing assertion that fails under load. That is why reds are filed per check, not per story.
+The 38 reds in walk 2 come from three places:
+
+- **9 stories only name missing checks**: 13 tests or audits that git history shows deleted or renamed since the
+  story cited them. Those are bugs in the stories, and no test run would have found them.
+- **3 are known reds**: on the repo's own red list.
+- **26 trace to four checks** that also fail when run alone: three WebKit ink audits (one is cited by 13 stories)
+  and a hand audit that cannot stage its board. Several stories name the whole `test_ink.py`, so one red case
+  turns all of them red.
+
+That is why reds are filed per check, not per story. The retry mattered too: three reds from the parallel run passed
+alone (a speed assertion, a boot audit and a WebKit playback audit), and without it they would have been filed as
+bugs.

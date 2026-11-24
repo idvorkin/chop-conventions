@@ -312,7 +312,7 @@ def match_outcome(ref: str, checks: dict[str, dict]) -> tuple[str, str]:
 
     A file-level ref (`pytest:test_x.py`) is the worst of every result under it;
     a test ref also matches its parametrized cases (`::test_y[...]`).
-    Returns (outcome, detail); outcome is pass | fail | known-red | skip | missing.
+    Returns (outcome, detail); outcome is pass | flaky | fail | known-red | skip | missing.
     """
     if ref in checks:
         r = checks[ref]
@@ -339,11 +339,11 @@ def match_outcome(ref: str, checks: dict[str, dict]) -> tuple[str, str]:
     ]
     if not prefix_hits:
         return "missing", "named in the Status but the runner reported no such check"
-    order = ["fail", "missing", "known-red", "skip", "pass"]
+    order = ["fail", "missing", "known-red", "skip", "flaky", "pass"]
     worst = min(
         prefix_hits, key=lambda kv: order.index(kv[1].get("outcome", "missing"))
     )
-    n_bad = sum(1 for _, v in prefix_hits if v.get("outcome") != "pass")
+    n_bad = sum(1 for _, v in prefix_hits if v.get("outcome") not in ("pass", "flaky"))
     detail = worst[1].get("detail", "")
     if n_bad:
         detail = (
@@ -396,6 +396,11 @@ def judge_story(story: Story, manifest: Manifest, run: dict) -> dict:
             row["screenshot"] = shot
         results.append(row)
     outcomes = {r["outcome"] for r in results}
+    if "flaky" in outcomes:
+        base["flaky"] = (
+            True  # failed in the walk, passed its serial retry: counted as passing, listed
+        )
+        outcomes = (outcomes - {"flaky"}) | {"pass"}
     if outcomes & {"fail", "missing"}:
         verdict = "red"
     elif "known-red" in outcomes:
@@ -487,7 +492,9 @@ def render_report(walk: dict) -> str:
     by_id = {v["id"]: v for v in walk["stories"]}
 
     def row(v: dict) -> str:
-        bad = [c for c in v["checks"] if c["outcome"] != "pass"]
+        bad = [
+            c for c in v["checks"] if c["outcome"] != "pass"
+        ]  # flaky refs show here too
         why = "; ".join(
             f"`{c['ref']}` {c['outcome']}"
             + (f" ({c['detail'][:120]})" if c.get("detail") else "")
@@ -523,6 +530,13 @@ def render_report(walk: dict) -> str:
                 + [row(v) for v in vs]
                 + [""]
             )
+    flaky = [v for v in walk["stories"] if v.get("flaky")]
+    if flaky:
+        lines += (
+            [f"## Flaky: red in the walk, green on a serial retry ({len(flaky)})", ""]
+            + [row(v) for v in flaky]
+            + [""]
+        )
     greens = [v for v in walk["stories"] if v["verdict"] == "green"]
     if greens:
         lines += [f"## Green ({len(greens)})", ""]
