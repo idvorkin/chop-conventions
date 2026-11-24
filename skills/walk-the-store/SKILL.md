@@ -178,10 +178,15 @@ that means web pages, the Cockpit's ink board, and a repo's web demo. iOS and ma
   `{"type": "advisor_20260301", "name": "advisor", "model": "claude-opus-5-5"}` on
   `client.beta.messages.create(..., betas=["advisor-tool-2026-03-01"])`. Send the PNG, the story's
   Given/When/Then and the facts.
-  - An Opus advisor returns encrypted advice (`advisor_redacted_result`). Branch on the
-    `advisor_tool_result` content type, and replay the full `response.content` on any follow-up turn. Never read
-    advice through `.text`.
-  - Take the note from the executor's final text block.
+  - Haiku 5.5 with an Opus 5.5 advisor is a valid pair. An Opus advisor returns encrypted advice: the
+    `advisor_tool_result` block's `content` is `advisor_redacted_result` (`encrypted_content`), and it can be replayed
+    but not read. Switch on that `content` type (`advisor_result`, `advisor_redacted_result` or
+    `advisor_tool_result_error`), never on the block type, and never read advice through `.text`.
+  - The note is the executor's own answer: the `text` blocks of `response.content`. For a follow-up turn, such
+    as asking for a shorter note, append the whole `response.content`, advisor blocks included. Set the advisor's
+    `caching` once per conversation, because changing it later invalidates the thinking already in the history.
+  - Check `stop_reason` before taking the text. Haiku has no server-side refusal fallback, so a refused note is
+    left empty and the report says so.
 - **In a dry run, the agent reads the PNGs** and writes `OUT/notes.json` itself.
 - **A note never makes a verdict.** A screen that looks off is a line for a person to read. Only a check that
   fails turns a story red.
@@ -321,8 +326,10 @@ prefix match would fold in a stale `Class.testGone` that another story cites.
 | exercise-analyzer (77 impl)       | 39 (4)          | 0   | 4         | 34         | Linux `swift test` of ExerciseCore (415 cases)                               |
 | audio-debugger (7 impl)           | 0               | 0   | 2         | 5          | none: AudioCore imports Accelerate unfenced, so it does not build on Linux   |
 
-- **All 27 context-grabber reds are stale stories, not failing code.** Every Linux case passed, and so did the wasm
-  replay (319 checks). The 27 stories cite 14 UI test classes or methods that git history shows renamed or removed.
+- **All 27 context-grabber reds are stale stories, not failing code.** Every Linux case passed or was flaky, and so
+  did the wasm replay (319 checks). One timing test, `InboxOutboxTests`, failed under load and passed its serial
+  retry. The 27 stories cite 14 checks that are no longer on main: 11 UI test classes or methods and 3 host ones.
+  `git log -S` on upstream/main finds the commit that last touched each name, and none of them is in the tree now.
 - **Most greens are partial.** The Linux rung passes, and the same story's simulator or `native-build-mac` proof
   waits for a Mac walk.
 - **A test target cited by name** (`BoardWasmTests`) is the classes under `Tests/<target>/`.
