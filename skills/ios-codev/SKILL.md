@@ -18,14 +18,14 @@ is in the BugKit README ("Where a bug gets fixed").
 
 ## Terms
 
-| Term           | Means                                                                                                    |
-| -------------- | -------------------------------------------------------------------------------------------------------- |
-| **work lane**  | one unit of work the head hands out: one bead or issue → one branch → one PR                             |
-| **build lane** | one xcodebuild + simulator slot on a Mac, sized from its RAM (about one per 12 GB, at most four)         |
-| **host slot**  | one swift-format / SwiftLint / `swift test` job slot on a machine (a quarter of the cores, at most four) |
-| **rung**       | one step of the repo's test ladder: lint → host → Linux → Mac build → simulator → device                 |
-| **hub**        | the capacity dashboard every builder heartbeats to (the Cockpit, via `mate.py`)                          |
-| **train**      | a stack of PRs pushed through the merge pipeline as one run                                              |
+| Term           | Means                                                                                                                                 |
+| -------------- | ------------------------------------------------------------------------------------------------------------------------------------- |
+| **work lane**  | one unit of work the head hands out: one bead or issue → one branch → one PR                                                          |
+| **build lane** | one xcodebuild + simulator slot on a Mac; default one per 12 GB of RAM, at most four, and `BUILD_LANES` overrides with no cap         |
+| **host slot**  | one swift-format / SwiftLint / `swift test` job slot on a machine (a quarter of the cores, at most four)                              |
+| **rung**       | one step of the repo's test ladder: lint → host → Mac build → simulator → device; off the Mac, the Linux rung (1L) stands in for host |
+| **hub**        | the capacity dashboard every builder heartbeats to (the Cockpit, via `mate.py`)                                                       |
+| **train**      | a stack of PRs pushed through the merge pipeline as one run                                                                           |
 
 Work lanes are the head's unit; build lanes and host slots are a builder's. Don't mix them up in a hand-off.
 
@@ -48,11 +48,18 @@ with the most free slots. On top of that:
 - wasm and Linux Swift go to the Linux builder.
 - Everything else (docs, specs, web pages, research) goes wherever has more room, which is usually the Linux VM.
   Keep Mac slots for the work only a Mac can do.
+- **CPU admission.** Aim each machine at 80–90% busy (1-minute average). Start a lane only while it is under 70%;
+  pause the lowest-priority lane once it goes over 90%. `BUILD_LANES` and `HOST_LANES` are caps on top of this.
+  The hub does not compute this threshold, so the head applies it.
+- **Pool slots, not only build lanes.** A lane needs a free pool slot (treehouse) as well as a build lane, and
+  slots run out first when lanes wait on review. Dispatch on free slots.
 
 A machine in state `unknown` is asleep or offline, not dead: don't dispatch to it and don't act on it.
 
 Head and builders talk on the bead (the brief and its outcome) and on the head's hub thread (cross-machine asks,
-such as "build the wasm for this branch", and build announcements).
+such as "build the wasm for this branch", and build announcements). In this setup that is a Cockpit thread:
+`larry post --thread <thread> --id <idempotency-key>` sends, `larry replies` reads, and a `Monitor` on the thread's
+stream wakes the session when an answer lands.
 
 ## The flows
 
@@ -66,12 +73,18 @@ such as "build the wasm for this branch", and build announcements).
    says which rung verified what. Phone-only behaviour (sensors, audio session, widgets, HealthKit) is verified only
    on the device.
 4. **Merge.** Every change goes through the no-mistakes pipeline. One run per train; don't push while a run is in
-   flight. At `checks-passed`, run the repo's pre-merge check (story ids against main as it is now), merge, and
-   confirm the commits reached the canonical main. Merge a ready PR before anything that touches its files. The
+   flight. At `checks-passed`, run the repo's pre-merge check in the branch's own checkout (it refuses
+   unless HEAD is the pushed branch): story ids against main as it is now, plus, when the branch touches the core
+   package, a Release (`-O`) build of it, because an optimizer crash once showed up only in the archive. Judge it by
+   its exit code; never pipe it through `tail`, which hides a FAIL. Then merge and confirm the commits reached the canonical main. Merge a ready PR before anything that touches its files. The
    pipeline is the review: nobody waits for PR comments.
-5. **Install.** Every network or cable install goes through the repo's deploy recipe, so the deploys ledger records
-   it. After a merge batch, a Mac publishes a development-signed package for over-the-air install. Before telling
-   anyone which build a device runs, run the build check (it reads the device's own session log), never memory.
+5. **Install.** Every install goes through a recipe that records it in the deploys ledger. A **branch** build goes
+   through the device-run recipe (context-grabber: `native-run-device`, ledger `cable`). The all-devices deploy
+   (`just deploy`) builds the checkout BugKit's `apps.json` names (main), not the one it runs in, so from a pool
+   slot it installs main. After a merge batch, a Mac publishes a development-signed package for over-the-air
+   install. Before telling anyone which build a device runs, `pull-logs`, then run the build check: it reads the
+   newest **pulled** session log and answers MATCH, MISMATCH (exit 1), NO SESSION YET or UNKNOWN. `just deploy`
+   pulls and polls up to 120 s itself. Never answer from memory.
 6. **Bugs.** BugKit's listener files shake reports and crashes as GitHub issues. The head finds or writes the
    story, hands the fix out as one work lane, and closes the issue once the build is on the device, saying what was
    verified where. Other work, review leftovers and flaky tests are beads, not issues. A bug in BugKit itself is
@@ -86,7 +99,7 @@ practice this today; `—` is a gap, not a decision.
 | ------------------------------------------------------------ | ---------------------------------------- | -------------------------------------- | --------------------------- |
 | AGENTS.md naming the ladder, the rules below and the recipes | yes                                      | yes                                    | yes                         |
 | host rung, one command                                       | `just test`                              | `just test`                            | `just test`                 |
-| Linux rung (portable tests, Apple sources compiled)          | `just test-linux`, `wasm`, `wasm-test`   | —                                      | —                           |
+| Linux rung (portable tests, Apple sources compiled)          | `just test-linux`, `wasm`, `wasm-test`   | `just test-linux`                      | —                           |
 | one-command climb of the ladder                              | `just test-ladder`                       | —                                      | —                           |
 | simulator rung inside a build lane                           | `native-test-sim` via `build-lane.sh`    | `test-sim` (one sim)                   | `ios-selftest` (build lock) |
 | device install recorded in a deploys ledger                  | `just deploy`, `native-run-device`       | `run-device` (no ledger)               | `iphone` + `record-deploy`  |
@@ -112,3 +125,5 @@ These have not run with more than one Mac yet. Decide before the second Mac take
 - **Device pairing.** A network install needs the device paired with that Mac; whether every Mac pairs every
   device or only one Mac installs.
 - **xtool installs from Linux** are not in any deploys ledger.
+- **BugKit's `apps.json` per Mac.** It names the checkout `deploy` builds; each Mac is another copy to keep right,
+  beside its own deploys ledger (`~/tmp/agent/notes/lead-times/deploys.jsonl`).

@@ -16,7 +16,8 @@ the rungs its machine can climb, pushes the branch, and reports.
 
 ## On a Mac
 
-- Build lanes and host slots are per machine (`BUILD_LANES`, `HOST_LANES` override the RAM and core defaults). One
+- Build lanes and host slots are per machine (`BUILD_LANES`, `HOST_LANES` override the RAM and core defaults; `BUILD_LANES` has no cap, and the reference Mac
+  runs six). One
   booted simulator per build lane, left booted between runs; boot only through the repo's boot wrapper.
 - Never run a signing build with the screen locked, and never wrap a recipe that takes the signing lock in a second
   lock on it.
@@ -26,8 +27,10 @@ the rungs its machine can climb, pushes the branch, and reports.
 
 ## On the Linux VM
 
-- Linux Swift through swiftly, Apple sources compiled with the Darwin cross SDK, wasm through a toolchain with a
-  wasm SDK. The repo's `test-linux` script header lists the environment it needs.
+- Every wasm build and test runs here (not Docker on a Mac): swiftly with the Swift version the Macs' Xcode ships
+  (6.4.2 today), the swift.org wasm SDK that matches it exactly, and the Darwin cross SDK for compiling Apple
+  sources. Pin the version: compiler bugs are version-specific, which is why the reference repo's pre-merge
+  check exists. The repo's `test-linux` script header lists the environment it needs.
 - xtool can build and install on a device from Linux (no simulator). Use it only when every Mac is busy, and say
   so on the bead: the deploys ledger lives on a Mac and won't record it.
 - Before saying the app can't be built here, check `which xtool` and the swiftly toolchains.
@@ -46,6 +49,8 @@ A new Mac joins as a builder. Steps marked _unverified_ have not been done for a
    token to the Mac (owner-only), set `url`, `host` and `repos` in its config, then `mate.py doctor` until every
    line is `ok:`. `mate.py plist` prints the LaunchAgent that keeps `mate.py run` beating. The machine shows on
    the hub as `up`; the head can now dispatch to it.
-5. **Pool.** Set up the repo's pool slots, sized to the machine, and create the lane simulators
+5. **Pool.** Set up the repo's pool slots, about two per build lane (the reference: 12 slots for 6 lanes; slots,
+   not lanes, are the usual bottleneck), and create the lane simulators
    (context-grabber: `just native-sim-lanes`).
-6. **Smoke.** One lane end to end: host rung, simulator rung, and a device install through the deploy recipe.
+6. **Smoke.** One lane end to end: host rung, simulator rung, and a branch install through the device-run recipe (not
+   `just deploy`, which builds main).

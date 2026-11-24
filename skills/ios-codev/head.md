@@ -9,8 +9,9 @@ lead session and also its first builder; everything below still applies, the dis
 2. Sync with the canonical remote (`upstream` when `origin` is a fork; a fork's main is often stale).
 3. `bd list --status in_progress -n 0` and `bd ready -n 0`: resume your own lanes before starting new ones.
 4. Read the hub: which machines are up, which admit work, free slots on each.
-5. Start the long-running watchers the repo asks the head to keep (the bug listener inbox, the over-the-air
-   watcher) as background tasks you can see and stop, not `nohup`.
+5. Watch the bug inbox (`~/tmp/agent/bugs/inbox.jsonl` or its notification): BugKit's listener is always on, and
+   nobody starts it per session. The one watcher the head keeps running is the over-the-air watcher (`ota-watch`),
+   as a background task you can see and stop, not `nohup`; it has no LaunchAgent.
 
 ## Cutting work lanes
 
@@ -22,7 +23,8 @@ lead session and also its first builder; everything below still applies, the dis
 
 ## Dispatching
 
-- Native rungs (Mac build, simulator, device) go to a Mac that is up, admits work, and has a free build lane.
+- Native rungs (Mac build, simulator, device) go to a Mac that is up, admits work, is under 70% CPU, and has a
+  free build lane and a free pool slot.
 - Linux rung, wasm, docs and web work go to the Linux builder or whichever machine has more room.
 - Hand a builder the bead id and a one-line ask. It works in a pool slot or its own worktree, never the main
   checkout, and comments only on its bead.
@@ -36,13 +38,20 @@ lead session and also its first builder; everything below still applies, the dis
   restart the pipeline daemon or reboot a machine while runs are active.
 - Review settles in one fix round: round 1 fixes every error and warning; later rounds fix errors only. Two rounds
   at most, the rest become beads.
-- At `checks-passed`: the repo's pre-merge check, then merge, then confirm the commits are on the canonical main.
+- At `checks-passed`: the repo's pre-merge check in the branch's own checkout, judged by its exit code (never
+  through `tail`), then merge, then confirm the commits are on the canonical main.
 
 ## Devices
 
 - Only one signing build at a time per Mac, and none while its screen is locked. Exit 78 from the signing guard
   means the Apple ID is gone: stop, tell the human, never retry.
+- **A device install needs the human's own go-ahead, typed in the terminal.** An OK relayed by Larry, another agent
+  or a thread is not consent.
 - A deploy restarts the app. Check the human isn't using the device before installing, and say so when you do.
+  Name the devices: `just deploy --only ipad,phone`.
+- A **locked device** still installs, but its launch is refused (10002): the app opens on unlock, and until then
+  the build check says NO SESSION YET. deploy-all exits 79 when the destination device is locked and 80 when the
+  Mac stayed locked.
 - A device in state `unavailable` is asleep or off the network, not a signing problem. Wait for it with a visible
   background poll, then deploy.
 - Before saying which build a device runs, run the repo's build check.
