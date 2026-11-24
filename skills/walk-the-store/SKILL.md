@@ -160,12 +160,14 @@ Keep the last walk where the next can find it (`~/tmp/agent/walks/<repo>/latest`
 
 ### Reds become beads
 
-`file-reds` makes one bead per (new red story, failing ref) in the repo's own bead store, with
+`file-reds` makes one bead per (red story, failing ref) in the repo's own bead store, with
 `--external-ref walk:<repo>:<story>:<ref>` as the dedupe key and the label `walk-the-store`. It prints the `bd create`
 commands by default; `--apply` files them, skipping any key with a bead still open, and `--parent` nests them under
-the repo's walk epic. A known red is never filed: it already has its bead. A **first walk files nothing**: its reds
-are the baseline (the Cockpit's first walk had 149 red checks, most of them one cause), so read the report, fix
-the walk's own mistakes, and pass `--baseline` only for what is left.
+the repo's walk epic. New and still-red alike are filed, so a red that was never filed gets its bead on the next walk;
+closing a bead while its check is still red refiles it. A known red is never filed: it already has its bead.
+
+A **first walk files nothing**: its reds are the baseline (the Cockpit's first walk had 149 red checks, most of them
+one cause). Read the report, fix the walk's own mistakes, then pass `--baseline` to file what is left.
 
 ## When it runs
 
@@ -185,17 +187,27 @@ the walk's length or launch the walk detached and let it report on its own:
   action: silent
   options:
     timeout_s: 3600
-    argv:
-      [
-        bash,
-        -c,
-        "cd ~/gits/<repo> && just walk && ~/.claude/skills/walk-the-store/walk.py file-reds ~/tmp/agent/walks/<repo>/latest/walk.json --apply --parent <epic>",
-      ]
+    argv: [bash, -c, "~/gits/<repo>/scripts/walk-nightly.sh"]
 ```
 
-A silent job stays silent on green. A new red arrives as beads, read at the next session's start; exit 2 (could not
-run) deserves the daemon's out-of-band alert, because a walk that silently stopped running looks exactly like a
-green one.
+The job's script does three things the daemon won't:
+
+1. **Files reds even when the walk exits 1.** Never chain `just walk && file-reds`: exit 1 means "new red", which is
+   exactly when there is something to file.
+2. **Alerts on exit 2 itself.** The daemon only logs a non-zero exit from a command job. A walk that could not run
+   looks exactly like a green one, so the script sends its own out-of-band line (the same channel as the
+   machine's other alerts).
+3. **Moves `latest`** to the new run, so the next walk diffs against it.
+
+```bash
+just walk "$OUT"; rc=$?
+case $rc in
+  0|1) walk.py file-reds "$OUT/walk.json" --apply --parent <epic>; ln -sfn "$OUT" "$WALKS/latest" ;;
+  *)   <send one alert line: "walk <repo> could not run (exit $rc), see $OUT"> ;;
+esac
+```
+
+A silent job stays silent on green. Reds arrive as beads, read at the next session's start.
 
 ## Where a walk runs
 

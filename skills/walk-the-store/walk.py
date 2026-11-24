@@ -178,8 +178,16 @@ TICK_RE = re.compile(r"`([^`]+)`")
 PY_RE = re.compile(
     r"^(?P<file>[\w./-]*test_[\w.-]*\.py)(?:::(?P<test>[\w\[\]-]+(?:::[\w\[\]-]+)?))?$"
 )
-BARE_PY_TEST_RE = re.compile(r"^(?:::)?(?P<test>test_\w+(?:\[[^\]]*\])?)$")
-NODE_RE = re.compile(r"^(?P<file>[\w./-]+\.(?:cjs|mjs|js))$")
+SHORT_PY_TEST_RE = re.compile(
+    r"^::(?P<test>test_\w+(?:\[[^\]]*\])?)$"
+)  # `::test_x`: the file just named
+BARE_PY_TEST_RE = re.compile(
+    r"^(?P<test>test_\w+(?:\[[^\]]*\])?)$"
+)  # `test_x`: any file
+# A script is a check only when its name says so; `annotate.js` is source, not a test.
+NODE_RE = re.compile(
+    r"^(?P<file>[\w./-]*(?:test|audit|smoke|spec)[\w.-]*\.(?:cjs|mjs|js))$"
+)
 XCTEST_RE = re.compile(r"^(?P<cls>[A-Z]\w*Tests)(?:[./](?P<test>test\w+))?$")
 JUST_RE = re.compile(r"^just\s+(?P<recipe>[\w:-]+)")
 LANDMARK_RE = re.compile(r"^[a-z][a-z0-9-]+$")
@@ -189,7 +197,7 @@ def extract_refs(status: str) -> list[str]:
     """Named checks in a Status line, in order, deduped.
 
     Handles the shorthand the stories use: a bare `::test_x` or `test_x` after a
-    `test_file.py` belongs to that file, and `route_smoke.cjs` `label` landmark
+    `test_file.py` belongs to that file, a bare `test_x` matches that test in any file, and `route_smoke.cjs` `label` landmark
     names a landmark of that script (the word "landmark" must follow the label).
     """
     refs: list[str] = []
@@ -203,8 +211,11 @@ def extract_refs(status: str) -> list[str]:
             ref = f"pytest:{m.group('file')}" + (
                 f"::{m.group('test')}" if m.group("test") else ""
             )
-        elif (m := BARE_PY_TEST_RE.match(tok)) and last_py:
+        elif (m := SHORT_PY_TEST_RE.match(tok)) and last_py:
             ref = f"pytest:{last_py}::{m.group('test')}"
+        elif m := BARE_PY_TEST_RE.match(tok):
+            # prose names a test without its file: it often lives in another file than the last one named
+            ref = f"pytest:*::{m.group('test')}"
         elif m := NODE_RE.match(tok):
             last_node, last_py = m.group("file"), ""
             ref = f"node:{m.group('file')}"
@@ -306,6 +317,19 @@ def match_outcome(ref: str, checks: dict[str, dict]) -> tuple[str, str]:
     if ref in checks:
         r = checks[ref]
         return r.get("outcome", "missing"), r.get("detail", "")
+    if ref.startswith("pytest:*::"):
+        name = ref.removeprefix("pytest:*::")
+        hits = {
+            k: v
+            for k, v in checks.items()
+            if k.startswith("pytest:")
+            and (k.endswith("::" + name) or ("::" + name + "[") in k)
+        }
+        if not hits:
+            return "missing", f"no test named {name} in any file"
+        return match_outcome(
+            "pytest:hit", {f"pytest:hit::{i}": v for i, v in enumerate(hits.values())}
+        )
     prefix_hits = [
         (k, v)
         for k, v in checks.items()
@@ -539,11 +563,13 @@ def run_bd(args: list[str], run=None) -> subprocess.CompletedProcess:
 
 
 def red_beads(walk: dict) -> list[dict]:
-    """One bead per (new red story, failing check)."""
-    by_id = {v["id"]: v for v in walk["stories"]}
+    """One bead per (red story, failing check), known reds excluded. New and still-red alike:
+    the external-ref dedupe in file_reds keeps a red that already has an open bead from being filed twice."""
     out = []
-    for sid in walk["diff"]["new_red"]:
-        v = by_id[sid]
+    for v in walk["stories"]:
+        if v["verdict"] != "red" or v.get("known"):
+            continue
+        sid = v["id"]
         for c in v["checks"]:
             if c["outcome"] in ("fail", "missing"):
                 out.append(

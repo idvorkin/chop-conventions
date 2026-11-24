@@ -18,7 +18,7 @@ Intro text.
 ### User Story 001:
 
 - **Summary:** Tap a card to open it
-- **Status:** implemented in [abc1234](https://example.com/c/abc1234); verified by `test_cards.py::test_tap_opens` and `::test_tap_twice`, and the `route_smoke.cjs` `card-open` landmark
+- **Status:** implemented in [abc1234](https://example.com/c/abc1234); verified by `test_cards.py::test_tap_opens` and `::test_tap_twice` and `test_swipe_away`, and the `route_smoke.cjs` `card-open` landmark
 
 #### Use Case:
 
@@ -144,7 +144,11 @@ def test_refs_resolve_shorthand_and_landmarks():
     assert stories()[0].refs == [
         "pytest:test_cards.py::test_tap_opens",
         "pytest:test_cards.py::test_tap_twice",
+        "pytest:*::test_swipe_away",
         "landmark:route_smoke.cjs#card-open",
+    ]
+    assert walk.extract_refs("checked by `assets/annotate.js` and `ink_audit.cjs`") == [
+        "node:ink_audit.cjs"
     ]
     assert stories()[4].refs == ["xctest:CardRulesTests", "just:test-sim"]
     # a word after a script that is not called a landmark is not one
@@ -166,6 +170,10 @@ def test_file_level_ref_is_the_worst_of_its_cases_and_parametrized_cases_match()
     assert walk.match_outcome("pytest:test_a.py::test_two", checks)[0] == "fail"
     assert walk.match_outcome("pytest:test_a.py::test_one", checks)[0] == "pass"
     assert walk.match_outcome("pytest:test_gone.py::test_x", checks)[0] == "missing"
+    assert (
+        walk.match_outcome("pytest:*::test_two", checks)[0] == "fail"
+    )  # any file, parametrized
+    assert walk.match_outcome("pytest:*::test_three", checks)[0] == "missing"
 
 
 def run_for(outcomes: dict, kinds=("pytest", "landmark")):
@@ -181,6 +189,7 @@ def test_verdicts_sum_to_the_story_count():
         {
             "pytest:test_cards.py::test_tap_opens": "pass",
             "pytest:test_cards.py::test_tap_twice": "pass",
+            "pytest:test_other.py::test_swipe_away": "pass",
             "landmark:route_smoke.cjs#card-open": "pass",
         }
     )
@@ -206,6 +215,7 @@ def test_a_missing_named_test_is_red_and_xfail_is_known_red():
     v = walk.judge_story(stories()[0], walk.Manifest(), run)
     assert v["verdict"] == "red" and not v.get("known")  # test_tap_twice is missing
     run["checks"]["pytest:test_cards.py::test_tap_twice"] = {"outcome": "pass"}
+    run["checks"]["pytest:test_other.py::test_swipe_away"] = {"outcome": "pass"}
     v = walk.judge_story(stories()[0], walk.Manifest(), run)
     assert v["verdict"] == "red" and v["known"]
 
@@ -260,6 +270,7 @@ def test_file_reds_dry_run_prints_and_apply_dedupes_on_external_ref():
     run = run_for(
         {
             "pytest:test_cards.py::test_tap_opens": "fail",
+            "pytest:test_other.py::test_swipe_away": "pass",
             "landmark:route_smoke.cjs#card-open": "pass",
         }
     )
@@ -295,6 +306,7 @@ def test_report_renders_counts_and_sections():
     run = run_for(
         {
             "pytest:test_cards.py::test_tap_opens": "fail",
+            "pytest:test_other.py::test_swipe_away": "pass",
             "landmark:route_smoke.cjs#card-open": "pass",
         }
     )
