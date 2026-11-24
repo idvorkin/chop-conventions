@@ -90,6 +90,20 @@ stream wakes the session when an answer lands.
    verified where. Other work, review leftovers and flaky tests are beads, not issues. A bug in BugKit itself is
    fixed in bug-kit.
 
+## Look things up, don't guess
+
+- **Apple APIs: read [Sosumi](https://sosumi.ai/) first.** Before writing or changing code that uses an Apple API,
+  especially iOS 26/27 or anything new, fetch its docs through Sosumi (Apple's developer docs, HIG and WWDC
+  transcripts as Markdown; developer.apple.com needs JavaScript, so a plain fetch sees nothing). Swap
+  `developer.apple.com` for `sosumi.ai` in a URL, or add the MCP server:
+  `claude mcp add --transport http sosumi https://sosumi.ai/mcp`. Every builder, Mac or Linux, does this; each
+  repo's AGENTS.md carries the one-line rule.
+- **Simulator and Previews without Xcode (Mac builders only).** The Linux VM has no Simulator, so a Linux builder
+  hands this work to a Mac builder. On the Mac: [MobileBuildMCP](https://github.com/getsentry/MobileBuildMCP)
+  drives the simulator (`claude mcp add mobilebuildmcp -- npx -y mobilebuildmcp@latest mcp`), and
+  [axe](https://github.com/k-kohey/axe) renders `#Preview` blocks to PNG (`axe preview report <File>.swift`;
+  pre-1.0, needs `idb_companion`). The one-simulator and build-lane rules still apply.
+
 ## A repo joins: checklist
 
 A repo is ready for head and builders when it has each of these. The table maps them onto the three repos that
