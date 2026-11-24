@@ -189,14 +189,15 @@ def extract_refs(status: str) -> list[str]:
     """Named checks in a Status line, in order, deduped.
 
     Handles the shorthand the stories use: a bare `::test_x` or `test_x` after a
-    `test_file.py` belongs to that file, and `route_smoke.cjs` `label` names a
-    landmark of that script.
+    `test_file.py` belongs to that file, and `route_smoke.cjs` `label` landmark
+    names a landmark of that script (the word "landmark" must follow the label).
     """
     refs: list[str] = []
     last_py = ""
     last_node = ""
-    for tok in TICK_RE.findall(status):
-        tok = tok.strip()
+    for tm in TICK_RE.finditer(status):
+        tok = tm.group(1).strip()
+        after = status[tm.end() : tm.end() + 40]
         if m := PY_RE.match(tok):
             last_py, last_node = m.group("file"), ""
             ref = f"pytest:{m.group('file')}" + (
@@ -207,7 +208,7 @@ def extract_refs(status: str) -> list[str]:
         elif m := NODE_RE.match(tok):
             last_node, last_py = m.group("file"), ""
             ref = f"node:{m.group('file')}"
-        elif last_node and LANDMARK_RE.match(tok):
+        elif last_node and LANDMARK_RE.match(tok) and "landmark" in after.split(";")[0]:
             ref = f"landmark:{last_node}#{tok}"
         elif m := XCTEST_RE.match(tok):
             last_py = last_node = ""

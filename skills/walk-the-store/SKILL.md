@@ -110,6 +110,12 @@ as `rungs` claims but are not checks: the walk cannot rerun an eye.
 - Walk a clean tree: a detached worktree of the canonical main, not the primary checkout someone is editing. Record
   the SHA and dirty flag either way.
 - Under load: `-n 2` at most, everything under `nice -n 19` (and `ionice -c 3` on Linux). A walk is batch work.
+- Cap every check and every stage, so one stuck story can't stall the walk: a per-test timeout (`pytest-timeout`,
+  `--timeout 300`; longer for browser audits) makes a hung check a red with `detail: Timeout`, and a stage cap kills
+  the stage's whole process group (servers and browsers it started) and makes the walk exit 2. A runner idling at
+  0% CPU is usually waiting on a child: read its process tree before calling it hung.
+- Wait on a running walk by PID (`while kill -0 <pid>; do sleep 15; done`), never with `pgrep -f <name>`, which
+  matches the wait loop's own command line and never exits.
 
 Each `node:` audit usually runs behind a pytest wrapper. The runner resolves the script to the wrapper's result
 (e.g. `test_<stem>.py`, or the parametrized case of a hand-audit list) rather than running it a second time.

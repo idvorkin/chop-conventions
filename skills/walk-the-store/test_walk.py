@@ -147,6 +147,14 @@ def test_refs_resolve_shorthand_and_landmarks():
         "landmark:route_smoke.cjs#card-open",
     ]
     assert stories()[4].refs == ["xctest:CardRulesTests", "just:test-sim"]
+    # a word after a script that is not called a landmark is not one
+    assert walk.extract_refs(
+        "verified by `test_board.mjs` `big` and `test_board.mjs`"
+    ) == ["node:test_board.mjs"]
+    assert walk.extract_refs("the `route_smoke.cjs` `a-b` and `c-d` landmarks") == [
+        "landmark:route_smoke.cjs#a-b",
+        "landmark:route_smoke.cjs#c-d",
+    ]
 
 
 def test_file_level_ref_is_the_worst_of_its_cases_and_parametrized_cases_match():
