@@ -59,6 +59,7 @@ A scope prefix (`native app only:`, `app side`) is skipped before the lead claus
 | `talk_audit.cjs`, `test_ops.mjs`                 | `node:talk_audit.cjs`                   | web                                        |
 | `BreathPlanTests`, `BreathPlanTests.testLeft`    | `xctest:BreathPlanTests[.testLeft]`     | host                                       |
 | `just native-test-sim`                           | `just:native-test-sim`                  | host (override per recipe in the manifest) |
+| `scripts/native/test-ladder-map.sh`, `test-x.py` | `script:test-ladder-map.sh` (basename)  | host                                       |
 
 Prose rungs with no name ("verified on the simulator", "on the phone", "by hand", "X's check pending") are recorded
 as `rungs` claims but are not checks: the walk cannot rerun an eye.
@@ -155,7 +156,35 @@ manifest line: the manifest is for what the Status can't say.
 
 Screenshots: a web runner saves one per failing landmark and may shoot the main routes for the eye. **A screenshot of
 real data stays local** under `~/tmp/agent/`: never attach it to a public PR, gist or issue. A fixture stage's shots
-are safe to share.
+are safe to share, but they are never committed either.
+
+### Screens and their feedback notes
+
+Every story with a screen the walking machine can render gets a screenshot, and a short note beside it. On the VM
+that means web pages, the Cockpit's ink board, and a repo's web demo. iOS and macOS screens are **needs Mac**.
+
+- **One Playwright session per walk.** Launch the browser once, take every state at **390 and 1200 wide**, and write
+  `OUT/shots/<state>-<width>.png` and `OUT/shots.json` (state, width, file, page errors, sideways scroll, facts read
+  off the page). Run it from a checkout that has `node_modules/playwright` (`~/gits/idvorkin.github.io`), on a fixture
+  stage, never a live server.
+- **A note per screenshot**, two or three sentences:
+  - Does the screen match the story's Given/When/Then, or the part of it a still can show?
+  - Is anything visibly off: clipping, overlap, an empty state, contrast, sideways scroll?
+  - Lead with "Matches" or "Off". The facts in `shots.json` go into the prompt, so the note never contradicts them.
+- **The report puts each note beside its screenshot**, in a Screens section grouped by state, with the stories each
+  state covers and their verdicts.
+- **Nightly, a direct Anthropic API call writes the notes**, one per screenshot, never Claude Code. By the house rule
+  it uses the advisor tool: `claude-haiku-5-5` as executor, with
+  `{"type": "advisor_20260301", "name": "advisor", "model": "claude-opus-5-5"}` on
+  `client.beta.messages.create(..., betas=["advisor-tool-2026-03-01"])`. Send the PNG, the story's
+  Given/When/Then and the facts.
+  - An Opus advisor returns encrypted advice (`advisor_redacted_result`). Branch on the
+    `advisor_tool_result` content type, and replay the full `response.content` on any follow-up turn. Never read
+    advice through `.text`.
+  - Take the note from the executor's final text block.
+- **In a dry run, the agent reads the PNGs** and writes `OUT/notes.json` itself.
+- **A note never makes a verdict.** A screen that looks off is a line for a person to read. Only a check that
+  fails turns a story red.
 
 Keep the last walk where the next can find it (`~/tmp/agent/walks/<repo>/latest` → the newest run) and pass it as
 `--previous`. The first walk has nothing to diff, so the report lists every red as new.
@@ -238,12 +267,12 @@ of an iOS repo are honestly **skipped**, which is the point of the column.
 
 Where the reference consumers stood on 2026-11-24, by `walk.py stories`:
 
-| Repo              | Stories | Implemented | of those, no named check | Named check kinds      | `just walk`                |
-| ----------------- | ------- | ----------- | ------------------------ | ---------------------- | -------------------------- |
-| cockpit           | 279     | 276         | 5                        | pytest, node, landmark | dry run (reference runner) |
-| context-grabber   | 1233    | 1155        | 223                      | xctest, just, node     | —                          |
-| exercise-analyzer | 72      | 67          | 36                       | xctest, just           | —                          |
-| audio-debugger    | 12      | 7           | 5                        | xctest, just           | —                          |
+| Repo              | Stories | Implemented | of those, no named check | Named check kinds          | `just walk`                   |
+| ----------------- | ------- | ----------- | ------------------------ | -------------------------- | ----------------------------- |
+| cockpit           | 279     | 276         | 5                        | pytest, node, landmark     | dry run (reference runner)    |
+| context-grabber   | 1234    | 1156        | 196                      | xctest, just, script, node | VM dry run, board stories     |
+| exercise-analyzer | 84      | 77          | 34                       | xctest, just               | VM dry run                    |
+| audio-debugger    | 12      | 7           | 5                        | xctest, just               | VM dry run (nothing to climb) |
 
 The iOS repos name XCTest classes and `just` recipes; their VM walk is the Linux rung, and the rest waits on a Mac
 walk. Their high untestable counts are stories verified "on the phone" or "on the simulator" with no test named.
@@ -278,3 +307,23 @@ The 38 reds in walk 2 come from three places:
 That is why reds are filed per check, not per story. The retry mattered too: three reds from the parallel run passed
 alone (a speed assertion, a boot audit and a WebKit playback audit), and without it they would have been filed as
 bugs.
+
+### Worked example: the iOS repos on the VM, 2026-11-24
+
+These were dry runs on the VM's Linux rung only. Every XCTest class or `just` recipe that needs the Mac was written
+`skip`, "needs Mac". A named class, test or recipe that is nowhere in the tree was written `missing`. Each runner
+writes an explicit row for every class ref: the worst of that class's Linux cases. Without that row, judge's
+prefix match would fold in a stale `Class.testGone` that another story cites.
+
+| Repo (stories walked)             | Green (partial) | Red | Needs Mac | Untestable | Rungs on the VM                                                              |
+| --------------------------------- | --------------- | --- | --------- | ---------- | ---------------------------------------------------------------------------- |
+| context-grabber, board (663 impl) | 486 (346)       | 27  | 75        | 75         | Linux `swift test` (2634 cases), BoardWasm + node replay, board-ops, scripts |
+| exercise-analyzer (77 impl)       | 39 (4)          | 0   | 4         | 34         | Linux `swift test` of ExerciseCore (415 cases)                               |
+| audio-debugger (7 impl)           | 0               | 0   | 2         | 5          | none: AudioCore imports Accelerate unfenced, so it does not build on Linux   |
+
+- **All 27 context-grabber reds are stale stories, not failing code.** Every Linux case passed, and so did the wasm
+  replay (319 checks). The 27 stories cite 14 UI test classes or methods that git history shows renamed or removed.
+- **Most greens are partial.** The Linux rung passes, and the same story's simulator or `native-build-mac` proof
+  waits for a Mac walk.
+- **A test target cited by name** (`BoardWasmTests`) is the classes under `Tests/<target>/`.
+- **A Swift Testing file** (`MicControllerTests.swift` with free `@Test` functions) counts as its file name.
