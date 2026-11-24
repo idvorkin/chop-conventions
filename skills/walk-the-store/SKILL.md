@@ -109,6 +109,9 @@ as `rungs` claims but are not checks: the walk cannot rerun an eye.
   differently from 1.
 - Walk a clean tree: a detached worktree of the canonical main, not the primary checkout someone is editing. Record
   the SHA and dirty flag either way.
+- A clean tree lacks what the repo builds locally and never commits (a WebAssembly bundle, a generated asset). The
+  runner's setup builds or links it before any check runs, or every check that needs it times out as a false red.
+  The Cockpit's first dry run lost ~20 ink audits that way.
 - Under load: `-n 2` at most, everything under `nice -n 19` (and `ionice -c 3` on Linux). A walk is batch work.
 - Cap every check and every stage, so one stuck story can't stall the walk: a per-test timeout (`pytest-timeout`,
   `--timeout 300`; longer for browser audits) makes a hung check a red with `detail: Timeout`, and a stage cap kills
@@ -153,14 +156,16 @@ real data stays local** under `~/tmp/agent/`: never attach it to a public PR, gi
 are safe to share.
 
 Keep the last walk where the next can find it (`~/tmp/agent/walks/<repo>/latest` → the newest run) and pass it as
-`--previous`. The first walk has nothing to diff, so every red counts as new.
+`--previous`. The first walk has nothing to diff, so the report lists every red as new.
 
 ### Reds become beads
 
 `file-reds` makes one bead per (new red story, failing ref) in the repo's own bead store, with
 `--external-ref walk:<repo>:<story>:<ref>` as the dedupe key and the label `walk-the-store`. It prints the `bd create`
 commands by default; `--apply` files them, skipping any key with a bead still open, and `--parent` nests them under
-the repo's walk epic. A known red is never filed: it already has its bead.
+the repo's walk epic. A known red is never filed: it already has its bead. A **first walk files nothing**: its reds
+are the baseline (the Cockpit's first walk had 149 red checks, most of them one cause), so read the report, fix
+the walk's own mistakes, and pass `--baseline` only for what is left.
 
 ## When it runs
 
@@ -228,3 +233,20 @@ Where the reference consumers stood on 2026-11-24, by `walk.py stories`:
 
 The iOS repos name XCTest classes and `just` recipes; their VM walk is the Linux rung, and the rest waits on a Mac
 walk. Their high untestable counts are stories verified "on the phone" or "on the simulator" with no test named.
+
+### Worked example: the Cockpit, 2026-11-24
+
+A dry run on the VM, at `-n 2` under `nice`, on a detached worktree of main. The runner was the reference shape for
+a `just walk`: the fast rung and the browser rung once each with `--junitxml`, the route smoke on its fixture stage
+with `--max-fails 0`, and `node:` audits resolved to their pytest wrappers. It took 4 min for the fast rung, 9 min for
+the browser rung and 40 s for the smoke.
+
+| Walk | Green | Red (known) | Skipped | Untestable | What changed                                                            |
+| ---- | ----- | ----------- | ------- | ---------- | ----------------------------------------------------------------------- |
+| 1    | 197   | 74 (2)      | 0       | 5          | first walk; the board's untracked WebAssembly was missing from the tree |
+| 2    | 225   | 46 (2)      | 0       | 5          | wasm linked in; diff: 29 fixed, 1 new red, 45 still red                 |
+
+Of the 46 reds in walk 2, 12 are stories whose only failure is a **missing** check: the Status names a test that has
+since been deleted, renamed or moved to another file. Those are bugs in the stories, and no test run would have
+found them. Most of the other 34 trace to a handful of audits (one WebKit chat-resize audit is cited by 13 stories),
+plus a timing assertion that fails under load. That is why reds are filed per check, not per story.

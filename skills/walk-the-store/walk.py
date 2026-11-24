@@ -557,7 +557,16 @@ def red_beads(walk: dict) -> list[dict]:
     return out
 
 
-def file_reds(walk: dict, apply: bool, parent: str | None, run=None) -> list[str]:
+def file_reds(
+    walk: dict, apply: bool, parent: str | None, run=None, baseline: bool = False
+) -> list[str]:
+    """Beads for new reds. A first walk has no baseline, so its reds are not "new" to anyone:
+    it files nothing unless baseline=True, and says how many it held back."""
+    if walk["diff"]["first_walk"] and not baseline:
+        n = len(red_beads(walk))
+        return [
+            f"first walk: {n} red checks are the baseline, not filed; review report.md, then rerun with --baseline to file them"
+        ]
     lines = []
     for b in red_beads(walk):
         create = [
@@ -635,6 +644,9 @@ def main(argv: list[str] | None = None) -> int:
     f.add_argument("walk", type=Path)
     f.add_argument("--apply", action="store_true")
     f.add_argument("--parent")
+    f.add_argument(
+        "--baseline", action="store_true", help="file a first walk's reds too"
+    )
     a = p.parse_args(argv)
 
     if a.cmd == "stories":
@@ -673,7 +685,7 @@ def main(argv: list[str] | None = None) -> int:
         return 1 if walk["diff"]["new_red"] else 0
     if a.cmd == "file-reds":
         walk = json.loads(a.walk.read_text())
-        for line in file_reds(walk, a.apply, a.parent):
+        for line in file_reds(walk, a.apply, a.parent, baseline=a.baseline):
             print(line)
         return 0
     return 2

@@ -264,6 +264,12 @@ def test_file_reds_dry_run_prints_and_apply_dedupes_on_external_ref():
         }
     )
     w = walk.judge(stories(), walk.Manifest(), run, None)
+    assert walk.file_reds(w, apply=False, parent=None)[0].startswith(
+        "first walk: 2 red checks"
+    )
+    w = walk.judge(
+        stories(), walk.Manifest(), run, []
+    )  # a previous walk with nothing red
     dry = walk.file_reds(w, apply=False, parent=None)
     assert len(dry) == 2 and all(line.startswith("bd create") for line in dry)
     calls = []
