@@ -98,11 +98,16 @@ stream wakes the session when an answer lands.
   `developer.apple.com` for `sosumi.ai` in a URL, or add the MCP server:
   `claude mcp add --transport http sosumi https://sosumi.ai/mcp`. Every builder, Mac or Linux, does this; each
   repo's AGENTS.md carries the one-line rule.
-- **Simulator and Previews without Xcode (Mac builders only).** The Linux VM has no Simulator, so a Linux builder
-  hands this work to a Mac builder. On the Mac: [MobileBuildMCP](https://github.com/getsentry/MobileBuildMCP)
-  drives the simulator (`claude mcp add mobilebuildmcp -- npx -y mobilebuildmcp@latest mcp`), and
-  [axe](https://github.com/k-kohey/axe) renders `#Preview` blocks to PNG (`axe preview report <File>.swift`;
-  pre-1.0, needs `idb_companion`). The one-simulator and build-lane rules still apply.
+- **Previews first, Simulator second, both from the CLI (Mac builders only).** Source:
+  [Natasha the Robot, "I gave Claude a Mac mini"](https://www.natashatherobot.com/p/claude-mac-mini). The Linux
+  VM has no Simulator, so a Linux builder hands this to a Mac builder. Verify UI with a SwiftUI Preview; boot the
+  simulator only for transitions and animations. She reports Xcode 27.2's `xcrun mcp-server` renders previews
+  without opening Xcode. Apple's docs don't confirm it (they document `xcrun mcpbridge` with the project open in
+  Xcode), so check `xcrun mcp-server --help` first, else use [axe](https://github.com/k-kohey/axe)
+  (`axe preview report <File>.swift`; pre-1.0, needs `idb_companion`). Simulator:
+  [MobileBuildMCP](https://github.com/getsentry/MobileBuildMCP). Small targeted tests, not the full UI suite; one
+  simulator per agent, deleted when done, slimmed with [simslim](https://github.com/MobAI-App/simslim). The
+  one-simulator and build-lane rules still apply.
 
 ## A repo joins: checklist
 
