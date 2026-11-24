@@ -31,11 +31,11 @@ Work lanes are the head's unit; build lanes and host slots are a builder's. Don'
 
 ## Roles
 
-| Role              | Does                                                                                                                                                                   | Never                                                                                            |
-| ----------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------ |
-| **Head** (1/repo) | splits a request into work lanes; dispatches each to a builder by capacity; owns journey ranges, merge order and the train; says what is on which device; triages bugs | runs two signing builds at once; lets two PRs that edit one file merge out of order              |
-| **Mac builder**   | Xcode, simulators, the Mac build, signing, device installs (cable and network), the over-the-air package                                                               | signs with the screen locked; boots simulators outside its build lanes                           |
-| **Linux builder** | Linux Swift tests (rung 1L), every wasm build and test, token-heavy work (docs, web, research), xtool device builds when every Mac is busy                             | reports "no Xcode" as a blocker; it pushes the branch and asks a Mac builder for the Apple rungs |
+| Role              | Does                                                                                                                                                   | Never                                                                                            |
+| ----------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------ |
+| **Head** (1/repo) | splits a request into work lanes; dispatches each to a builder by capacity; owns merge order and the train; says what is on which device; triages bugs | runs two signing builds at once; lets two PRs that edit one file merge out of order              |
+| **Mac builder**   | Xcode, simulators, the Mac build, signing, device installs (cable and network), the over-the-air package                                               | signs with the screen locked; boots simulators outside its build lanes                           |
+| **Linux builder** | Linux Swift tests (rung 1L), every wasm build and test, token-heavy work (docs, web, research), xtool device builds when every Mac is busy             | reports "no Xcode" as a blocker; it pushes the branch and asks a Mac builder for the Apple rungs |
 
 The Mac side never reports "no wasm SDK" as a blocker either: it pushes the branch and asks the Linux builder.
 
@@ -51,13 +51,17 @@ with the most free slots. On top of that:
 
 A machine in state `unknown` is asleep or offline, not dead: don't dispatch to it and don't act on it.
 
+Head and builders talk on the bead (the brief and its outcome) and on the head's hub thread (cross-machine asks,
+such as "build the wasm for this branch", and build announcements).
+
 ## The flows
 
 1. **Plan.** The head writes or finds the spec and the story for each change (spec first, story always) and cuts
    one work lane per bead. Two lanes that edit the same file are ordered, not parallel.
 2. **Story ids.** Whoever writes a story reserves its id from the repo's shared ledger (`reserve <journey> [n]`),
    never "the next free id" on their branch. The ledger is a ref on the canonical remote, so any machine can
-   reserve. A full journey stops the lane: the head adds the range.
+   reserve. Reserve when the story is written: an unused reservation lapses after a day. A full journey stops the
+   lane: say so to the human; nobody adds a range by hand.
 3. **Build and verify.** The builder climbs the ladder cheapest rung first, through the repo's lane wrappers, and
    says which rung verified what. Phone-only behaviour (sensors, audio session, widgets, HealthKit) is verified only
    on the device.
@@ -85,7 +89,7 @@ practice this today; `—` is a gap, not a decision.
 | Linux rung (portable tests, Apple sources compiled)          | `just test-linux`, `wasm`, `wasm-test`   | —                                      | —                           |
 | one-command climb of the ladder                              | `just test-ladder`                       | —                                      | —                           |
 | simulator rung inside a build lane                           | `native-test-sim` via `build-lane.sh`    | `test-sim` (one sim)                   | `ios-selftest` (build lock) |
-| device install recorded in a deploys ledger                  | `just deploy`, `native-run-device`       | `run-device`                           | `iphone` + `record-deploy`  |
+| device install recorded in a deploys ledger                  | `just deploy`, `native-run-device`       | `run-device` (no ledger)               | `iphone` + `record-deploy`  |
 | which build a device runs                                    | `device-build-check`                     | —                                      | —                           |
 | over-the-air package after merges                            | `ota`, `ota-watch`                       | —                                      | —                           |
 | logs and reports back from the device                        | `pull-logs`, `bugs-check`                | `pull-logs`, `bugs-check`, `file-bugs` | `session-log`, `logs`       |
@@ -107,3 +111,4 @@ These have not run with more than one Mac yet. Decide before the second Mac take
 - **Where the head sits** once it stops being the Mac's lead session (a Mac, or the Linux VM).
 - **Device pairing.** A network install needs the device paired with that Mac; whether every Mac pairs every
   device or only one Mac installs.
+- **xtool installs from Linux** are not in any deploys ledger.

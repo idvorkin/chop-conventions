@@ -28,8 +28,8 @@ the rungs its machine can climb, pushes the branch, and reports.
 
 - Linux Swift through swiftly, Apple sources compiled with the Darwin cross SDK, wasm through a toolchain with a
   wasm SDK. The repo's `test-linux` script header lists the environment it needs.
-- xtool can build and install on a device from Linux (no simulator). Use it only when every Mac is busy, and
-  through the repo's deploy recipe when it has one, so the ledger still records the install.
+- xtool can build and install on a device from Linux (no simulator). Use it only when every Mac is busy, and say
+  so on the bead: the deploys ledger lives on a Mac and won't record it.
 - Before saying the app can't be built here, check `which xtool` and the swiftly toolchains.
 
 ## Adding a Mac

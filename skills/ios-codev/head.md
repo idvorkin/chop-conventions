@@ -19,7 +19,6 @@ lead session and also its first builder; everything below still applies, the dis
   design, the proof owed (which rung, which device) in the acceptance.
 - Two lanes that edit the same file run one after the other. A repo that serialises on one big file should split
   it so features get their own files.
-- Reserve story ids for the lane up front when you already know how many it needs, and put them on the bead.
 
 ## Dispatching
 
