@@ -188,6 +188,9 @@ BARE_PY_TEST_RE = re.compile(
 NODE_RE = re.compile(
     r"^(?P<file>[\w./-]*(?:test|audit|smoke|spec)[\w.-]*\.(?:cjs|mjs|js))$"
 )
+# A repo's own script check, named like `scripts/native/test-ladder-map.sh` or `test-board-sessions.py` (hyphen, not
+# pytest's underscore). Keyed by basename: stories write it with and without its directory.
+SCRIPT_RE = re.compile(r"^(?P<file>[\w./-]*?(?P<base>test-[\w.-]*\.(?:sh|py)))$")
 XCTEST_RE = re.compile(r"^(?P<cls>[A-Z]\w*Tests)(?:[./](?P<test>test\w+))?$")
 JUST_RE = re.compile(r"^just\s+(?P<recipe>[\w:-]+)")
 LANDMARK_RE = re.compile(r"^[a-z][a-z0-9-]+$")
@@ -216,6 +219,9 @@ def extract_refs(status: str) -> list[str]:
         elif m := BARE_PY_TEST_RE.match(tok):
             # prose names a test without its file: it often lives in another file than the last one named
             ref = f"pytest:*::{m.group('test')}"
+        elif m := SCRIPT_RE.match(tok):
+            last_py = last_node = ""
+            ref = f"script:{m.group('base')}"
         elif m := NODE_RE.match(tok):
             last_node, last_py = m.group("file"), ""
             ref = f"node:{m.group('file')}"
@@ -263,6 +269,7 @@ DEFAULT_SURFACES = {
     "node": "web",
     "landmark": "web",
     "just": "host",
+    "script": "host",
 }
 
 

@@ -159,6 +159,10 @@ def test_refs_resolve_shorthand_and_landmarks():
         "landmark:route_smoke.cjs#a-b",
         "landmark:route_smoke.cjs#c-d",
     ]
+    # a repo's own hyphenated script checks, keyed by basename with or without their directory
+    assert walk.extract_refs(
+        "by `scripts/native/test-ladder-map.sh`, `test-ladder-map.sh` and `test-board-sessions.py`; not `build-wasm.sh`"
+    ) == ["script:test-ladder-map.sh", "script:test-board-sessions.py"]
 
 
 def test_file_level_ref_is_the_worst_of_its_cases_and_parametrized_cases_match():
