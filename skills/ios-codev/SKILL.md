@@ -92,22 +92,32 @@ stream wakes the session when an answer lands.
 
 ## Look things up, don't guess
 
+This is the one copy; each repo's AGENTS.md points here.
+
 - **Apple APIs: read [Sosumi](https://sosumi.ai/) first.** Before writing or changing code that uses an Apple API,
   especially iOS 26/27 or anything new, fetch its docs through Sosumi (Apple's developer docs, HIG and WWDC
   transcripts as Markdown; developer.apple.com needs JavaScript, so a plain fetch sees nothing). Swap
   `developer.apple.com` for `sosumi.ai` in a URL, or add the MCP server:
-  `claude mcp add --transport http sosumi https://sosumi.ai/mcp`. Every builder, Mac or Linux, does this; each
-  repo's AGENTS.md carries the one-line rule.
-- **Previews first, Simulator second, both from the CLI (Mac builders only).** Source:
-  [Natasha the Robot, "I gave Claude a Mac mini"](https://www.natashatherobot.com/p/claude-mac-mini). The Linux
-  VM has no Simulator, so a Linux builder hands this to a Mac builder. Verify UI with a SwiftUI Preview; boot the
-  simulator only for transitions and animations. She reports Xcode 27.2's `xcrun mcp-server` renders previews
-  without opening Xcode. Apple's docs don't confirm it (they document `xcrun mcpbridge` with the project open in
-  Xcode), so check `xcrun mcp-server --help` first, else use [axe](https://github.com/k-kohey/axe)
-  (`axe preview report <File>.swift`; pre-1.0, needs `idb_companion`). Simulator:
-  [MobileBuildMCP](https://github.com/getsentry/MobileBuildMCP). Small targeted tests, not the full UI suite; one
-  simulator per agent, deleted when done, slimmed with [simslim](https://github.com/MobAI-App/simslim). The
-  one-simulator and build-lane rules still apply.
+  `claude mcp add --transport http sosumi https://sosumi.ai/mcp` (tools: searchAppleDocumentation,
+  fetchAppleDocumentation, fetchAppleVideoTranscript, fetchExternalDocumentation). Reported: Opus 5.5 passes 38% of
+  new iOS 27 API tasks without docs and 98% with Sosumi. Every builder, Mac or Linux, does this.
+- **Previews first, Simulator second, both from the CLI. Mac builders only**; the Linux VM has no Simulator or
+  Xcode, so a Linux builder hands this work to a Mac builder. Source:
+  [Natasha the Robot, "I gave Claude a Mac mini"](https://www.natashatherobot.com/p/claude-mac-mini).
+  - Verify UI with a SwiftUI Preview; boot the simulator only for what a preview can't show (screen transitions,
+    animations).
+  - Previews without opening Xcode: she reports Xcode 27.2's `xcrun mcp-server` does it. Apple's docs don't confirm
+    that. They document `xcrun mcpbridge` (`claude mcp add --transport stdio xcode -- xcrun mcpbridge`, or
+    `codex mcp add xcode -- xcrun mcpbridge`) with the project open in Xcode, and a `RenderPreview` tool in the
+    27.2 release notes. So run `xcrun mcp-server --help` first and use it if it exists; otherwise use
+    [axe](https://github.com/k-kohey/axe) (`curl -fsSL https://raw.githubusercontent.com/k-kohey/axe/main/install.sh | sh`,
+    then `axe preview report <File>.swift` for PNG, Markdown or HTML; Apple Silicon, needs `idb_companion`, pre-1.0).
+  - The simulator itself: [MobileBuildMCP](https://github.com/getsentry/MobileBuildMCP) (getsentry; build, run, tap,
+    screenshot): `claude mcp add mobilebuildmcp -- npx -y mobilebuildmcp@latest mcp`, or plain `xcrun simctl`.
+  - Write small, targeted tests and run only those, not the full UI suite.
+  - One simulator per agent, deleted when it finishes, slimmed with [simslim](https://github.com/MobAI-App/simslim)
+    (`brew install mobai-app/tap/simslim`; about 4 GB down to 0.9 GB per simulator by its README).
+  - A repo's own one-simulator and build-lane rules still apply on top.
 
 ## A repo joins: checklist
 
