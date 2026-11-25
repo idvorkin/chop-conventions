@@ -99,6 +99,7 @@ Machine-level skills go in `~/.claude/skills/` and are available everywhere. Pro
 | `herdr`                  | machine | Drive herdr workspaces/agents headlessly; keep claude/codex integrations healthy                                     |
 | `image-explore`          | machine | Brainstorm and compare visual directions                                                                             |
 | `image-read`             | machine | Describe inbound images via a Haiku subagent, keeping pixel payload out of context                                   |
+| `ios-codev`              | machine | One head session per iOS repo plus builder Macs and a Linux VM: roles, dispatch, merges, joining                     |
 | `larry-voice`            | machine | Speak text in Larry's voice via ElevenLabs → a Telegram voice note (opus/ogg)                                        |
 | `learn-from-session`     | machine | Extract durable lessons from a session into the right CLAUDE.md files                                                |
 | `machine-doctor`         | machine | Diagnose system health, kill rogue processes                                                                         |
