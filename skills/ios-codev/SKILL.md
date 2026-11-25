@@ -122,7 +122,9 @@ This is the one copy; each repo's AGENTS.md points here.
     `xcrun simctl` boots, installs, launches and screenshots (`xcrun simctl io booted screenshot out.png`).
   - Write small, targeted tests and run only those, not the full UI suite.
   - One simulator per agent, deleted when it finishes, slimmed with [simslim](https://github.com/MobAI-App/simslim)
-    (`brew install mobai-app/tap/simslim`; about 4 GB down to 0.9 GB per simulator by its README).
+    (`brew install mobai-app/tap/simslim`, then `simslim on <udid> --except <what the app's tests need>`).
+    It stops daemons and saves memory, not disk. Measured on one iPad simulator (2026-11-24): processes
+    180 → 84 and summed RSS 10.2 → 7.0 GB (-31%); disk barely moved, 5.1 → 4.8 GB.
   - A repo's own one-simulator and build-lane rules still apply on top.
 
 ## A repo joins: checklist
