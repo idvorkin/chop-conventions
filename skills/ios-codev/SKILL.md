@@ -112,8 +112,9 @@ This is the one copy; each repo's AGENTS.md points here.
     bridge driven from a shell script. Nothing is registered as an MCP server in the agent. Its
     `RenderPreview` tool takes a source file and returns a snapshot. One-time setup per Mac, by the human with
     sudo: `sudo xcrun mcp-server allow-folder ~/gits` (plus any worktree root), and approve the calling binary
-    when `xcrun mcp-server` lists it as pending. Status (2026-11-24): `initialize` and `tools/list` answer in
-    under a second, but no render has been timed yet, so add the repo's script name and timing here once one runs.
+    when `xcrun mcp-server` lists it as pending. Context Grabber wraps it as `just render-preview <file.swift>
+[out.png] [index]` (scripts/native/render-preview.sh, #1451); measured 2026-11-24: cold 35–105 s (it builds
+    the app first), warm about 0.5 s. Copy that script for another repo; the sudo steps are in its docs/TESTING.md.
   - Fallback: [axe](https://github.com/k-kohey/axe)
     (`curl -fsSL https://raw.githubusercontent.com/k-kohey/axe/main/install.sh | sh`, then
     `axe preview report <File>.swift` for PNG, Markdown or HTML; Apple Silicon, needs `idb_companion`, pre-1.0).
