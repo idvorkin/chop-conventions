@@ -106,15 +106,38 @@ This is the one copy; each repo's AGENTS.md points here.
   [Natasha the Robot, "I gave Claude a Mac mini"](https://www.natashatherobot.com/p/claude-mac-mini).
   - Verify UI with a SwiftUI Preview; boot the simulator only for what a preview can't show (screen transitions,
     animations).
-  - Previews without opening Xcode: [axe](https://github.com/k-kohey/axe)
+  - Every view an agent changes gets a `#Preview` on fixture data (no network, no live server), so it can be
+    rendered without the app. Point the healthy previews at an in-process stand-in for the server (a
+    `URLProtocol` that answers a fake address from the fixtures), not at "no address": a missing address leaks
+    a real error banner into the picture. Add one preview that shows the error state on purpose, so a reviewer
+    can tell "looks broken" from "is broken". Keep previews and their fixtures in Debug builds only.
+  - Previews without opening Xcode, first choice: Xcode 27.2's own `xcrun mcpbridge`, a stdio JSON-RPC
+    bridge driven from a shell script. Nothing is registered as an MCP server in the agent. Its
+    `RenderPreview` tool takes a source file and returns a snapshot. One-time setup per Mac, by the human with
+    sudo: `sudo xcrun mcp-server allow-folder <dir>` for each checkout and each worktree pool (e.g.
+    `~/.treehouse`), then `xcrun mcp-server status` lists the pending caller id to approve. Keep the caller
+    stable (Context Grabber always puts `/usr/bin/timeout` in front of the bridge) so one approval covers every
+    run. A project under `/private/tmp` is refused outright, so render from a checkout, not a scratch folder.
+    Context Grabber wraps it as `just render-preview <file.swift> [out.png] [index]`
+    (scripts/native/render-preview.sh, #1451). Measured 2026-11-24 on its six previews (#1465): the first
+    render waits for a build lane and a cold build (822 s that night, 35–105 s with a free lane), then about
+    1 s each, about 19 s for a file that just changed. Copy that script for another repo; the sudo steps are
+    in its docs/TESTING.md.
+  - Fallback: [axe](https://github.com/k-kohey/axe)
     (`curl -fsSL https://raw.githubusercontent.com/k-kohey/axe/main/install.sh | sh`, then
     `axe preview report <File>.swift` for PNG, Markdown or HTML; Apple Silicon, needs `idb_companion`, pre-1.0).
-    If axe fails, run the app in the simulator and take a screenshot.
+    If both fail, run the app in the simulator and take a screenshot.
   - The simulator itself: Apple's own CLIs. `xcodebuild` builds and runs the app and its tests;
     `xcrun simctl` boots, installs, launches and screenshots (`xcrun simctl io booted screenshot out.png`).
   - Write small, targeted tests and run only those, not the full UI suite.
   - One simulator per agent, deleted when it finishes, slimmed with [simslim](https://github.com/MobAI-App/simslim)
-    (`brew install mobai-app/tap/simslim`; about 4 GB down to 0.9 GB per simulator by its README).
+    (`brew install mobai-app/tap/simslim`, then `simslim on <udid> --except <what the app's tests need>`).
+    It stops daemons and saves memory, not time or disk. Measured paired on one iPad simulator (2026-11-25,
+    slim and stock alternated): idle processes 214 → 120 and summed RSS 29.9 → 16.6 GB (about -45%), test
+    wall time unchanged, disk unchanged. So it buys more booted simulators per Mac, not faster tests. Keep on
+    every category the tests touch, and switch categories off one at a time with a full test run after each: Context
+    Grabber lost three UI test classes in one night to `widgets` and to `linkd` (the App Intents index, inside
+    `other`) being off.
   - A repo's own one-simulator and build-lane rules still apply on top.
 
 ## A repo joins: checklist
