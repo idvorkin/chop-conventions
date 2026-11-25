@@ -533,8 +533,10 @@ def load_session_tokens(arg: str | None) -> list[dict]:
     """--session-tokens: inline JSON or a path to it; one row or a list. Purpose defaults to `session`."""
     if not arg:
         return []
-    text = Path(arg).read_text() if Path(arg).is_file() else arg
-    data = json.loads(text)
+    inline = arg.lstrip().startswith(
+        ("{", "[")
+    )  # never stat a long JSON string as a path
+    data = json.loads(arg if inline else Path(arg).read_text())
     rows = data if isinstance(data, list) else [data]
     return [{"purpose": "session"} | r for r in rows]
 

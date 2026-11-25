@@ -157,7 +157,8 @@ as `rungs` claims but are not checks: the walk cannot rerun an eye.
       started but never finished.
   - `judge` gives the stage's unreported refs the outcome `killed` (detail: the stage and its cap), not `missing`. A
     file-level ref whose finished cases passed is `killed` too: its other cases never ran. A finished failure is
-    still red.
+    still red. A bare `test_x` ref (any file) matches no file prefix, so only a stage covering its whole kind
+    can turn it `killed`.
   - A story whose only gap is a killed check gets the verdict **killed**. It files no bead, because the kill is the
     finding, and the report's Killed stages section names it.
 - Wait on a running walk by PID (`while kill -0 <pid>; do sleep 15; done`), never with `pgrep -f <name>`, which
@@ -200,8 +201,9 @@ manifest line: the manifest is for what the Status can't say.
 
 **Where the token rows come from.** Every model call the walk makes appends one row to `checks.json` `usage`
 (`purpose`, `model`, `input`, `output`, `cache_read`, `cache_write`, from the response's `usage`). The screen notes
-are the walk's only model calls today: purpose `screen note: <state>-<width>`. The Opus advisor's tokens are a second
-model inside the same call, so record them as their own row with the advisor's model. When an agent session drives
+are the walk's only model calls today: purpose `screen note: <state>-<width>`. If the response reports the Opus
+advisor's tokens apart from the executor's, record them as their own row with the advisor's model; check the API's
+usage shape before relying on either reading. When an agent session drives
 the walk (a dry run, a nightly Claude job), that session's own tokens are **not** counted unless the driver passes
 them: `judge --session-tokens '<json>'`, inline or a file, one row or a list, with `calls` for a pre-summed row.
 They land under purpose `session`.

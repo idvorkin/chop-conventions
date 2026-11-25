@@ -482,3 +482,40 @@ def test_tokens_are_totalled_by_purpose_and_model_with_the_session_passed_in(tmp
 def test_a_walk_with_no_model_calls_says_so():
     md = walk.render_report(walk.judge(stories(), walk.Manifest(), run_for({}), None))
     assert "## Tokens" in md and "No model calls recorded" in md
+
+
+def test_covers_scopes_a_kill_to_its_own_stage_when_two_stages_share_a_kind():
+    run = killed_run()
+    run["kinds"].append("pytest")  # the fast stage finished
+    run["stages"][0]["covers"] = ["pytest:test_ink.py"]  # the browser stage was killed
+    st = walk.Story(id="011", title="t", file="f.md", status_class="implemented")
+    st.refs = [
+        "pytest:test_cards.py",
+        "pytest:test_cards.py::test_gone",
+        "pytest:test_ink.py",
+    ]
+    out = {
+        c["ref"]: c["outcome"]
+        for c in walk.judge_story(st, walk.Manifest(), run)["checks"]
+    }
+    assert (
+        out
+        == {
+            "pytest:test_cards.py": "pass",  # the fast stage's file, finished
+            "pytest:test_cards.py::test_gone": "missing",  # outside covers: a real missing check
+            "pytest:test_ink.py": "killed",
+        }
+    )
+
+
+def test_exit_2_beats_a_new_red_and_long_inline_session_tokens_parse(tmp_path):
+    run = killed_run()
+    run["checks"]["pytest:test_cards.py::test_tap_opens"] = {"outcome": "fail"}
+    rows = [{"model": "claude-opus-5-5", "input": i} for i in range(40)]
+    assert len(json.dumps(rows)) > 300
+    argv = write_walk_inputs(tmp_path, run) + ["--session-tokens", json.dumps(rows)]
+    assert walk.main(argv) == 2
+    saved = json.loads((tmp_path / "out" / "walk.json").read_text())
+    assert (
+        saved["diff"]["new_red"] == ["001"] and saved["tokens"]["total"]["calls"] == 40
+    )
