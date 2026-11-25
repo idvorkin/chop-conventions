@@ -135,7 +135,9 @@ This is the one copy; each repo's AGENTS.md points here.
     It stops daemons and saves memory, not time or disk. Measured paired on one iPad simulator (2026-11-25,
     slim and stock alternated): idle processes 214 → 120 and summed RSS 29.9 → 16.6 GB (about -45%), test
     wall time unchanged, disk unchanged. So it buys more booted simulators per Mac, not faster tests. Keep on
-    every category the tests touch: Context Grabber lost two UI test classes to `widgets` being off.
+    every category the tests touch, and switch categories off one at a time with a full test run after each: Context
+    Grabber lost three UI test classes in one night to `widgets` and to `linkd` (the App Intents index, inside
+    `other`) being off.
   - A repo's own one-simulator and build-lane rules still apply on top.
 
 ## A repo joins: checklist
