@@ -11,8 +11,9 @@ the same in every repo:
     walk.py stories <stories-dir>             every story as JSON: id, status class, named checks, scenarios
     walk.py refs <stories-dir>                the check refs the walk should run, one per line, by kind
     walk.py judge --stories D --checks C.json --out OUT [--manifest M.toml] [--previous LAST/walk.json]
-                                              join the runner's outcomes into one verdict per story,
-                                              write OUT/walk.json and OUT/report.md, exit 1 on a new red
+                  [--session-tokens JSON]     join the runner's outcomes into one verdict per story,
+                                              write OUT/walk.json and OUT/report.md, exit 1 on a new red,
+                                              2 when the runner killed a stage at its cap
     walk.py file-reds OUT/walk.json [--apply] [--parent ID]
                                               one bead per new red, deduped by external ref; prints
                                               the bd commands unless --apply
@@ -310,7 +311,7 @@ def surface_of(ref: str, manifest: Manifest) -> str:
 
 # ---------------------------------------------------------------- judging
 
-VERDICTS = ("green", "red", "skipped", "untestable")
+VERDICTS = ("green", "red", "killed", "skipped", "untestable")
 OUT_OF_SCOPE = ("planned", "retired", "unclassified")
 
 
@@ -346,7 +347,7 @@ def match_outcome(ref: str, checks: dict[str, dict]) -> tuple[str, str]:
     ]
     if not prefix_hits:
         return "missing", "named in the Status but the runner reported no such check"
-    order = ["fail", "missing", "known-red", "skip", "flaky", "pass"]
+    order = ["fail", "missing", "known-red", "killed", "skip", "flaky", "pass"]
     worst = min(
         prefix_hits, key=lambda kv: order.index(kv[1].get("outcome", "missing"))
     )
@@ -359,6 +360,19 @@ def match_outcome(ref: str, checks: dict[str, dict]) -> tuple[str, str]:
             )
         )
     return worst[1].get("outcome", "missing"), detail
+
+
+def killed_stages(run: dict) -> list[dict]:
+    return [st for st in run.get("stages", []) if st.get("killed")]
+
+
+def killed_by(ref: str, run: dict) -> dict | None:
+    """The killed stage that should have run this ref: by its `covers` ref prefixes, else by its kinds."""
+    for st in killed_stages(run):
+        covers = st.get("covers") or [k + ":" for k in st.get("kinds", [])]
+        if any(ref.startswith(c) for c in covers):
+            return st
+    return None
 
 
 def judge_story(story: Story, manifest: Manifest, run: dict) -> dict:
@@ -383,7 +397,9 @@ def judge_story(story: Story, manifest: Manifest, run: dict) -> dict:
             "verdict": "untestable",
             "reason": f"names no check the walk can run (claims: {claims})",
         }
-    ran_kinds = set(run.get("kinds", []))
+    ran_kinds = set(run.get("kinds", [])) | {
+        k for st in killed_stages(run) for k in st.get("kinds", [])
+    }
     results = []
     for ref in refs:
         kind = ref.split(":", 1)[0]
@@ -397,6 +413,22 @@ def judge_story(story: Story, manifest: Manifest, run: dict) -> dict:
             )
             continue
         outcome, detail = match_outcome(ref, run.get("checks", {}))
+        stage = killed_by(ref, run)
+        # A stage killed at its cap never reported what it had not reached: that is not a missing check.
+        # A file- or class-level ref whose finished cases passed is unproven too: its other cases never ran.
+        if stage and (
+            outcome == "missing"
+            or (
+                outcome in ("pass", "flaky", "skip")
+                and ref not in run.get("checks", {})
+                and not ref.startswith("pytest:*::")
+            )
+        ):
+            was = (
+                "" if outcome == "missing" else f"; the cases that finished: {outcome}"
+            )
+            outcome = "killed"
+            detail = f"stage {stage.get('stage', '?')} killed at its {stage.get('cap_s', '?')}s cap{was}"
         row = {"ref": ref, "outcome": outcome, "detail": detail}
         shot = run.get("checks", {}).get(ref, {}).get("screenshot")
         if shot:
@@ -410,6 +442,8 @@ def judge_story(story: Story, manifest: Manifest, run: dict) -> dict:
         outcomes = (outcomes - {"flaky"}) | {"pass"}
     if outcomes & {"fail", "missing"}:
         verdict = "red"
+    elif "killed" in outcomes:
+        verdict = "killed"  # its proof never ran: the kill is the finding, not a red
     elif "known-red" in outcomes:
         verdict = "red"
         base["known"] = True
@@ -472,6 +506,41 @@ def diff_walks(cur: list[dict], prev: list[dict] | None) -> dict:
     }
 
 
+TOKEN_FIELDS = ("input", "output", "cache_read", "cache_write")
+
+
+def tally_tokens(usage: list[dict]) -> dict:
+    """Model spend by (purpose, model). One row per call, or a pre-summed row with `calls`."""
+    groups: dict[tuple[str, str], dict] = {}
+    for u in usage:
+        key = (u.get("purpose", "?"), u.get("model", "?"))
+        g = groups.setdefault(
+            key,
+            {"purpose": key[0], "model": key[1], "calls": 0}
+            | {f: 0 for f in TOKEN_FIELDS},
+        )
+        g["calls"] += int(u.get("calls", 1))
+        for f in TOKEN_FIELDS:
+            g[f] += int(u.get(f, 0) or 0)
+    by_purpose = list(groups.values())
+    total = {"calls": sum(g["calls"] for g in by_purpose)} | {
+        f: sum(g[f] for g in by_purpose) for f in TOKEN_FIELDS
+    }
+    return {"total": total, "by_purpose": by_purpose}
+
+
+def load_session_tokens(arg: str | None) -> list[dict]:
+    """--session-tokens: inline JSON or a path to it; one row or a list. Purpose defaults to `session`."""
+    if not arg:
+        return []
+    inline = arg.lstrip().startswith(
+        ("{", "[")
+    )  # never stat a long JSON string as a path
+    data = json.loads(arg if inline else Path(arg).read_text())
+    rows = data if isinstance(data, list) else [data]
+    return [{"purpose": "session"} | r for r in rows]
+
+
 def dedupe_key(repo: str, story_id: str, ref: str) -> str:
     return f"walk:{repo}:{story_id}:{ref}"
 
@@ -483,7 +552,9 @@ def render_report(walk: dict) -> str:
         "",
         f"Tree `{walk.get('sha', '?')}`{' (dirty)' if walk.get('dirty') else ''} · walked {walk.get('started', '?')} → {walk.get('finished', '?')} · rungs run: {', '.join(walk.get('kinds', [])) or 'none'}",
         "",
-        f"**{s['green']} green · {s['red']} red ({s['known_red']} known) · {s['skipped']} skipped · {s['untestable']} untestable** "
+        f"**{s['green']} green · {s['red']} red ({s['known_red']} known) · {s['skipped']} skipped · {s['untestable']} untestable"
+        + (f" · {s['killed']} killed" if s.get("killed") else "")
+        + "** "
         f"of {s['total'] - s['planned'] - s['retired'] - s['unclassified']} implemented stories; "
         f"{s['planned']} planned, {s['retired']} retired, {s['unclassified']} unclassified not walked.",
         "",
@@ -496,6 +567,24 @@ def render_report(walk: dict) -> str:
             f"{len(d['added'])} stories added, {len(d['removed'])} removed.",
             "",
         ]
+    killed = [st for st in walk.get("stages", []) if st.get("killed")]
+    if killed:
+        lines += [
+            f"## Killed stages ({len(killed)})",
+            "",
+            "The runner killed these at their cap, so the walk exits 2. Checks they had finished keep their "
+            "outcome; the rest are `killed`, not red, and file no beads.",
+            "",
+        ]
+        for st in killed:
+            lines.append(
+                f"- **{st.get('stage', '?')}**: killed at {st.get('at', '?')} after {st.get('elapsed_s', '?')}s "
+                f"(cap {st.get('cap_s', '?')}s)"
+            )
+            lines += [f"  - running: `{r}`" for r in st.get("running", [])] or [
+                "  - running: not recorded"
+            ]
+        lines.append("")
     by_id = {v["id"]: v for v in walk["stories"]}
 
     def row(v: dict) -> str:
@@ -529,7 +618,7 @@ def render_report(walk: dict) -> str:
     ):
         if ids:
             lines += [f"## {heading}", ""] + [row(by_id[i]) for i in ids] + [""]
-    for verdict in ("skipped", "untestable", "unclassified"):
+    for verdict in ("killed", "skipped", "untestable", "unclassified"):
         vs = [v for v in walk["stories"] if v["verdict"] == verdict]
         if vs:
             lines += (
@@ -553,11 +642,39 @@ def render_report(walk: dict) -> str:
             for v in greens
         ]
         lines.append("")
+    lines += render_tokens(walk.get("tokens"))
     return "\n".join(lines)
 
 
+def render_tokens(tokens: dict | None) -> list[str]:
+    """Always present, so a walk that spent nothing says so. No $: the skill keeps no price table."""
+    lines = ["## Tokens", ""]
+    if not tokens or not tokens["by_purpose"]:
+        return lines + [
+            "No model calls recorded (an agent session's own tokens count only when passed with --session-tokens).",
+            "",
+        ]
+
+    def fmt(t: dict) -> str:
+        return (
+            f"{t['calls']} calls · {t['input']:,} in · {t['output']:,} out · "
+            f"{t['cache_read']:,} cache read · {t['cache_write']:,} cache write"
+        )
+
+    lines.append(f"Total: {fmt(tokens['total'])}")
+    lines.append("")
+    lines += [
+        f"- {g['purpose']} ({g['model']}): {fmt(g)}" for g in tokens["by_purpose"]
+    ]
+    return lines + [""]
+
+
 def judge(
-    stories: list[Story], manifest: Manifest, run: dict, prev: list[dict] | None
+    stories: list[Story],
+    manifest: Manifest,
+    run: dict,
+    prev: list[dict] | None,
+    session_tokens: list[dict] | None = None,
 ) -> dict:
     verdicts = [judge_story(st, manifest, run) for st in stories]
     walk = {
@@ -567,6 +684,8 @@ def judge(
         "started": run.get("started"),
         "finished": run.get("finished"),
         "kinds": run.get("kinds", []),
+        "stages": run.get("stages", []),
+        "tokens": tally_tokens(run.get("usage", []) + (session_tokens or [])),
         "summary": summarize(verdicts),
         "diff": diff_walks(verdicts, prev),
         "stories": verdicts,
@@ -687,6 +806,11 @@ def main(argv: list[str] | None = None) -> int:
     j.add_argument("--out", type=Path, required=True)
     j.add_argument("--manifest", type=Path)
     j.add_argument("--previous", type=Path)
+    j.add_argument(
+        "--session-tokens",
+        help="the driving agent session's own spend: JSON row(s) {purpose, model, calls, input, output, "
+        "cache_read, cache_write}, inline or a file",
+    )
     f = sub.add_parser("file-reds")
     f.add_argument("walk", type=Path)
     f.add_argument("--apply", action="store_true")
@@ -720,15 +844,24 @@ def main(argv: list[str] | None = None) -> int:
         prev = None
         if a.previous and a.previous.exists():
             prev = json.loads(a.previous.read_text())["stories"]
-        walk = judge(parse_dir(a.stories), load_manifest(a.manifest), run, prev)
+        walk = judge(
+            parse_dir(a.stories),
+            load_manifest(a.manifest),
+            run,
+            prev,
+            load_session_tokens(a.session_tokens),
+        )
         a.out.mkdir(parents=True, exist_ok=True)
         (a.out / "walk.json").write_text(json.dumps(walk, indent=1))
         (a.out / "report.md").write_text(render_report(walk))
         s = walk["summary"]
         print(
             f"{s['green']} green · {s['red']} red ({s['known_red']} known) · {s['skipped']} skipped · "
-            f"{s['untestable']} untestable · {len(walk['diff']['new_red'])} new red → {a.out / 'report.md'}"
+            f"{s['untestable']} untestable · {s['killed']} killed · {len(walk['diff']['new_red'])} new red "
+            f"→ {a.out / 'report.md'}"
         )
+        if killed_stages(run):
+            return 2  # a stage hit its cap: the walk did not finish, whatever else it found
         return 1 if walk["diff"]["new_red"] else 0
     if a.cmd == "file-reds":
         walk = json.loads(a.walk.read_text())

@@ -334,3 +334,188 @@ def test_a_check_that_passed_its_retry_is_flaky_and_counts_as_passing():
     v = w["stories"][0]
     assert v["verdict"] == "green" and v["flaky"]
     assert "## Flaky" in walk.render_report(w)
+
+
+def killed_run():
+    """The pytest stage hit its cap after test_tap_opens finished; test_tap_twice and test_swipe_away never ran."""
+    return {
+        "repo": "demo",
+        "kinds": ["landmark"],
+        "stages": [
+            {
+                "stage": "browser",
+                "kinds": ["pytest"],
+                "killed": True,
+                "cap_s": 600,
+                "elapsed_s": 601,
+                "at": "2026-11-25T03:10:00-08:00",
+                "running": [
+                    "pytest:test_cards.py::test_tap_twice",
+                    "chromium (pid 42)",
+                ],
+            }
+        ],
+        "checks": {
+            "pytest:test_cards.py::test_tap_opens": {"outcome": "pass"},
+            "landmark:route_smoke.cjs#card-open": {"outcome": "pass"},
+        },
+    }
+
+
+def test_a_killed_stage_keeps_finished_results_and_its_unrun_checks_are_killed_not_red():
+    w = walk.judge(stories(), walk.Manifest(), killed_run(), [])
+    v = w["stories"][0]
+    outcomes = {c["ref"]: c["outcome"] for c in v["checks"]}
+    assert outcomes == {
+        "pytest:test_cards.py::test_tap_opens": "pass",  # finished before the kill
+        "pytest:test_cards.py::test_tap_twice": "killed",
+        "pytest:*::test_swipe_away": "killed",
+        "landmark:route_smoke.cjs#card-open": "pass",
+    }
+    assert "stage browser killed at its 600s cap" in v["checks"][1]["detail"]
+    assert v["verdict"] == "killed"
+    assert w["summary"]["killed"] == 1 and w["summary"]["red"] == 0
+    assert w["diff"]["new_red"] == []
+    assert walk.red_beads(w) == []  # the kill is the finding: no bead per unrun check
+
+
+def test_a_file_level_ref_with_only_some_cases_finished_is_killed_but_a_failure_still_reds():
+    run = killed_run()
+    st = walk.Story(id="010", title="t", file="f.md", status_class="implemented")
+    st.refs = ["pytest:test_cards.py"]
+    v = walk.judge_story(st, walk.Manifest(), run)
+    assert v["checks"][0]["outcome"] == "killed" and v["verdict"] == "killed"
+    run["checks"]["pytest:test_cards.py::test_tap_opens"] = {"outcome": "fail"}
+    v = walk.judge_story(st, walk.Manifest(), run)
+    assert v["checks"][0]["outcome"] == "fail" and v["verdict"] == "red"
+
+
+def test_a_stage_that_was_not_killed_leaves_missing_as_red():
+    run = killed_run()
+    run["stages"][0]["killed"] = False
+    run["kinds"].append("pytest")
+    v = walk.judge(stories(), walk.Manifest(), run, [])["stories"][0]
+    assert v["verdict"] == "red"
+
+
+def test_report_names_the_killed_stage_its_cap_and_what_was_running():
+    md = walk.render_report(walk.judge(stories(), walk.Manifest(), killed_run(), []))
+    assert "## Killed stages (1)" in md
+    assert (
+        "**browser**: killed at 2026-11-25T03:10:00-08:00 after 601s (cap 600s)" in md
+    )
+    assert "running: `chromium (pid 42)`" in md
+    assert "· 1 killed**" in md and "## Killed (1)" in md
+
+
+def write_walk_inputs(tmp_path, run):
+    d = tmp_path / "stories"
+    d.mkdir()
+    (d / "01-cards.md").write_text(COHN)
+    (tmp_path / "checks.json").write_text(json.dumps(run))
+    return [
+        "judge",
+        "--stories",
+        str(d),
+        "--checks",
+        str(tmp_path / "checks.json"),
+        "--out",
+        str(tmp_path / "out"),
+    ]
+
+
+def test_judge_writes_the_report_then_exits_2_on_a_killed_stage(tmp_path):
+    argv = write_walk_inputs(tmp_path, killed_run())
+    assert walk.main(argv) == 2
+    saved = json.loads((tmp_path / "out" / "walk.json").read_text())
+    assert saved["stages"][0]["killed"] and (tmp_path / "out" / "report.md").exists()
+
+
+def test_tokens_are_totalled_by_purpose_and_model_with_the_session_passed_in(tmp_path):
+    run = run_for({"landmark:route_smoke.cjs#card-open": "pass"})
+    run["usage"] = [
+        {
+            "purpose": "screen note: board-390",
+            "model": "claude-haiku-5-5",
+            "input": 1200,
+            "output": 80,
+        },
+        {
+            "purpose": "screen note: board-390",
+            "model": "claude-haiku-5-5",
+            "input": 1000,
+            "output": 70,
+            "cache_read": 900,
+        },
+        {
+            "purpose": "screen note: board-390",
+            "model": "claude-opus-5-5",
+            "input": 300,
+            "output": 40,
+        },
+    ]
+    argv = write_walk_inputs(tmp_path, run) + [
+        "--session-tokens",
+        '{"model": "claude-opus-5-5", "calls": 12, "input": 50000, "output": 4000, "cache_write": 20000}',
+    ]
+    walk.main(argv)
+    t = json.loads((tmp_path / "out" / "walk.json").read_text())["tokens"]
+    assert t["total"] == {
+        "calls": 15,
+        "input": 52500,
+        "output": 4190,
+        "cache_read": 900,
+        "cache_write": 20000,
+    }
+    haiku = next(g for g in t["by_purpose"] if g["model"] == "claude-haiku-5-5")
+    assert (haiku["calls"], haiku["input"], haiku["cache_read"]) == (2, 2200, 900)
+    assert [g["purpose"] for g in t["by_purpose"]][-1] == "session"
+    md = (tmp_path / "out" / "report.md").read_text()
+    assert (
+        "## Tokens" in md
+        and "Total: 15 calls · 52,500 in" in md
+        and "- session (claude-opus-5-5)" in md
+    )
+    assert "$" not in md.split("## Tokens")[1]
+
+
+def test_a_walk_with_no_model_calls_says_so():
+    md = walk.render_report(walk.judge(stories(), walk.Manifest(), run_for({}), None))
+    assert "## Tokens" in md and "No model calls recorded" in md
+
+
+def test_covers_scopes_a_kill_to_its_own_stage_when_two_stages_share_a_kind():
+    run = killed_run()
+    run["kinds"].append("pytest")  # the fast stage finished
+    run["stages"][0]["covers"] = ["pytest:test_ink.py"]  # the browser stage was killed
+    st = walk.Story(id="011", title="t", file="f.md", status_class="implemented")
+    st.refs = [
+        "pytest:test_cards.py",
+        "pytest:test_cards.py::test_gone",
+        "pytest:test_ink.py",
+    ]
+    out = {
+        c["ref"]: c["outcome"]
+        for c in walk.judge_story(st, walk.Manifest(), run)["checks"]
+    }
+    assert (
+        out
+        == {
+            "pytest:test_cards.py": "pass",  # the fast stage's file, finished
+            "pytest:test_cards.py::test_gone": "missing",  # outside covers: a real missing check
+            "pytest:test_ink.py": "killed",
+        }
+    )
+
+
+def test_exit_2_beats_a_new_red_and_long_inline_session_tokens_parse(tmp_path):
+    run = killed_run()
+    run["checks"]["pytest:test_cards.py::test_tap_opens"] = {"outcome": "fail"}
+    rows = [{"model": "claude-opus-5-5", "input": i} for i in range(40)]
+    assert len(json.dumps(rows)) > 300
+    argv = write_walk_inputs(tmp_path, run) + ["--session-tokens", json.dumps(rows)]
+    assert walk.main(argv) == 2
+    saved = json.loads((tmp_path / "out" / "walk.json").read_text())
+    assert (
+        saved["diff"]["new_red"] == ["001"] and saved["tokens"]["total"]["calls"] == 40
+    )
