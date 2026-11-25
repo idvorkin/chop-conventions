@@ -108,6 +108,7 @@ Machine-level skills go in `~/.claude/skills/` and are available everywhere. Pro
 | `pr-hygiene`             | machine | Surface open PRs with unaddressed review feedback (filters CodeRabbit/CI noise)                                      |
 | `showboat`               | machine | Create executable demo documents with screenshots                                                                    |
 | `up-to-date`             | machine | Sync git repo with upstream                                                                                          |
+| `walk-the-store`         | machine | Test every implemented story in `docs/stories` (nightly or on demand): per-story green/red/untestable, diff, beads   |
 | `yolo`                   | machine | What `--dangerously-skip-permissions` does and does not bypass                                                       |
 
 ### Skill Usage
