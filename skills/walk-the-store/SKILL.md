@@ -31,7 +31,7 @@ W=~/.claude/skills/walk-the-store/walk.py
 $W stories docs/stories --implemented   # every implemented story: id, status class, refs, Given/When/Then
 $W refs docs/stories --kind pytest      # the pytest node ids the stories name, one per line
 $W judge --stories docs/stories --checks OUT/checks.json --out OUT \
-   [--manifest docs/stories/walk.toml] [--previous LAST/walk.json]
+   [--manifest docs/stories/walk.toml] [--previous LAST/walk.json] [--session-tokens '<json>']
 $W file-reds OUT/walk.json [--apply] [--parent <bead>]
 ```
 
@@ -71,6 +71,7 @@ as `rungs` claims but are not checks: the walk cannot rerun an eye.
 | **green**      | every ref that ran passed (`partial` when some refs were skipped as their surface did not run)                |
 | **red**        | a ref failed, or a named check was **missing** from the results (the story's proof is gone: renamed, deleted) |
 | red, `known`   | the only failures are known-red (pytest `xfail`, an allow-list): not new, not filed                           |
+| **killed**     | no ref failed, but one never ran: its stage was killed at its cap (see the stage record below)                |
 | **skipped**    | refs exist but none of their surfaces ran this walk (simulator refs on the VM, device refs with no go-ahead)  |
 | **untestable** | implemented, but the Status names no runnable check (or the manifest says why it can't be automated)          |
 
@@ -97,7 +98,31 @@ as `rungs` claims but are not checks: the walk cannot rerun an eye.
       "screenshot": "OUT/…png"
     },
     "node:talk_audit.cjs": { "outcome": "known-red", "detail": "…" }
-  }
+  },
+  "stages": [
+    {
+      "stage": "browser",
+      "kinds": ["pytest"],
+      "killed": true,
+      "cap_s": 1800,
+      "elapsed_s": 1801,
+      "at": "…",
+      "running": [
+        "pytest:test_ink.py::test_webkit_replay",
+        "chromium --headless (pid 4242, 29:40)"
+      ]
+    }
+  ],
+  "usage": [
+    {
+      "purpose": "screen note: board-390",
+      "model": "claude-haiku-5-5",
+      "input": 1830,
+      "output": 96,
+      "cache_read": 0,
+      "cache_write": 0
+    }
+  ]
 }
 ```
 
@@ -106,8 +131,9 @@ as `rungs` claims but are not checks: the walk cannot rerun an eye.
 - `outcome` is `pass`, `flaky` (failed, then passed a serial retry), `fail`, `known-red` or `skip`. A ref the stories name that the runner never reports is judged
   `missing`, which is red.
 - Key pytest results by both `path/test_x.py::…` and `test_x.py::…`, since stories name the bare file.
-- Exit codes: 0 no new red, 1 new red, 2 the walk could not run (no browser, no toolchain). A scheduler alerts on 2
-  differently from 1.
+- Exit codes: 0 no new red, 1 new red, 2 the walk could not run or did not finish (no browser, no toolchain, a
+  stage killed at its cap). `judge` itself returns 2 when `stages` holds a killed stage, after writing the report.
+  A scheduler alerts on 2 differently from 1.
 - Walk a clean tree: a detached worktree of the canonical main, not the primary checkout someone is editing. Record
   the SHA and dirty flag either way.
 - A clean tree lacks what the repo builds locally and never commits (a WebAssembly bundle, a generated asset). The
@@ -120,6 +146,20 @@ as `rungs` claims but are not checks: the walk cannot rerun an eye.
   `--timeout 300`; longer for browser audits) makes a hung check a red with `detail: Timeout`, and a stage cap kills
   the stage's whole process group (servers and browsers it started) and makes the walk exit 2. A runner idling at
   0% CPU is usually waiting on a child: read its process tree before calling it hung.
+- **A kill keeps what finished and says what it cut.**
+  - Write results per check as each one finishes, never only at the end. pytest's `--junitxml` is written when the
+    session ends, so a killed stage leaves none. `--report-log OUT/<stage>.jsonl` (the `pytest-reportlog` plugin)
+    appends a line per test as it completes, and the runner builds `checks` from it.
+  - Before killing the group, the runner writes the stage record into `stages`:
+    - `stage`, `kinds` (or `covers`, a list of ref prefixes, when two stages share a kind);
+    - `killed: true`, `cap_s`, `elapsed_s`, `at`;
+    - `running`: the process tree (`ps -o pid,etime,args --forest -g <pgid>`) and the test the report log
+      started but never finished.
+  - `judge` gives the stage's unreported refs the outcome `killed` (detail: the stage and its cap), not `missing`. A
+    file-level ref whose finished cases passed is `killed` too: its other cases never ran. A finished failure is
+    still red.
+  - A story whose only gap is a killed check gets the verdict **killed**. It files no bead, because the kill is the
+    finding, and the report's Killed stages section names it.
 - Wait on a running walk by PID (`while kill -0 <pid>; do sleep 15; done`), never with `pgrep -f <name>`, which
   matches the wait loop's own command line and never exits.
 
@@ -152,7 +192,19 @@ manifest line: the manifest is for what the Status can't say.
 
 1. one line of counts: green · red (known) · skipped · untestable, of N implemented; planned/retired/unclassified;
 2. the diff against `--previous`: new reds, fixed, still red, stories added or removed;
-3. sections for new reds, still red, known red, fixed, skipped, untestable, unclassified, then the greens.
+3. Killed stages, when a stage hit its cap: the stage, when, its cap and elapsed time, and what was running;
+4. sections for new reds, still red, known red, fixed, killed, skipped, untestable, unclassified, then the greens;
+5. Tokens: the walk's model spend, total and per purpose and model (calls, input, output, cache read, cache
+   write). It is always present, so a walk that spent nothing says so. No dollar figure: the skill keeps no price
+   table, and a made-up one would be worse than none.
+
+**Where the token rows come from.** Every model call the walk makes appends one row to `checks.json` `usage`
+(`purpose`, `model`, `input`, `output`, `cache_read`, `cache_write`, from the response's `usage`). The screen notes
+are the walk's only model calls today: purpose `screen note: <state>-<width>`. The Opus advisor's tokens are a second
+model inside the same call, so record them as their own row with the advisor's model. When an agent session drives
+the walk (a dry run, a nightly Claude job), that session's own tokens are **not** counted unless the driver passes
+them: `judge --session-tokens '<json>'`, inline or a file, one row or a list, with `calls` for a pre-summed row.
+They land under purpose `session`.
 
 Screenshots: a web runner saves one per failing landmark and may shoot the main routes for the eye. **A screenshot of
 real data stays local** under `~/tmp/agent/`: never attach it to a public PR, gist or issue. A fixture stage's shots
@@ -232,7 +284,8 @@ The job's script does three things the daemon won't:
    exactly when there is something to file.
 2. **Alerts on exit 2 itself.** The daemon only logs a non-zero exit from a command job. A walk that could not run
    looks exactly like a green one, so the script sends its own out-of-band line (the same channel as the
-   machine's other alerts).
+   machine's other alerts). A killed stage still leaves `report.md`, so the alert links it. `latest` stays on the
+   last finished walk, so the next walk diffs against one that finished.
 3. **Moves `latest`** to the new run, so the next walk diffs against it.
 
 ```bash
@@ -287,7 +340,8 @@ walk. Their high untestable counts are stories verified "on the phone" or "on th
 A dry run on the VM, at `-n 2` under `nice`, on a detached worktree of main. The runner followed the reference
 shape for a `just walk`:
 
-- the fast and browser rungs once each, with `--junitxml`;
+- the fast and browser rungs once each, with `--junitxml` (written only at session end, so a kill would have lost
+  the stage's results; use `--report-log` now, as the contract above says);
 - the route smoke on its fixture stage, with `--max-fails 0`;
 - `node:` audits resolved to the pytest wrapper that executes them;
 - one serial retry of every failed test.
