@@ -99,8 +99,8 @@ This is the one copy; each repo's AGENTS.md points here.
   transcripts as Markdown; developer.apple.com needs JavaScript, so a plain fetch sees nothing). Swap
   `developer.apple.com` for `sosumi.ai` in a URL, or add the MCP server:
   `claude mcp add --transport http sosumi https://sosumi.ai/mcp` (tools: searchAppleDocumentation,
-  fetchAppleDocumentation, fetchAppleVideoTranscript, fetchExternalDocumentation). Reported: Opus 5.5 passes 38% of
-  new iOS 27 API tasks without docs and 98% with Sosumi. Every builder, Mac or Linux, does this.
+  fetchAppleDocumentation, fetchAppleVideoTranscript, fetchExternalDocumentation).
+  Every builder, Mac or Linux, does this.
 - **Previews first, Simulator second, both from the CLI. Mac builders only**; the Linux VM has no Simulator or
   Xcode, so a Linux builder hands this work to a Mac builder. Source:
   [Natasha the Robot, "I gave Claude a Mac mini"](https://www.natashatherobot.com/p/claude-mac-mini).
