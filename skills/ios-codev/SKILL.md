@@ -107,14 +107,22 @@ This is the one copy; each repo's AGENTS.md points here.
   - Verify UI with a SwiftUI Preview; boot the simulator only for what a preview can't show (screen transitions,
     animations).
   - Every view an agent changes gets a `#Preview` on fixture data (no network, no live server), so it can be
-    rendered without the app.
+    rendered without the app. Point the healthy previews at an in-process stand-in for the server (a
+    `URLProtocol` that answers a fake address from the fixtures), not at "no address": a missing address leaks
+    a real error banner into the picture. Add one preview that shows the error state on purpose, so a reviewer
+    can tell "looks broken" from "is broken". Keep previews and their fixtures in Debug builds only.
   - Previews without opening Xcode, first choice: Xcode 27.2's own `xcrun mcpbridge`, a stdio JSON-RPC
     bridge driven from a shell script. Nothing is registered as an MCP server in the agent. Its
     `RenderPreview` tool takes a source file and returns a snapshot. One-time setup per Mac, by the human with
-    sudo: `sudo xcrun mcp-server allow-folder ~/gits` (plus any worktree root), and approve the calling binary
-    when `xcrun mcp-server` lists it as pending. Context Grabber wraps it as `just render-preview <file.swift>
-[out.png] [index]` (scripts/native/render-preview.sh, #1451); measured 2026-11-24: cold 35–105 s (it builds
-    the app first), warm about 0.5 s. Copy that script for another repo; the sudo steps are in its docs/TESTING.md.
+    sudo: `sudo xcrun mcp-server allow-folder <dir>` for each checkout and each worktree pool (e.g.
+    `~/.treehouse`), then `xcrun mcp-server status` lists the pending caller id to approve. Keep the caller
+    stable (Context Grabber always puts `/usr/bin/timeout` in front of the bridge) so one approval covers every
+    run. A project under `/private/tmp` is refused outright, so render from a checkout, not a scratch folder.
+    Context Grabber wraps it as `just render-preview <file.swift> [out.png] [index]`
+    (scripts/native/render-preview.sh, #1451). Measured 2026-11-24 on its six previews (#1465): the first
+    render waits for a build lane and a cold build (822 s that night, 35–105 s with a free lane), then about
+    1 s each, about 19 s for a file that just changed. Copy that script for another repo; the sudo steps are
+    in its docs/TESTING.md.
   - Fallback: [axe](https://github.com/k-kohey/axe)
     (`curl -fsSL https://raw.githubusercontent.com/k-kohey/axe/main/install.sh | sh`, then
     `axe preview report <File>.swift` for PNG, Markdown or HTML; Apple Silicon, needs `idb_companion`, pre-1.0).
