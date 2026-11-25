@@ -106,7 +106,16 @@ This is the one copy; each repo's AGENTS.md points here.
   [Natasha the Robot, "I gave Claude a Mac mini"](https://www.natashatherobot.com/p/claude-mac-mini).
   - Verify UI with a SwiftUI Preview; boot the simulator only for what a preview can't show (screen transitions,
     animations).
-  - Previews without opening Xcode: [axe](https://github.com/k-kohey/axe)
+  - Render one `#Preview` to a PNG with Xcode's own `xcrun mcpbridge`, a command that takes JSON-RPC on stdin:
+    no MCP client and no Xcode window. A shell script pipes it `initialize`, opens the project and calls
+    `RenderPreview` on a file and preview index; context-grabber's `scripts/native/render-preview.sh` (story 1625)
+    is the reference. Once per Mac, with sudo, so the human types it: turn headless mode on, then
+    `sudo xcrun mcp-server allow-folder <checkout>` for each checkout and worktree pool (`~/.treehouse`), then
+    `sudo xcrun mcp-server approve <id>` for the caller (`xcrun mcp-server status` lists the pending id). Keep the
+    caller stable, e.g. always `/usr/bin/timeout`, so one approval covers every run. Measured on an M5 Pro, 2026-11-24:
+    about 2 minutes for the first render (it builds the app), then about 1 s each, 20 s when the file changed.
+    Feed previews fixtures that never reach the network or the app's backend, and keep them in Debug builds.
+  - Previews without opening Xcode, the other way: [axe](https://github.com/k-kohey/axe)
     (`curl -fsSL https://raw.githubusercontent.com/k-kohey/axe/main/install.sh | sh`, then
     `axe preview report <File>.swift` for PNG, Markdown or HTML; Apple Silicon, needs `idb_companion`, pre-1.0).
     If axe fails, run the app in the simulator and take a screenshot.
