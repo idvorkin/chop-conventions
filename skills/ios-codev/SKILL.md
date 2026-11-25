@@ -106,10 +106,18 @@ This is the one copy; each repo's AGENTS.md points here.
   [Natasha the Robot, "I gave Claude a Mac mini"](https://www.natashatherobot.com/p/claude-mac-mini).
   - Verify UI with a SwiftUI Preview; boot the simulator only for what a preview can't show (screen transitions,
     animations).
-  - Previews without opening Xcode: [axe](https://github.com/k-kohey/axe)
+  - Every view an agent changes gets a `#Preview` on fixture data (no network, no live server), so it can be
+    rendered without the app.
+  - Previews without opening Xcode, first choice: Xcode 27.2's own `xcrun mcpbridge`, a stdio JSON-RPC
+    bridge driven from a shell script. Nothing is registered as an MCP server in the agent. Its
+    `RenderPreview` tool takes a source file and returns a snapshot. One-time setup per Mac, by the human with
+    sudo: `sudo xcrun mcp-server allow-folder ~/gits` (plus any worktree root), and approve the calling binary
+    when `xcrun mcp-server` lists it as pending. Status (2026-11-24): `initialize` and `tools/list` answer in
+    under a second, but no render has been timed yet, so add the repo's script name and timing here once one runs.
+  - Fallback: [axe](https://github.com/k-kohey/axe)
     (`curl -fsSL https://raw.githubusercontent.com/k-kohey/axe/main/install.sh | sh`, then
     `axe preview report <File>.swift` for PNG, Markdown or HTML; Apple Silicon, needs `idb_companion`, pre-1.0).
-    If axe fails, run the app in the simulator and take a screenshot.
+    If both fail, run the app in the simulator and take a screenshot.
   - The simulator itself: Apple's own CLIs. `xcodebuild` builds and runs the app and its tests;
     `xcrun simctl` boots, installs, launches and screenshots (`xcrun simctl io booted screenshot out.png`).
   - Write small, targeted tests and run only those, not the full UI suite.
