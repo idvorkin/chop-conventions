@@ -109,7 +109,7 @@ This is the one copy; each repo's AGENTS.md points here.
   - Render one `#Preview` to a PNG with Xcode's own `xcrun mcpbridge`, a command that takes JSON-RPC on stdin:
     no MCP client and no Xcode window. A shell script pipes it `initialize`, opens the project and calls
     `RenderPreview` on a file and preview index; context-grabber's `scripts/native/render-preview.sh` (story 1625)
-    is the reference. Once per Mac, with sudo, so the human types it: turn headless mode on, then
+    is the reference. Once per Mac, with sudo, so the human types it: `sudo xcrun mcp-server enable` to turn headless mode on, then
     `sudo xcrun mcp-server allow-folder <checkout>` for each checkout and worktree pool (`~/.treehouse`), then
     `sudo xcrun mcp-server approve <id>` for the caller (`xcrun mcp-server status` lists the pending id). Keep the
     caller stable, e.g. always `/usr/bin/timeout`, so one approval covers every run. Measured on an M5 Pro, 2026-11-24:
