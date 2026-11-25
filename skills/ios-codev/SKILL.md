@@ -132,8 +132,10 @@ This is the one copy; each repo's AGENTS.md points here.
   - Write small, targeted tests and run only those, not the full UI suite.
   - One simulator per agent, deleted when it finishes, slimmed with [simslim](https://github.com/MobAI-App/simslim)
     (`brew install mobai-app/tap/simslim`, then `simslim on <udid> --except <what the app's tests need>`).
-    It stops daemons and saves memory, not disk. Measured on one iPad simulator (2026-11-24): processes
-    180 → 84 and summed RSS 10.2 → 7.0 GB (-31%); disk barely moved, 5.1 → 4.8 GB.
+    It stops daemons and saves memory, not time or disk. Measured paired on one iPad simulator (2026-11-25,
+    slim and stock alternated): idle processes 214 → 120 and summed RSS 29.9 → 16.6 GB (about -45%), test
+    wall time unchanged, disk unchanged. So it buys more booted simulators per Mac, not faster tests. Keep on
+    every category the tests touch: Context Grabber lost two UI test classes to `widgets` being off.
   - A repo's own one-simulator and build-lane rules still apply on top.
 
 ## A repo joins: checklist
